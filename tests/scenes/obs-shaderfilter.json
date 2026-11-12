@@ -1,0 +1,119 @@
+{
+ "name": "Smoke",
+ "current_scene": "Scene",
+ "current_program_scene": "Scene",
+ "scene_order": [
+  {
+   "name": "Scene"
+  }
+ ],
+ "sources": [
+  {
+   "id": "scene",
+   "versioned_id": "scene",
+   "name": "Scene",
+   "settings": {
+    "items": [
+     {
+      "name": "Colour",
+      "visible": true,
+      "id": 1
+     }
+    ],
+    "id_counter": 1
+   }
+  },
+  {
+   "id": "color_source",
+   "versioned_id": "color_source_v3",
+   "name": "Colour",
+   "settings": {
+    "color": 4282417407,
+    "width": 1280,
+    "height": 720
+   },
+   "filters": [
+    {
+     "id": "shader_filter",
+     "versioned_id": "shader_filter",
+     "name": "Noise",
+     "enabled": true,
+     "settings": {
+      "from_file": true,
+      "shader_file_name": "@DATA@/examples/noise.shader"
+     }
+    },
+    {
+     "id": "shader_filter",
+     "versioned_id": "shader_filter",
+     "name": "Film Grain",
+     "enabled": true,
+     "settings": {
+      "from_file": true,
+      "shader_file_name": "@DATA@/examples/film_grain.shader"
+     }
+    },
+    {
+     "id": "shader_filter",
+     "versioned_id": "shader_filter",
+     "name": "Bloom",
+     "enabled": true,
+     "settings": {
+      "from_file": true,
+      "shader_file_name": "@DATA@/examples/bloom.shader"
+     }
+    },
+    {
+     "id": "shader_filter",
+     "versioned_id": "shader_filter",
+     "name": "Chromatic Aberration",
+     "enabled": true,
+     "settings": {
+      "from_file": true,
+      "shader_file_name": "@DATA@/examples/chromatic-aberration.shader"
+     }
+    },
+    {
+     "id": "shader_filter",
+     "versioned_id": "shader_filter",
+     "name": "Ripple",
+     "enabled": true,
+     "settings": {
+      "from_file": true,
+      "shader_file_name": "@DATA@/examples/ripple.shader"
+     }
+    },
+    {
+     "id": "shader_filter",
+     "versioned_id": "shader_filter",
+     "name": "Glitch",
+     "enabled": true,
+     "settings": {
+      "from_file": true,
+      "shader_file_name": "@DATA@/examples/glitch.shader"
+     }
+    },
+    {
+     "id": "shader_filter",
+     "versioned_id": "shader_filter",
+     "name": "Swirl",
+     "enabled": true,
+     "settings": {
+      "from_file": true,
+      "shader_file_name": "@DATA@/examples/Swirl.shader"
+     }
+    },
+    {
+     "id": "shader_filter",
+     "versioned_id": "shader_filter",
+     "name": "Rotate",
+     "enabled": true,
+     "settings": {
+      "from_file": true,
+      "shader_file_name": "@DATA@/examples/rotatoe.effect"
+     }
+    }
+   ]
+  }
+ ]
+}

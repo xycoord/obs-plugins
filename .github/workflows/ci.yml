@@ -1,0 +1,36 @@
+name: build and smoke test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    name: OBS ${{ matrix.obs }} (Ubuntu 24.04)
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # Ubuntu's own package, and the latest release from the OBS PPA.
+        obs: [ubuntu, ppa]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Install OBS
+        run: |
+          if [ "${{ matrix.obs }}" = ppa ]; then
+            sudo add-apt-repository -y ppa:obsproject/obs-studio
+          fi
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq obs-studio cmake build-essential xvfb
+          obs --version
+
+      - name: Build and install the plugins
+        run: ./install.sh
+
+      - name: Smoke test in OBS
+        run: xvfb-run -a tests/smoke.sh

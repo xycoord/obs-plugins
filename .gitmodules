@@ -1,0 +1,4 @@
+[submodule "plugins/obs-shaderfilter"]
+	path = plugins/obs-shaderfilter
+	url = https://github.com/xycoord/obs-shaderfilter
+	branch = master
