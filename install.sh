@@ -11,6 +11,9 @@
 # installed libobs, so they always match the OBS that loads them. Needs git,
 # cmake and a C compiler; no OBS development packages.
 #
+# Run it again after OBS itself is updated: plugins built for one version of
+# OBS may not load in another.
+#
 # Environment: OBS_VERSION overrides the detected version; OBS_PLUGINS_DIR the
 # folder plugins are installed into.
 set -euo pipefail
@@ -35,7 +38,8 @@ done
 
 # --- Which plugins ---------------------------------------------------------
 if [ -f "$ROOT/.gitmodules" ] && command -v git >/dev/null; then
-	git -C "$ROOT" submodule update --init --recursive >/dev/null
+	git -C "$ROOT" submodule update --init --recursive >/dev/null ||
+		say "warning: couldn't update the submodules; building what's checked out"
 fi
 plugins=()
 for dir in "$ROOT"/plugins/*/; do
@@ -57,15 +61,15 @@ version=""
 libobs=""
 if command -v obs >/dev/null; then
 	kind=native
-	version=$(obs --version 2>/dev/null | sed -n 's/.*OBS Studio - \([0-9][0-9.]*\).*/\1/p' | head -1)
+	version=$(obs --version 2>/dev/null | sed -n 's/.*OBS Studio - \([0-9][0-9.]*\).*/\1/p' | head -1 || true)
 	# The libobs the obs program itself loads (its file name differs between
 	# Ubuntu's package and OBS's own builds).
-	libobs=$(ldd "$(command -v obs)" 2>/dev/null | sed -n 's/^[[:space:]]*libobs\.so[.0-9]* => \(\/[^ ]*\).*/\1/p' | head -1)
+	libobs=$(ldd "$(command -v obs)" 2>/dev/null | sed -n 's/^[[:space:]]*libobs\.so[.0-9]* => \(\/[^ ]*\).*/\1/p' | head -1 || true)
 	dest_default=${XDG_CONFIG_HOME:-$HOME/.config}/obs-studio/plugins
 elif command -v flatpak >/dev/null && flatpak info "$FLATPAK_ID" >/dev/null 2>&1; then
 	kind=flatpak
-	version=$(flatpak info "$FLATPAK_ID" | sed -n 's/^ *Version: *\([0-9][0-9.]*\).*/\1/p' | head -1)
-	libobs=$(ls "$(flatpak info --show-location "$FLATPAK_ID")"/files/lib/libobs.so.* 2>/dev/null | head -1)
+	version=$(flatpak info "$FLATPAK_ID" | sed -n 's/^ *Version: *\([0-9][0-9.]*\).*/\1/p' | head -1 || true)
+	libobs=$(ls "$(flatpak info --show-location "$FLATPAK_ID")"/files/lib/libobs.so.* 2>/dev/null | head -1 || true)
 	dest_default=$HOME/.var/app/$FLATPAK_ID/config/obs-studio/plugins
 else
 	die "OBS Studio isn't installed (no 'obs' command and no $FLATPAK_ID Flatpak)"
@@ -87,7 +91,7 @@ version=${OBS_VERSION:-$(printf '%s' "$version" | cut -d. -f1-3)}
 [ -n "$version" ] || die "couldn't tell which version of OBS is installed; set OBS_VERSION"
 [ -n "$libobs" ] && [ -f "$libobs" ] || die "couldn't find the libobs that OBS uses"
 
-for tool in git cmake cc; do
+for tool in git cmake make cc; do
 	command -v "$tool" >/dev/null || die "$tool is needed: sudo apt install git cmake build-essential"
 done
 
@@ -99,31 +103,38 @@ fi
 
 # --- libobs headers for this version -----------------------------------------
 sdk=$CACHE/obs-$version
-if [ ! -f "$sdk/cmake/libobsConfig.cmake" ]; then
+if [ ! -f "$sdk/config/obsconfig.h" ]; then
 	say "fetching the libobs $version headers..."
 	rm -rf "$sdk"
 	mkdir -p "$sdk"
-	git clone -q --depth 1 --branch "$version" --filter=blob:none --sparse \
-		https://github.com/obsproject/obs-studio "$sdk/src" 2>/dev/null ||
-		die "couldn't fetch OBS $version from github.com/obsproject/obs-studio"
-	git -C "$sdk/src" sparse-checkout set --no-cone '/libobs/**' >/dev/null
+	if ! err=$(git clone -q --depth 1 --branch "$version" --filter=blob:none --sparse \
+		https://github.com/obsproject/obs-studio "$sdk/src" 2>&1); then
+		printf '%s\n' "$err" >&2
+		die "couldn't fetch OBS $version from github.com/obsproject/obs-studio (if that isn't a released version, set OBS_VERSION to the nearest one)"
+	fi
+	git -C "$sdk/src" sparse-checkout set libobs >/dev/null
 	# obsconfig.h is generated when OBS is built; its paths and build options
 	# are never used by plugins.
 	mkdir -p "$sdk/config"
-	sed -e 's/^#cmakedefine .*//' -e 's/@[A-Z_]*@/0/g' "$sdk/src/libobs/obsconfig.h.in" >"$sdk/config/obsconfig.h"
-	mkdir -p "$sdk/cmake"
-	cat >"$sdk/cmake/libobsConfig.cmake.in" <<-'EOF'
-		# libobs as installed, with the headers of the same OBS version.
-		if(NOT TARGET OBS::libobs)
-		  add_library(OBS::libobs SHARED IMPORTED)
-		  set_target_properties(OBS::libobs PROPERTIES
-		    IMPORTED_LOCATION "@LIBOBS@"
-		    INTERFACE_INCLUDE_DIRECTORIES "@SDK@/src/libobs;@SDK@/config")
-		endif()
-		set(libobs_FOUND TRUE)
-	EOF
-	sed -e "s|@LIBOBS@|$libobs|" -e "s|@SDK@|$sdk|g" "$sdk/cmake/libobsConfig.cmake.in" >"$sdk/cmake/libobsConfig.cmake"
+	sed -e 's/^#cmakedefine .*//' -e 's/@[A-Z_]*@/0/g' "$sdk/src/libobs/obsconfig.h.in" >"$sdk/config/obsconfig.h.tmp"
+	mv "$sdk/config/obsconfig.h.tmp" "$sdk/config/obsconfig.h"
 fi
+# From OBS 32, libobs's headers use the system's SIMDe instead of their own.
+if [ ! -d "$sdk/src/libobs/util/simde" ] && [ ! -f /usr/include/simde/x86/sse2.h ]; then
+	die "OBS $version's headers need SIMDe: sudo apt install libsimde-dev"
+fi
+# Written every time: the libobs in use can change without its version changing.
+mkdir -p "$sdk/cmake"
+cat >"$sdk/cmake/libobsConfig.cmake" <<CMAKE
+# libobs as installed, with the headers of the same OBS version.
+if(NOT TARGET OBS::libobs)
+  add_library(OBS::libobs SHARED IMPORTED)
+  set_target_properties(OBS::libobs PROPERTIES
+    IMPORTED_LOCATION "$libobs"
+    INTERFACE_INCLUDE_DIRECTORIES "$sdk/src/libobs;$sdk/config")
+endif()
+set(libobs_FOUND TRUE)
+CMAKE
 
 # --- Build and install ---------------------------------------------------------
 if pgrep -x obs >/dev/null 2>&1; then
@@ -140,10 +151,20 @@ for name in "${plugins[@]}"; do
 	module=$(find "$build" -maxdepth 2 -name "$name.so" | head -1)
 	[ -n "$module" ] || die "building $name made no $name.so"
 
-	rm -rf "${DEST:?}/$name"
-	mkdir -p "$DEST/$name/bin/64bit"
-	cp "$module" "$DEST/$name/bin/64bit/"
-	[ -d "$src/data" ] && cp -r "$src/data" "$DEST/$name/data"
+	# Put the new copy together beside the old one and swap it in, so a
+	# failure part-way leaves the working copy in place.
+	new=$DEST/.$name.new
+	rm -rf "$new" "$DEST/.$name.old"
+	mkdir -p "$new/bin/64bit"
+	cp "$module" "$new/bin/64bit/"
+	if [ -d "$src/data" ]; then
+		cp -r "$src/data" "$new/data"
+	fi
+	if [ -d "$DEST/$name" ]; then
+		mv "$DEST/$name" "$DEST/.$name.old"
+	fi
+	mv "$new" "$DEST/$name"
+	rm -rf "$DEST/.$name.old"
 	say "installed $name"
 
 	for sys in /usr/lib/x86_64-linux-gnu/obs-plugins /usr/lib/obs-plugins /usr/local/lib/obs-plugins; do

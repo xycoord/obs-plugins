@@ -79,8 +79,11 @@ static void *invert_create(obs_data_t *settings, obs_source_t *context)
 	obs_leave_graphics();
 
 	if (!filter->effect) {
-		blog(LOG_ERROR, "[obs-invert] failed to load %s: %s", path ? path : "invert.effect",
-		     errors ? errors : "file not found");
+		if (path)
+			blog(LOG_ERROR, "[obs-invert] failed to compile %s: %s", path,
+			     errors ? errors : "(no details)");
+		else
+			blog(LOG_ERROR, "[obs-invert] failed to load: invert.effect not found");
 		bfree(errors);
 		bfree(path);
 		invert_destroy(filter);
@@ -136,11 +139,16 @@ static obs_properties_t *invert_properties(void *data)
 }
 
 /* The inversion works on gamma-encoded SDR values, as image editors do. HDR
- * sources (extended range) are passed through untouched: "1 - value" has no
- * meaning above SDR white. */
+ * sources (extended range or scRGB) are passed through untouched: "1 - value"
+ * has no meaning above SDR white. */
+static bool is_hdr(enum gs_color_space space)
+{
+	return space == GS_CS_709_EXTENDED || space == GS_CS_709_SCRGB;
+}
+
 static enum gs_color_space source_space(struct invert_filter *filter)
 {
-	const enum gs_color_space spaces[] = {GS_CS_SRGB, GS_CS_SRGB_16F, GS_CS_709_EXTENDED};
+	const enum gs_color_space spaces[] = {GS_CS_SRGB, GS_CS_SRGB_16F, GS_CS_709_EXTENDED, GS_CS_709_SCRGB};
 	return obs_source_get_color_space(obs_filter_get_target(filter->context), OBS_COUNTOF(spaces), spaces);
 }
 
@@ -149,12 +157,12 @@ static void invert_render(void *data, gs_effect_t *unused)
 	UNUSED_PARAMETER(unused);
 	struct invert_filter *filter = data;
 
-	if (source_space(filter) == GS_CS_709_EXTENDED) {
+	if (is_hdr(source_space(filter))) {
 		obs_source_skip_video_filter(filter->context);
 		return;
 	}
 	if (!obs_source_process_filter_begin_with_color_space(filter->context, GS_RGBA, GS_CS_SRGB,
-							      OBS_ALLOW_DIRECT_RENDERING))
+							      OBS_NO_DIRECT_RENDERING))
 		return;
 
 	gs_effect_set_float(filter->keep_hue_param, filter->keep_hue ? 1.0f : 0.0f);
@@ -179,7 +187,8 @@ static enum gs_color_space invert_get_color_space(void *data, size_t count, cons
 	UNUSED_PARAMETER(count);
 	UNUSED_PARAMETER(preferred);
 	struct invert_filter *filter = data;
-	return source_space(filter) == GS_CS_709_EXTENDED ? GS_CS_709_EXTENDED : GS_CS_SRGB;
+	const enum gs_color_space space = source_space(filter);
+	return is_hdr(space) ? space : GS_CS_SRGB;
 }
 
 static struct obs_source_info invert_filter_info = {

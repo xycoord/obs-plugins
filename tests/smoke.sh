@@ -1,15 +1,21 @@
 #!/usr/bin/env bash
 # Start the installed OBS with the plugins install.sh put in place and check it
 # loads every one, then load each plugin's test scene (tests/scenes/<name>.json,
-# if there is one) and check OBS logs no errors for it.
+# if there is one) and check that all of its filters were created and OBS
+# logged no errors for them.
 #
 #   tests/smoke.sh          (needs a display: run under xvfb-run -a on a server)
 #
+# In a scene file, @DATA@ stands for the plugin's installed data folder and
+# @TESTS@ for this tests folder (for images in tests/fixtures).
+#
 # Uses a throwaway OBS configuration: the plugins folder is linked from the
-# real one, nothing else of the user's OBS setup is read or changed.
+# real one, nothing else of the user's OBS setup is read or changed. Native OBS
+# only, not the Flatpak.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
+TESTS=$ROOT/tests
 PLUGINS=${OBS_PLUGINS_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/obs-studio/plugins}
 SECONDS_RUN=${SMOKE_SECONDS:-20}
 
@@ -18,69 +24,100 @@ trap 'rm -rf "$fake"' EXIT
 cfg=$fake/.config/obs-studio
 mkdir -p "$cfg/basic/scenes" "$cfg/basic/profiles/Smoke"
 ln -s "$PLUGINS" "$cfg/plugins"
-cat >"$cfg/global.ini" <<EOF
-[General]
-FirstRun=false
-[Basic]
-SceneCollection=Smoke
-SceneCollectionFile=Smoke
-Profile=Smoke
-ProfileDir=Smoke
-ConfigOnNewProfile=false
-EOF
+# OBS 30 reads these from global.ini, OBS 31 and later from user.ini.
+for ini in global.ini user.ini; do
+	cat >"$cfg/$ini" <<-EOF
+		[General]
+		FirstRun=false
+		[Basic]
+		SceneCollection=Smoke
+		SceneCollectionFile=Smoke
+		Profile=Smoke
+		ProfileDir=Smoke
+		ConfigOnNewProfile=false
+	EOF
+done
 
+failed=0
+fail() {
+	echo "FAIL  $1"
+	failed=1
+}
+
+# Runs OBS and sets $log to the log it wrote; fails and returns 1 if OBS didn't
+# get through startup.
 run_obs() {
 	rm -rf "$cfg/logs"
 	# OBS is stopped by a signal, which it may not exit cleanly from; that
-	# isn't what's being tested.
-	(cd "$fake" && HOME=$fake XDG_CONFIG_HOME=$fake/.config timeout "$SECONDS_RUN" obs --disable-shutdown-check --disable-updater >"$fake/obs.out" 2>&1) 2>/dev/null || true
-	ls -t "$cfg"/logs/*.txt 2>/dev/null | head -1 || true
+	# isn't what's being tested. --kill-after: in case it doesn't stop.
+	# --multi: no "already running" dialog if the real OBS is open. HOME is
+	# moved, so X needs telling where its cookie is.
+	(cd "$fake" && XAUTHORITY=${XAUTHORITY:-$HOME/.Xauthority} HOME=$fake XDG_CONFIG_HOME=$fake/.config \
+		timeout --kill-after=5s "$SECONDS_RUN" obs --multi --disable-shutdown-check --disable-updater \
+		>"$fake/obs.out" 2>&1) 2>/dev/null || true
+	log=$(ls -t "$cfg"/logs/*.txt 2>/dev/null | head -1 || true)
+	if [ -z "$log" ] || ! grep -q 'Startup complete' "$log"; then
+		fail "OBS didn't finish starting ($1); its output:"
+		tail -30 "$fake/obs.out" | sed 's/^/      /'
+		return 1
+	fi
 }
 
-no_log() {
-	echo "FAIL  OBS wrote no log; its output:"
-	tail -30 "$fake/obs.out" | sed 's/^/      /'
-	exit 1
-}
-
-failed=0
 names=()
 for dir in "$ROOT"/plugins/*/; do
 	[ -f "$dir/CMakeLists.txt" ] && names+=("$(basename "$dir")")
 done
 
-# An empty scene collection: just check every plugin loads.
-echo '{"name":"Smoke","sources":[]}' >"$cfg/basic/scenes/Smoke.json"
-log=$(run_obs)
-[ -n "$log" ] || no_log
-for name in "${names[@]}"; do
-	if sed -n '/Loaded Modules:/,$p' "$log" | grep -q "^[0-9:.]*: *$name\.so$"; then
-		echo "ok    $name loads"
-	else
-		echo "FAIL  $name didn't load:"
-		grep -i "$name" "$log" | sed 's/^/      /'
-		failed=1
-	fi
-done
+# Problems OBS reports that come from parts of OBS a test machine lacks.
+not_ours='decklink|portals|dbus|v4l2|pipewire|pulse|alsa|vaapi|nvenc|qsv|amf|jack|browser|rtmp-services'
 
-# Each plugin's own test scene. @DATA@ in it becomes the plugin's installed
-# data folder.
+# An empty scene collection: just check every plugin loads, and that nothing
+# about it went wrong while modules loaded (a missing locale, for one).
+echo '{"name":"Smoke","sources":[]}' >"$cfg/basic/scenes/Smoke.json"
+if run_obs "no scene"; then
+	for name in "${names[@]}"; do
+		if sed -n '/Loaded Modules:/,$p' "$log" | grep -q "^[0-9:.]*: *$name\.so$"; then
+			echo "ok    $name loads"
+		else
+			fail "$name didn't load:"
+			grep -i "$name" "$log" | sed 's/^/      /'
+		fi
+		problems=$(grep -i -F "$name" "$log" | grep -i -E 'error|fail|unable|warning' || true)
+		if [ -n "$problems" ]; then
+			fail "$name reported problems while loading:"
+			printf '%s\n' "$problems" | sed 's/^/      /'
+		fi
+	done
+fi
+
 for name in "${names[@]}"; do
-	scene=$ROOT/tests/scenes/$name.json
+	scene=$TESTS/scenes/$name.json
 	[ -f "$scene" ] || continue
-	sed "s|@DATA@|$PLUGINS/$name/data|g" "$scene" >"$cfg/basic/scenes/Smoke.json"
-	log=$(run_obs)
-	[ -n "$log" ] || no_log
-	# Lines after the scene starts loading that report an error or failure,
-	# except ones from parts of OBS the test machine lacks.
+	sed -e "s|@DATA@|$PLUGINS/$name/data|g" -e "s|@TESTS@|$TESTS|g" "$scene" >"$cfg/basic/scenes/Smoke.json"
+	run_obs "$name's test scene" || continue
+
+	# Every filter in the scene has to have been created.
+	missing=$(python3 - "$cfg/basic/scenes/Smoke.json" "$log" <<-'EOF'
+		import json, sys
+		scene = json.load(open(sys.argv[1]))
+		log = open(sys.argv[2], errors="replace").read()
+		for src in scene.get("sources", []):
+		    for f in src.get("filters", []):
+		        if f"- filter: '{f['name']}' ({f['id']})" not in log:
+		            print(f"{src['name']}: {f['name']} ({f['id']})")
+	EOF
+	)
+	if [ -n "$missing" ]; then
+		fail "$name's test scene: filters not created:"
+		printf '%s\n' "$missing" | sed 's/^/      /'
+	fi
+	# Errors or failures reported once the scene loads.
 	errors=$(sed -n '/Startup complete/,$p' "$log" |
-		grep -i -E 'error|fail|unable|warning' |
-		grep -v -i -E 'decklink|portals|dbus|v4l2|pipewire|pulse|alsa|vaapi|nvenc|qsv|amf|jack|browser' || true)
+		grep -i -E 'error|fail|unable|warning|not found' | grep -v -i -E "$not_ours" || true)
 	if [ -n "$errors" ]; then
-		echo "FAIL  $name's test scene:"
+		fail "$name's test scene:"
 		printf '%s\n' "$errors" | sed 's/^/      /'
-		failed=1
-	else
+	elif [ -z "$missing" ]; then
 		echo "ok    $name's test scene loads without errors"
 	fi
 done

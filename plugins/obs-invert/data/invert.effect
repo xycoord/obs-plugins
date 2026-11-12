@@ -23,14 +23,20 @@
 // background is coverage x the colour of the part it belongs to, so its alpha
 // (coverage) is its brightness divided by the brightest pixel near it (5 x 5),
 // and its colour that divided by alpha: edges blend into whatever is behind
-// exactly as they did into black, and every part of the logo stays solid
-// however dark. That only applies next to background, i.e. when some pixel
-// next to it (3 x 3) is about black: a pixel where two of the logo's colours
-// meet (dark text on a light badge) stays solid instead of leaving a see-
-// through seam. Parts darker than `solid` then fade out (alpha x part
-// brightness / solid), for glows and shadows, which a 5 x 5 view can't tell
-// from solid dark parts. Over black the result is always exactly the same as
-// without transparency.
+// as they did into black, and parts of the logo stay solid however dark. That
+// only applies next to background, i.e. when some pixel within 2 is about
+// black (2, so soft edges two or three pixels wide count too): where two of
+// the logo's colours meet (dark text on a light badge) the pixel stays solid
+// instead of leaving a see-through seam. Parts darker than `solid` then fade
+// out (alpha x part brightness / solid), for glows and shadows, which a 5 x 5
+// view can't tell from solid dark parts. Over black the result is always
+// exactly the same as without transparency.
+//
+// Limits: a line thinner than a pixel has no fully covered pixel to measure
+// against, so over bright visuals it shows as a solid, slightly darker line;
+// and a dark detail that touches the background within 2 pixels of a much
+// brighter part reads as a faint edge of that part and turns partly see-
+// through.
 
 uniform float4x4 ViewProj;
 uniform texture2d image;
@@ -65,7 +71,9 @@ VertData VSDefault(VertData v_in)
 float4 inverted(float2 uv)
 {
 	float4 c = image.Sample(textureSampler, uv);
-	c.rgb *= (c.a > 0.0) ? (1.0 / c.a) : 0.0;
+	// Rounding, or an image source applying alpha in linear light, can
+	// leave a channel just above 1.
+	c.rgb = saturate(c.rgb * ((c.a > 0.0) ? (1.0 / c.a) : 0.0));
 	float hi = max(c.r, max(c.g, c.b));
 	float lo = min(c.r, min(c.g, c.b));
 	c.rgb = (keep_hue > 0.5) ? c.rgb + (1.0 - hi - lo) : 1.0 - c.rgb;
@@ -82,45 +90,49 @@ float4 PSInvert(VertData v_in) : TARGET
 	float4 c = inverted(v_in.uv);
 	float v = brightness(c.rgb);
 
-	if (black_point > 0.0 || transparent > 0.5) {
-		// Brightest neighbour within 1 and within 2 pixels. A neighbour
-		// counts as bright as it shows: a see-through one counts less.
-		float near1 = 0.0;
-		float near2 = 0.0;
-		float dark1 = 1.0;  // darkest neighbour within 1 pixel
-		int r = (transparent > 0.5) ? 2 : 1;
+	// Neighbours: the brightest within 1 pixel (near1) and within 2 (near2),
+	// and the darkest within 2 (dark2). A see-through neighbour counts as
+	// dark as it shows. The 5 x 5 is only read when transparency needs it.
+	float near1 = 0.0;
+	float near2 = 0.0;
+	float dark2 = 1.0;
+	if (transparent > 0.5) {
 		for (int dy = -2; dy <= 2; dy++) {
 			for (int dx = -2; dx <= 2; dx++) {
-				if (abs(dx) > r || abs(dy) > r)
-					continue;
 				float4 n = inverted(v_in.uv + float2(float(dx), float(dy)) * texel);
 				float nv = brightness(n.rgb) * n.a;
 				near2 = max(near2, nv);
-				if (abs(dx) <= 1 && abs(dy) <= 1) {
+				dark2 = min(dark2, nv);
+				if (abs(dx) <= 1 && abs(dy) <= 1)
 					near1 = max(near1, nv);
-					dark1 = min(dark1, nv);
-				}
 			}
 		}
-
-		if (black_point > 0.0) {
-			float keep = max(saturate((v - black_point) / black_point),
-					 saturate((near1 - black_point) / black_point));
-			c.rgb *= keep;
-			v *= keep;
+	} else if (black_point > 0.0) {
+		for (int dy = -1; dy <= 1; dy++) {
+			for (int dx = -1; dx <= 1; dx++) {
+				float4 n = inverted(v_in.uv + float2(float(dx), float(dy)) * texel);
+				near1 = max(near1, brightness(n.rgb) * n.a);
+			}
 		}
+	}
 
-		if (transparent > 0.5) {
-			// Coverage: next to background, the share of the part
-			// nearby; between two of the logo's colours, all of it.
-			float black = max(black_point, 0.02);
-			float by_background = 1.0 - saturate((dark1 - black) / black);
-			float coverage = lerp(1.0, (v > 0.0) ? v / max(near2, v) : 0.0, by_background);
-			float part = (coverage > 0.0) ? v / coverage : 0.0;
-			float a = (v > 0.0) ? coverage * ((solid > 0.0) ? saturate(part / solid) : 1.0) : 0.0;
-			c.rgb *= (a > 0.0) ? 1.0 / a : 0.0;
-			c.a *= a;
-		}
+	if (black_point > 0.0) {
+		float keep = max(saturate((v - black_point) / black_point),
+				 saturate((near1 - black_point) / black_point));
+		c.rgb *= keep;
+		v *= keep;
+	}
+
+	if (transparent > 0.5) {
+		// Coverage: next to background, the share of the part nearby;
+		// between two of the logo's colours, all of it.
+		float black = max(black_point, 0.02);
+		float by_background = 1.0 - saturate((dark2 - black) / black);
+		float coverage = lerp(1.0, (v > 0.0) ? v / max(near2, v) : 0.0, by_background);
+		float part = (coverage > 0.0) ? v / coverage : 0.0;
+		float a = (v > 0.0) ? coverage * ((solid > 0.0) ? saturate(part / solid) : 1.0) : 0.0;
+		c.rgb *= (a > 0.0) ? 1.0 / a : 0.0;
+		c.a *= a;
 	}
 
 	c.rgb *= c.a;
