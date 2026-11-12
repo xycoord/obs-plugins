@@ -58,12 +58,14 @@ libobs=""
 if command -v obs >/dev/null; then
 	kind=native
 	version=$(obs --version 2>/dev/null | sed -n 's/.*OBS Studio - \([0-9][0-9.]*\).*/\1/p' | head -1)
-	libobs=$(ldconfig -p 2>/dev/null | sed -n 's/.*libobs\.so\.0 (.*x86-64.*) => //p' | head -1)
+	# The libobs the obs program itself loads (its file name differs between
+	# Ubuntu's package and OBS's own builds).
+	libobs=$(ldd "$(command -v obs)" 2>/dev/null | sed -n 's/^[[:space:]]*libobs\.so[.0-9]* => \(\/[^ ]*\).*/\1/p' | head -1)
 	dest_default=${XDG_CONFIG_HOME:-$HOME/.config}/obs-studio/plugins
 elif command -v flatpak >/dev/null && flatpak info "$FLATPAK_ID" >/dev/null 2>&1; then
 	kind=flatpak
 	version=$(flatpak info "$FLATPAK_ID" | sed -n 's/^ *Version: *\([0-9][0-9.]*\).*/\1/p' | head -1)
-	libobs="$(flatpak info --show-location "$FLATPAK_ID")/files/lib/libobs.so.0"
+	libobs=$(ls "$(flatpak info --show-location "$FLATPAK_ID")"/files/lib/libobs.so.* 2>/dev/null | head -1)
 	dest_default=$HOME/.var/app/$FLATPAK_ID/config/obs-studio/plugins
 else
 	die "OBS Studio isn't installed (no 'obs' command and no $FLATPAK_ID Flatpak)"
@@ -83,7 +85,7 @@ fi
 # Releases are tagged with three numbers (30.0.2); packages may add a fourth.
 version=${OBS_VERSION:-$(printf '%s' "$version" | cut -d. -f1-3)}
 [ -n "$version" ] || die "couldn't tell which version of OBS is installed; set OBS_VERSION"
-[ -n "$libobs" ] && [ -f "$libobs" ] || die "couldn't find the installed libobs.so.0"
+[ -n "$libobs" ] && [ -f "$libobs" ] || die "couldn't find the libobs that OBS uses"
 
 for tool in git cmake cc; do
 	command -v "$tool" >/dev/null || die "$tool is needed: sudo apt install git cmake build-essential"
