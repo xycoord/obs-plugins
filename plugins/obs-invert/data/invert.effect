@@ -8,22 +8,38 @@
 // min is 1 - max. So white and black swap, greys invert, and a pure red stays
 // the same red.
 //
-// After inverting, a logo's background is black, and what's left of a JPEG's
-// off-white background is faint grey specks around the text. Clean-up maps
-// brightness (the largest channel) below black_point to 0 and stretches the
-// rest back to 0..1, scaling all three channels alike so colours keep their
-// hue. Then, for a transparent background, alpha is brightness / solid (at
-// most 1) and the colour is divided by it: parts at least `solid` bright stay
-// fully opaque, darker ones fade out, and composited over black the result is
-// exactly what it would be without transparency.
+// After inverting, a logo's background is black, its edges are anti-aliased
+// blends of the logo's colours with that black, and what's left of a JPEG's
+// off-white background is faint specks. Telling a faint edge pixel from a
+// speck needs its neighbours: an edge pixel is next to the solid part it
+// belongs to, a speck isn't. Brightness here is a pixel's largest channel.
+//
+// Clean-up: a pixel at least 2 x black_point bright, or next to one (3 x 3),
+// is kept as it is; one fainter than black_point with nothing brighter than
+// black_point next to it becomes black; in between it fades smoothly. Edges
+// keep their anti-aliasing and colours their hue (all channels scale alike).
+//
+// Transparent background: a pixel on an edge between the logo and the
+// background is coverage x the colour of the part it belongs to, so its alpha
+// (coverage) is its brightness divided by the brightest pixel near it (5 x 5),
+// and its colour that divided by alpha: edges blend into whatever is behind
+// exactly as they did into black, and every part of the logo stays solid
+// however dark. That only applies next to background, i.e. when some pixel
+// next to it (3 x 3) is about black: a pixel where two of the logo's colours
+// meet (dark text on a light badge) stays solid instead of leaving a see-
+// through seam. Parts darker than `solid` then fade out (alpha x part
+// brightness / solid), for glows and shadows, which a 5 x 5 view can't tell
+// from solid dark parts. Over black the result is always exactly the same as
+// without transparency.
 
 uniform float4x4 ViewProj;
 uniform texture2d image;
 
+uniform float2 texel;       // 1 / the source's size in pixels
 uniform float keep_hue;     // 1: keep hue and saturation, 0: plain inversion
-uniform float black_point;  // 0..1: brightness at and below which becomes black
+uniform float black_point;  // 0..1: clean-up level (0: off)
 uniform float transparent;  // 1: make the background transparent
-uniform float solid;        // 0..1: brightness from which a part stays opaque
+uniform float solid;        // 0..1: parts darker than this fade out
 
 sampler_state textureSampler {
 	Filter   = Linear;
@@ -44,27 +60,67 @@ VertData VSDefault(VertData v_in)
 	return v_out;
 }
 
-float4 PSInvert(VertData v_in) : TARGET
+// The inverted colour at uv, with straight alpha (the image arrives with
+// premultiplied alpha).
+float4 inverted(float2 uv)
 {
-	// The image arrives with premultiplied alpha.
-	float4 c = image.Sample(textureSampler, v_in.uv);
+	float4 c = image.Sample(textureSampler, uv);
 	c.rgb *= (c.a > 0.0) ? (1.0 / c.a) : 0.0;
-
 	float hi = max(c.r, max(c.g, c.b));
 	float lo = min(c.r, min(c.g, c.b));
 	c.rgb = (keep_hue > 0.5) ? c.rgb + (1.0 - hi - lo) : 1.0 - c.rgb;
+	return c;
+}
 
-	float v = max(c.r, max(c.g, c.b));
-	if (black_point > 0.0) {
-		float cleaned = saturate((v - black_point) / (1.0 - black_point));
-		c.rgb *= (v > 0.0) ? cleaned / v : 0.0;
-		v = cleaned;
-	}
+float brightness(float3 rgb)
+{
+	return max(rgb.r, max(rgb.g, rgb.b));
+}
 
-	if (transparent > 0.5) {
-		float a = min(v / max(solid, 0.001), 1.0);
-		c.rgb *= (a > 0.0) ? 1.0 / a : 0.0;
-		c.a *= a;
+float4 PSInvert(VertData v_in) : TARGET
+{
+	float4 c = inverted(v_in.uv);
+	float v = brightness(c.rgb);
+
+	if (black_point > 0.0 || transparent > 0.5) {
+		// Brightest neighbour within 1 and within 2 pixels. A neighbour
+		// counts as bright as it shows: a see-through one counts less.
+		float near1 = 0.0;
+		float near2 = 0.0;
+		float dark1 = 1.0;  // darkest neighbour within 1 pixel
+		int r = (transparent > 0.5) ? 2 : 1;
+		for (int dy = -2; dy <= 2; dy++) {
+			for (int dx = -2; dx <= 2; dx++) {
+				if (abs(dx) > r || abs(dy) > r)
+					continue;
+				float4 n = inverted(v_in.uv + float2(float(dx), float(dy)) * texel);
+				float nv = brightness(n.rgb) * n.a;
+				near2 = max(near2, nv);
+				if (abs(dx) <= 1 && abs(dy) <= 1) {
+					near1 = max(near1, nv);
+					dark1 = min(dark1, nv);
+				}
+			}
+		}
+
+		if (black_point > 0.0) {
+			float keep = max(saturate((v - black_point) / black_point),
+					 saturate((near1 - black_point) / black_point));
+			c.rgb *= keep;
+			v *= keep;
+		}
+
+		if (transparent > 0.5) {
+			// Coverage: next to background, the share of the part
+			// nearby; between two of the logo's colours, all of it.
+			float black = max(black_point, 0.02);
+			float by_background = 1.0 - saturate((dark1 - black) / black);
+			float coverage = lerp(1.0, (v > 0.0) ? v / max(near2, v) : 0.0, by_background);
+			float part = (coverage > 0.0) ? v / coverage : 0.0;
+			float a = (v > 0.0) ? coverage * ((solid > 0.0) ? saturate(part / solid) : 1.0) : 0.0;
+			c.rgb *= (a > 0.0) ? 1.0 / a : 0.0;
+			c.a *= a;
+		}
 	}
 
 	c.rgb *= c.a;

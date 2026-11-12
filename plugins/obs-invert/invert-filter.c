@@ -26,6 +26,7 @@ struct invert_filter {
 	gs_eparam_t *black_point_param;
 	gs_eparam_t *transparent_param;
 	gs_eparam_t *solid_param;
+	gs_eparam_t *texel_param;
 
 	bool keep_hue;
 	float black_point; /* 0..1 */
@@ -73,6 +74,7 @@ static void *invert_create(obs_data_t *settings, obs_source_t *context)
 		filter->black_point_param = gs_effect_get_param_by_name(filter->effect, "black_point");
 		filter->transparent_param = gs_effect_get_param_by_name(filter->effect, "transparent");
 		filter->solid_param = gs_effect_get_param_by_name(filter->effect, "solid");
+		filter->texel_param = gs_effect_get_param_by_name(filter->effect, "texel");
 	}
 	obs_leave_graphics();
 
@@ -97,7 +99,8 @@ static void invert_defaults(obs_data_t *settings)
 	 * once inverted. */
 	obs_data_set_default_double(settings, SETTING_CLEAN_UP, 8.0);
 	obs_data_set_default_bool(settings, SETTING_TRANSPARENT, false);
-	obs_data_set_default_double(settings, SETTING_SOLID, 50.0);
+	/* Every part of the logo solid; only edges blend. */
+	obs_data_set_default_double(settings, SETTING_SOLID, 0.0);
 }
 
 static bool transparent_changed(obs_properties_t *props, obs_property_t *p, obs_data_t *settings)
@@ -125,7 +128,7 @@ static obs_properties_t *invert_properties(void *data)
 	obs_property_set_long_description(p, obs_module_text("Transparent.Help"));
 	obs_property_set_modified_callback(p, transparent_changed);
 
-	p = obs_properties_add_float_slider(props, SETTING_SOLID, obs_module_text("SolidAbove"), 1.0, 100.0, 1.0);
+	p = obs_properties_add_float_slider(props, SETTING_SOLID, obs_module_text("SolidAbove"), 0.0, 100.0, 1.0);
 	obs_property_float_set_suffix(p, "%");
 	obs_property_set_long_description(p, obs_module_text("SolidAbove.Help"));
 
@@ -158,6 +161,12 @@ static void invert_render(void *data, gs_effect_t *unused)
 	gs_effect_set_float(filter->black_point_param, filter->black_point);
 	gs_effect_set_float(filter->transparent_param, filter->transparent ? 1.0f : 0.0f);
 	gs_effect_set_float(filter->solid_param, filter->solid);
+	obs_source_t *target = obs_filter_get_target(filter->context);
+	uint32_t width = obs_source_get_base_width(target);
+	uint32_t height = obs_source_get_base_height(target);
+	struct vec2 texel;
+	vec2_set(&texel, 1.0f / (float)(width ? width : 1), 1.0f / (float)(height ? height : 1));
+	gs_effect_set_vec2(filter->texel_param, &texel);
 
 	gs_blend_state_push();
 	gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
