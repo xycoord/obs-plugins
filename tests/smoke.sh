@@ -71,10 +71,20 @@ done
 # Problems OBS reports that come from parts of OBS a test machine lacks.
 not_ours='decklink|portals|dbus|v4l2|pipewire|pulse|alsa|vaapi|nvenc|qsv|amf|jack|browser|rtmp-services'
 
-# An empty scene collection: just check every plugin loads, and that nothing
-# about it went wrong while modules loaded (a missing locale, for one).
+# Errors and failures OBS reports once a scene has loaded, without timestamps.
+errors_after_startup() {
+	sed -n '/Startup complete/,$p' "$log" | sed 's/^[0-9:.]*: //' |
+		grep -i -E 'error|fail|unable|warning|not found' | grep -v -i -E "$not_ours" | sort -u || true
+}
+
+# An empty scene collection: check every plugin loads, and that nothing about
+# it went wrong while modules loaded (a missing locale, for one). What OBS
+# reports here after startup is OBS's own noise (it varies by version) and
+# isn't held against the plugins' scenes.
 echo '{"name":"Smoke","sources":[]}' >"$cfg/basic/scenes/Smoke.json"
+baseline=""
 if run_obs "no scene"; then
+	baseline=$(errors_after_startup)
 	for name in "${names[@]}"; do
 		if sed -n '/Loaded Modules:/,$p' "$log" | grep -q "^[0-9:.]*: *$name\.so$"; then
 			echo "ok    $name loads"
@@ -111,9 +121,9 @@ for name in "${names[@]}"; do
 		fail "$name's test scene: filters not created:"
 		printf '%s\n' "$missing" | sed 's/^/      /'
 	fi
-	# Errors or failures reported once the scene loads.
-	errors=$(sed -n '/Startup complete/,$p' "$log" |
-		grep -i -E 'error|fail|unable|warning|not found' | grep -v -i -E "$not_ours" || true)
+	# Errors or failures reported once the scene loads, other than ones OBS
+	# reports with no scene at all.
+	errors=$(comm -23 <(errors_after_startup) <(printf '%s\n' "$baseline" | sort -u) | sed '/^$/d')
 	if [ -n "$errors" ]; then
 		fail "$name's test scene:"
 		printf '%s\n' "$errors" | sed 's/^/      /'
