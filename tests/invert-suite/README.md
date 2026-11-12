@@ -41,6 +41,7 @@ Headline on the tuning logos / the held-out logos (lower is better):
 | Per-logo controls, defaults | 12.70 | 11.71 | the defaults reproduce da4d2a6 exactly |
 | Per-logo controls, tuned | **10.55** | **10.82** | each logo with its best controls |
 | Two-colour seams, pale hairlines | **12.14** | **11.34** | defaults; seams blended from both colours' inversions |
+| Two-colour seams, pale hairlines, tuned | **10.08** | **10.75** | each logo with its best controls |
 
 \* measured on the first 3 held-out logos; on all 9, the multi-pass version's 11.71 compares with
 13.19 on those 3.
