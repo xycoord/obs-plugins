@@ -102,8 +102,9 @@ static void invert_defaults(obs_data_t *settings)
 	 * once inverted. */
 	obs_data_set_default_double(settings, SETTING_CLEAN_UP, 8.0);
 	obs_data_set_default_bool(settings, SETTING_TRANSPARENT, false);
-	/* Every part of the logo solid; only edges blend. */
-	obs_data_set_default_double(settings, SETTING_SOLID, 0.0);
+	/* Grey shadows and glows fade out over visuals; the glow on a test logo
+	 * came closest to its true transparency at 50%. */
+	obs_data_set_default_double(settings, SETTING_SOLID, 50.0);
 }
 
 static bool transparent_changed(obs_properties_t *props, obs_property_t *p, obs_data_t *settings)

@@ -8,6 +8,16 @@
 // min is 1 - max. So white and black swap, greys invert, and a pure red stays
 // the same red.
 //
+// JPEG colour repair (with clean-up): JPEG keeps colour at half resolution,
+// so along an edge a colour is smeared into its neighbour, and keeping hue and
+// saturation turns a pale colour that has lost a little of its colour into a
+// much darker one: a dark band inside a pale shape's edge. Before inverting,
+// each pixel's colour (YCbCr chroma) is re-estimated from neighbours of about
+// the same brightness (luma within ~0.04, 5 x 5), so a pale badge's edge takes
+// the badge's colour, not the white beyond it; luma is lightly smoothed the
+// same way (~0.03) to calm JPEG's ripples. Real edges differ by far more and
+// are left as they are.
+//
 // After inverting, a logo's background is black, its edges are anti-aliased
 // blends of the logo's colours with that black, and what's left of a JPEG's
 // off-white background is faint specks. Telling a faint edge pixel from a
@@ -27,10 +37,12 @@
 // only applies next to background, i.e. when some pixel within 2 is about
 // black (2, so soft edges two or three pixels wide count too): where two of
 // the logo's colours meet (dark text on a light badge) the pixel stays solid
-// instead of leaving a see-through seam. Parts darker than `solid` then fade
-// out (alpha x part brightness / solid), for glows and shadows, which a 5 x 5
-// view can't tell from solid dark parts. Over black the result is always
-// exactly the same as without transparency.
+// instead of leaving a see-through seam. Then grey parts darker than `solid`
+// fade out (alpha x part brightness / solid): a logo supplied on white has its
+// shadows and glows in grey, and a 5 x 5 view can't tell a shadow's slow fade
+// from a solid dark shape. Coloured parts stay solid however dark (a pastel
+// shape turns dark when inverted). Over black the result is always exactly
+// the same as without transparency.
 //
 // Limits: a line thinner than a pixel has no fully covered pixel to measure
 // against, so over bright visuals it shows as a solid, slightly darker line;
@@ -45,7 +57,7 @@ uniform float2 texel;       // 1 / the source's size in pixels
 uniform float keep_hue;     // 1: keep hue and saturation, 0: plain inversion
 uniform float black_point;  // 0..1: clean-up level (0: off)
 uniform float transparent;  // 1: make the background transparent
-uniform float solid;        // 0..1: parts darker than this fade out
+uniform float solid;        // 0..1: grey parts darker than this fade out
 
 sampler_state textureSampler {
 	Filter   = Linear;
@@ -66,18 +78,21 @@ VertData VSDefault(VertData v_in)
 	return v_out;
 }
 
-// The inverted colour at uv, with straight alpha (the image arrives with
-// premultiplied alpha).
-float4 inverted(float2 uv)
+// The colour at uv with straight alpha (the image arrives with premultiplied
+// alpha). Rounding, or an image source applying alpha in linear light, can
+// leave a channel just above 1.
+float4 source(float2 uv)
 {
 	float4 c = image.Sample(textureSampler, uv);
-	// Rounding, or an image source applying alpha in linear light, can
-	// leave a channel just above 1.
 	c.rgb = saturate(c.rgb * ((c.a > 0.0) ? (1.0 / c.a) : 0.0));
-	float hi = max(c.r, max(c.g, c.b));
-	float lo = min(c.r, min(c.g, c.b));
-	c.rgb = (keep_hue > 0.5) ? c.rgb + (1.0 - hi - lo) : 1.0 - c.rgb;
 	return c;
+}
+
+float3 invert(float3 rgb)
+{
+	float hi = max(rgb.r, max(rgb.g, rgb.b));
+	float lo = min(rgb.r, min(rgb.g, rgb.b));
+	return (keep_hue > 0.5) ? rgb + (1.0 - hi - lo) : 1.0 - rgb;
 }
 
 float brightness(float3 rgb)
@@ -85,52 +100,86 @@ float brightness(float3 rgb)
 	return max(rgb.r, max(rgb.g, rgb.b));
 }
 
+float luma(float3 rgb)
+{
+	return dot(rgb, float3(0.299, 0.587, 0.114));
+}
+
 float4 PSInvert(VertData v_in) : TARGET
 {
-	float4 c = inverted(v_in.uv);
-	float v = brightness(c.rgb);
+	float4 s = source(v_in.uv);
+	bool clean_up = black_point > 0.0;
+	bool transparent_on = transparent > 0.5;
 
-	// Neighbours: the brightest within 1 pixel (near1) and within 2 (near2),
-	// and the darkest within 2 (dark2). A see-through neighbour counts as
-	// dark as it shows. The 5 x 5 is only read when transparency needs it.
+	// Neighbours: the brightest (once inverted) within 1 pixel (near1) and
+	// within 2 (near2), the darkest within 2 (dark2); a see-through
+	// neighbour counts as dark as it shows. With clean-up, also the JPEG
+	// colour repair's sums (see the top).
 	float near1 = 0.0;
 	float near2 = 0.0;
 	float dark2 = 1.0;
-	if (transparent > 0.5) {
+	if (clean_up || transparent_on) {
+		float y0 = luma(s.rgb);
+		float2 chroma_sum = float2(0.0, 0.0);
+		float chroma_weight = 0.0;
+		float luma_sum = 0.0;
+		float luma_weight = 0.0;
 		for (int dy = -2; dy <= 2; dy++) {
 			for (int dx = -2; dx <= 2; dx++) {
-				float4 n = inverted(v_in.uv + float2(float(dx), float(dy)) * texel);
-				float nv = brightness(n.rgb) * n.a;
+				float4 n = source(v_in.uv + float2(float(dx), float(dy)) * texel);
+				float nv = brightness(invert(n.rgb)) * n.a;
 				near2 = max(near2, nv);
 				dark2 = min(dark2, nv);
 				if (abs(dx) <= 1 && abs(dy) <= 1)
 					near1 = max(near1, nv);
+
+				float yn = luma(n.rgb);
+				float d = float(dx * dx + dy * dy);
+				float near_weight = exp(-d / 4.5) * n.a;
+				float wc = near_weight * exp(-((yn - y0) * (yn - y0)) / (0.04 * 0.04));
+				float wy = near_weight * exp(-((yn - y0) * (yn - y0)) / (0.03 * 0.03));
+				chroma_sum += wc * float2(n.b - yn, n.r - yn);
+				chroma_weight += wc;
+				luma_sum += wy * yn;
+				luma_weight += wy;
 			}
 		}
-	} else if (black_point > 0.0) {
-		for (int dy = -1; dy <= 1; dy++) {
-			for (int dx = -1; dx <= 1; dx++) {
-				float4 n = inverted(v_in.uv + float2(float(dx), float(dy)) * texel);
-				near1 = max(near1, brightness(n.rgb) * n.a);
-			}
+		if (clean_up && chroma_weight > 0.0 && luma_weight > 0.0) {
+			float y = luma_sum / luma_weight;
+			float2 cbcr = chroma_sum / chroma_weight;
+			float r = y + cbcr.y;
+			float b = y + cbcr.x;
+			s.rgb = saturate(float3(r, (y - 0.299 * r - 0.114 * b) / 0.587, b));
 		}
 	}
 
-	if (black_point > 0.0) {
+	float4 c = float4(invert(s.rgb), s.a);
+	float v = brightness(c.rgb);
+
+	if (clean_up) {
 		float keep = max(saturate((v - black_point) / black_point),
 				 saturate((near1 - black_point) / black_point));
 		c.rgb *= keep;
 		v *= keep;
 	}
 
-	if (transparent > 0.5) {
+	if (transparent_on) {
 		// Coverage: next to background, the share of the part nearby;
 		// between two of the logo's colours, all of it.
 		float black = max(black_point, 0.02);
 		float by_background = 1.0 - saturate((dark2 - black) / black);
 		float coverage = lerp(1.0, (v > 0.0) ? v / max(near2, v) : 0.0, by_background);
 		float part = (coverage > 0.0) ? v / coverage : 0.0;
-		float a = (v > 0.0) ? coverage * ((solid > 0.0) ? saturate(part / solid) : 1.0) : 0.0;
+		// Grey parts darker than `solid` fade with their brightness, as
+		// shadows and glows should; coloured parts stay solid. Greyness:
+		// the saturation of the colour at full strength. A pastel turns
+		// into a strongly saturated dark colour when inverted (0.9 and
+		// up); a grey shadow tinted by JPEG's smeared colour stays below
+		// 0.4.
+		float saturation = (v > 0.0) ? 1.0 - min(c.r, min(c.g, c.b)) / v : 0.0;
+		float grey = 1.0 - saturate((saturation - 0.4) / 0.2);
+		float fade = (solid > 0.0) ? saturate(part / solid) : 1.0;
+		float a = (v > 0.0) ? coverage * lerp(1.0, fade, grey) : 0.0;
 		c.rgb *= (a > 0.0) ? 1.0 / a : 0.0;
 		c.a *= a;
 	}
