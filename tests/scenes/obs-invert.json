@@ -38,9 +38,14 @@
       "name": "Colour",
       "visible": true,
       "id": 5
+     },
+     {
+      "name": "JPEG, tuned",
+      "visible": true,
+      "id": 6
      }
     ],
-    "id_counter": 5
+    "id_counter": 6
    }
   },
   {
@@ -137,6 +142,31 @@
      "name": "Invert",
      "enabled": true,
      "settings": {}
+    }
+   ]
+  },
+  {
+   "id": "image_source",
+   "versioned_id": "image_source",
+   "name": "JPEG, tuned",
+   "settings": {
+    "file": "@TESTS@/fixtures/logo.jpg"
+   },
+   "filters": [
+    {
+     "id": "grove_invert_filter",
+     "versioned_id": "grove_invert_filter",
+     "name": "Invert",
+     "enabled": true,
+     "settings": {
+      "transparent": true,
+      "background": "pick",
+      "background_colour": 4294967295,
+      "clean_up": 18.0,
+      "edge_softness": 2.5,
+      "thin_details": "solid",
+      "grey_shadows": false
+     }
     }
    ]
   }

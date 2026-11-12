@@ -45,6 +45,20 @@
 // blurred, cream paper, already transparent), against the earlier single-pass
 // version: mean error over three backdrops 17.3 -> 12.7 (out of 255).
 //
+// Per-image controls, for what a pixel's surroundings can't tell but a person
+// looking at the logo can (the defaults reproduce the automatic behaviour):
+// - Background: the paper colour picked instead of read from the border (for a
+//   logo that touches the edges, or an unusual paper).
+// - JPEG clean-up: the black point. Above 8% it removes only specks: a pixel by
+//   an area of 8 or more similar pixels is cleaned only as at 8%, so raising it
+//   to clear JPEG noise doesn't eat pale parts of the logo.
+// - Edge softness (reach): scales every distance the alpha pass looks, for
+//   blurred or enlarged logos whose edges are wider than 2 pixels.
+// - Thin lines and small text (detail): shifts the "crisp sides" test that
+//   decides whether a feature with no plateau is at full strength.
+// - Dark greys can be shadows: off skips the radius-4 slope test, so grey
+//   plateaus count as solid parts.
+//
 // Limits: a part with no plateau and no crisp edge (a fine texture, grain)
 // reads as soft and fades; "Fade shadows and glows" below 100% keeps more of
 // it solid. Which pixels count as a plateau or a ring is measured in pixels,
@@ -58,6 +72,10 @@ uniform float2 texel;         // 1 / the source's size in pixels
 uniform float keep_hue;       // 1: keep hue and saturation, 0: plain inversion
 uniform float black_point;    // 0..1: clean-up level (0: off)
 uniform float fade;           // 0..1: how far shadows and glows fade
+uniform float4 paper_pick;    // rgb: the background colour picked; a: 1 to use it, 0 automatic
+uniform float reach;          // 1..4: how blurred the logo's edges are (scales how far the alpha pass looks)
+uniform float detail;         // 0: thin features faint, 0.5: automatic, 1: solid
+uniform float grey_shadows;   // 1: dark greys are judged as possible shadows, 0: as solid shapes
 
 sampler_state textureSampler {
 	Filter   = Linear;
@@ -185,6 +203,8 @@ float4 PSPaper(VertData v_in) : TARGET
 	}
 	float3 paper = (n > 0.0) ? sum / n : float3(1.0, 1.0, 1.0);
 	bool use = best_count >= 0.6 * 24.0 && pb.a > 0.5 && luma(paper) > 0.75;
+	if (paper_pick.a > 0.5)
+		return float4(paper_pick.rgb, 1.0);
 	return float4(paper, use ? 1.0 : 0.0);
 }
 
@@ -200,6 +220,13 @@ float3 paper_correct(float3 rgb, float4 paper)
 		return rgb;
 	float w = saturate(1.0 - maxdiff(rgb, paper.rgb) / 0.3);
 	return lerp(rgb, saturate(rgb / max(paper.rgb, float3(0.001, 0.001, 0.001))), w);
+}
+
+// The faintest a solid part can be: below it, flat areas are paper. JPEG
+// clean-up above it removes only specks.
+float solid_floor()
+{
+	return min(black_point, 0.08);
 }
 
 float4 process(float2 uv, bool flags)
@@ -254,8 +281,25 @@ float4 process(float2 uv, bool flags)
 	float3 c = invert(s.rgb);
 	float v = brightness(c);
 	if (clean_up) {
+		// Clean-up above the floor removes specks, not parts: a pixel by (or in)
+		// an area of eight or more pixels about as bright as its brightest
+		// neighbour is cleaned only as much as at the floor.
 		float keep = max(saturate((v - black_point) / black_point),
 				 saturate((near1 - black_point) / black_point));
+		float f = solid_floor();
+		if (black_point > f && near1 > f) {
+			float similar = 0.0;
+			for (int dy2 = -2; dy2 <= 2; dy2++) {
+				for (int dx2 = -2; dx2 <= 2; dx2++) {
+					float4 n = source(uv + float2(float(dx2), float(dy2)) * texel);
+					n.rgb = paper_correct(n.rgb, paper);
+					float nv = brightness(invert(n.rgb)) * n.a;
+					similar += (abs(nv - near1) <= 0.03 + 0.1 * near1) ? 1.0 : 0.0;
+				}
+			}
+			if (similar >= 8.0)
+				keep = max(saturate((v - f) / f), saturate((near1 - f) / f));
+		}
 		c *= keep;
 		v *= keep;
 	}
@@ -267,13 +311,13 @@ float4 process(float2 uv, bool flags)
 	// for dark greys (which shadows are, once inverted) also the ring of
 	// radius 4, so a shadow's gentle slope doesn't pass for a plateau.
 	float vv = v * s.a;
-	bool is_flat = (hi3 - lo3) <= 0.03 + 0.08 * vv && vv > black_point;
+	bool is_flat = (hi3 - lo3) <= 0.03 + 0.08 * vv && vv > solid_floor();
 	float saturation = (v > 0.0) ? 1.0 - min(c.r, min(c.g, c.b)) / v : 0.0;
-	if (is_flat && saturation < 0.5 && vv < 0.5) {
+	if (is_flat && grey_shadows > 0.5 && saturation < 0.5 && vv < 0.5) {
 		float lo4 = v0;
 		float hi4 = v0;
 		for (int k = 0; k < 8; k++) {
-			float4 n = source(uv + ring_offset(k, 4.0) * texel);
+			float4 n = source(uv + ring_offset(k, 4.0 * reach) * texel);
 			n.rgb = paper_correct(n.rgb, paper);
 			float nv = brightness(invert(n.rgb)) * n.a;
 			lo4 = min(lo4, nv);
@@ -327,7 +371,7 @@ float4 PSAlpha(VertData v_in) : TARGET
 	float support = 0.0;
 	for (int dy = -2; dy <= 2; dy++) {
 		for (int dx = -2; dx <= 2; dx++) {
-			float4 n = image.Sample(textureSampler, v_in.uv + float2(float(dx), float(dy)) * texel);
+			float4 n = image.Sample(textureSampler, v_in.uv + float2(float(dx), float(dy)) * reach * texel);
 			float nv = brightness(n.rgb);
 			bool nflat = n.a >= 1.5;
 			near2 = max(near2, nv);
@@ -342,23 +386,25 @@ float4 PSAlpha(VertData v_in) : TARGET
 		}
 	}
 	for (int k = 0; k < 8; k++) {
-		float4 n4 = image.Sample(textureSampler, v_in.uv + ring_offset(k, 4.0) * texel);
+		float4 n4 = image.Sample(textureSampler, v_in.uv + ring_offset(k, 4.0 * reach) * texel);
 		g = max(g, plateau_of(n4, vv, chroma));
 		if (n4.a >= 1.5 && brightness(n4.rgb) <= dark_limit)
 			support += 0.0625;
-		float4 n8 = image.Sample(textureSampler, v_in.uv + ring_offset(k, 8.0) * texel);
+		float4 n8 = image.Sample(textureSampler, v_in.uv + ring_offset(k, 8.0 * reach) * texel);
 		g = max(g, plateau_of(n8, vv, chroma));
 	}
 
 	// No plateau of this colour nearby: a crisp feature reaches full strength
 	// at its brightest pixel, a blurred one (or a shadow) never does.
 	float sharp = saturate((step2 / max(near2, 0.001) - 0.45) / 0.3);
+	// The tech's call on thin features: faint (0) or solid (1); 0.5 leaves it to the test.
+	sharp = saturate(sharp + (detail - 0.5) * 2.0);
 	if (g < 0.0)
 		g = near2 * sharp + (1.0 - sharp);
 	if (g_any <= 0.0)
 		g_any = 1.0;
 
-	float bg = max(black_point, 0.02);
+	float bg = max(solid_floor(), 0.02);
 	bool edge = d <= bg;
 	float a_dark = edge ? 0.0 : ((support >= 0.1) ? 1.0 : d);
 	float gs = edge ? g : g_any;

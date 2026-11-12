@@ -6,6 +6,7 @@
  * passes. */
 
 #include <obs-module.h>
+#include <string.h>
 
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE("obs-invert", "en-US")
@@ -19,6 +20,11 @@ MODULE_EXPORT const char *obs_module_description(void)
 #define SETTING_CLEAN_UP "clean_up"
 #define SETTING_TRANSPARENT "transparent"
 #define SETTING_FADE "fade_soft"
+#define SETTING_BACKGROUND "background"         /* "auto" or "pick" */
+#define SETTING_BACKGROUND_COLOUR "background_colour"
+#define SETTING_EDGE_SOFTNESS "edge_softness"
+#define SETTING_THIN "thin_details"             /* "auto", "solid" or "faint" */
+#define SETTING_GREY_SHADOWS "grey_shadows"
 
 struct invert_filter {
 	obs_source_t *context;
@@ -29,6 +35,10 @@ struct invert_filter {
 	gs_eparam_t *black_point_param;
 	gs_eparam_t *fade_param;
 	gs_eparam_t *texel_param;
+	gs_eparam_t *paper_pick_param;
+	gs_eparam_t *reach_param;
+	gs_eparam_t *detail_param;
+	gs_eparam_t *grey_shadows_param;
 	gs_texrender_t *copy;   /* the source, read by every pass */
 	gs_texrender_t *paper;  /* 1 x 1: the paper colour */
 	gs_texrender_t *processed;
@@ -37,6 +47,10 @@ struct invert_filter {
 	float black_point; /* 0..1 */
 	bool transparent;
 	float fade; /* 0..1 */
+	struct vec4 paper_pick; /* rgb, a: 1 to use it */
+	float reach;            /* 1..4 */
+	float detail;           /* 0 faint, 0.5 automatic, 1 solid */
+	bool grey_shadows;
 };
 
 static const char *invert_get_name(void *unused)
@@ -52,6 +66,14 @@ static void invert_update(void *data, obs_data_t *settings)
 	filter->black_point = (float)obs_data_get_double(settings, SETTING_CLEAN_UP) / 100.0f;
 	filter->transparent = obs_data_get_bool(settings, SETTING_TRANSPARENT);
 	filter->fade = (float)obs_data_get_double(settings, SETTING_FADE) / 100.0f;
+	uint32_t colour = (uint32_t)obs_data_get_int(settings, SETTING_BACKGROUND_COLOUR); /* 0xAABBGGRR */
+	bool pick = strcmp(obs_data_get_string(settings, SETTING_BACKGROUND), "pick") == 0;
+	vec4_set(&filter->paper_pick, (float)(colour & 0xff) / 255.0f, (float)((colour >> 8) & 0xff) / 255.0f,
+		 (float)((colour >> 16) & 0xff) / 255.0f, pick ? 1.0f : 0.0f);
+	filter->reach = (float)obs_data_get_double(settings, SETTING_EDGE_SOFTNESS);
+	const char *thin = obs_data_get_string(settings, SETTING_THIN);
+	filter->detail = strcmp(thin, "solid") == 0 ? 1.0f : strcmp(thin, "faint") == 0 ? 0.0f : 0.5f;
+	filter->grey_shadows = obs_data_get_bool(settings, SETTING_GREY_SHADOWS);
 }
 
 static void invert_destroy(void *data)
@@ -82,6 +104,10 @@ static void *invert_create(obs_data_t *settings, obs_source_t *context)
 		filter->black_point_param = gs_effect_get_param_by_name(filter->effect, "black_point");
 		filter->fade_param = gs_effect_get_param_by_name(filter->effect, "fade");
 		filter->texel_param = gs_effect_get_param_by_name(filter->effect, "texel");
+		filter->paper_pick_param = gs_effect_get_param_by_name(filter->effect, "paper_pick");
+		filter->reach_param = gs_effect_get_param_by_name(filter->effect, "reach");
+		filter->detail_param = gs_effect_get_param_by_name(filter->effect, "detail");
+		filter->grey_shadows_param = gs_effect_get_param_by_name(filter->effect, "grey_shadows");
 		filter->copy = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
 		filter->paper = gs_texrender_create(GS_RGBA16F, GS_ZS_NONE);
 		filter->processed = gs_texrender_create(GS_RGBA16F, GS_ZS_NONE);
@@ -114,13 +140,28 @@ static void invert_defaults(obs_data_t *settings)
 	obs_data_set_default_bool(settings, SETTING_TRANSPARENT, false);
 	/* Shadows and glows fade fully, as on the page. */
 	obs_data_set_default_double(settings, SETTING_FADE, 100.0);
+	obs_data_set_default_string(settings, SETTING_BACKGROUND, "auto");
+	obs_data_set_default_int(settings, SETTING_BACKGROUND_COLOUR, 0xffffffff);
+	obs_data_set_default_double(settings, SETTING_EDGE_SOFTNESS, 1.0);
+	obs_data_set_default_string(settings, SETTING_THIN, "auto");
+	obs_data_set_default_bool(settings, SETTING_GREY_SHADOWS, true);
 }
 
 static bool transparent_changed(obs_properties_t *props, obs_property_t *p, obs_data_t *settings)
 {
 	UNUSED_PARAMETER(p);
-	obs_property_set_visible(obs_properties_get(props, SETTING_FADE),
-				 obs_data_get_bool(settings, SETTING_TRANSPARENT));
+	bool on = obs_data_get_bool(settings, SETTING_TRANSPARENT);
+	const char *only_transparent[] = {SETTING_EDGE_SOFTNESS, SETTING_THIN, SETTING_GREY_SHADOWS, SETTING_FADE};
+	for (size_t i = 0; i < OBS_COUNTOF(only_transparent); i++)
+		obs_property_set_visible(obs_properties_get(props, only_transparent[i]), on);
+	return true;
+}
+
+static bool background_changed(obs_properties_t *props, obs_property_t *p, obs_data_t *settings)
+{
+	UNUSED_PARAMETER(p);
+	obs_property_set_visible(obs_properties_get(props, SETTING_BACKGROUND_COLOUR),
+				 strcmp(obs_data_get_string(settings, SETTING_BACKGROUND), "pick") == 0);
 	return true;
 }
 
@@ -133,6 +174,15 @@ static obs_properties_t *invert_properties(void *data)
 	p = obs_properties_add_bool(props, SETTING_KEEP_HUE, obs_module_text("KeepHueSaturation"));
 	obs_property_set_long_description(p, obs_module_text("KeepHueSaturation.Help"));
 
+	p = obs_properties_add_list(props, SETTING_BACKGROUND, obs_module_text("Background"), OBS_COMBO_TYPE_LIST,
+				    OBS_COMBO_FORMAT_STRING);
+	obs_property_list_add_string(p, obs_module_text("Background.Auto"), "auto");
+	obs_property_list_add_string(p, obs_module_text("Background.Pick"), "pick");
+	obs_property_set_long_description(p, obs_module_text("Background.Help"));
+	obs_property_set_modified_callback(p, background_changed);
+	p = obs_properties_add_color(props, SETTING_BACKGROUND_COLOUR, obs_module_text("BackgroundColour"));
+	obs_property_set_long_description(p, obs_module_text("BackgroundColour.Help"));
+
 	p = obs_properties_add_float_slider(props, SETTING_CLEAN_UP, obs_module_text("CleanUp"), 0.0, 25.0, 0.5);
 	obs_property_float_set_suffix(p, "%");
 	obs_property_set_long_description(p, obs_module_text("CleanUp.Help"));
@@ -140,6 +190,20 @@ static obs_properties_t *invert_properties(void *data)
 	p = obs_properties_add_bool(props, SETTING_TRANSPARENT, obs_module_text("Transparent"));
 	obs_property_set_long_description(p, obs_module_text("Transparent.Help"));
 	obs_property_set_modified_callback(p, transparent_changed);
+
+	p = obs_properties_add_float_slider(props, SETTING_EDGE_SOFTNESS, obs_module_text("EdgeSoftness"), 1.0, 4.0, 0.25);
+	obs_property_float_set_suffix(p, " px");
+	obs_property_set_long_description(p, obs_module_text("EdgeSoftness.Help"));
+
+	p = obs_properties_add_list(props, SETTING_THIN, obs_module_text("Thin"), OBS_COMBO_TYPE_LIST,
+				    OBS_COMBO_FORMAT_STRING);
+	obs_property_list_add_string(p, obs_module_text("Thin.Auto"), "auto");
+	obs_property_list_add_string(p, obs_module_text("Thin.Solid"), "solid");
+	obs_property_list_add_string(p, obs_module_text("Thin.Faint"), "faint");
+	obs_property_set_long_description(p, obs_module_text("Thin.Help"));
+
+	p = obs_properties_add_bool(props, SETTING_GREY_SHADOWS, obs_module_text("GreyShadows"));
+	obs_property_set_long_description(p, obs_module_text("GreyShadows.Help"));
 
 	p = obs_properties_add_float_slider(props, SETTING_FADE, obs_module_text("FadeSoft"), 0.0, 100.0, 1.0);
 	obs_property_float_set_suffix(p, "%");
@@ -172,6 +236,10 @@ static void draw_pass(struct invert_filter *filter, gs_texture_t *tex, const cha
 	gs_effect_set_float(filter->black_point_param, filter->black_point);
 	gs_effect_set_float(filter->fade_param, filter->fade);
 	gs_effect_set_vec2(filter->texel_param, texel);
+	gs_effect_set_vec4(filter->paper_pick_param, &filter->paper_pick);
+	gs_effect_set_float(filter->reach_param, filter->reach);
+	gs_effect_set_float(filter->detail_param, filter->detail);
+	gs_effect_set_float(filter->grey_shadows_param, filter->grey_shadows ? 1.0f : 0.0f);
 	if (paper)
 		gs_effect_set_texture(filter->paper_param, paper);
 	gs_effect_set_texture(filter->image_param, tex);

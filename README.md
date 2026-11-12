@@ -18,6 +18,20 @@ the background was, raise **JPEG clean-up** until the background is fully black.
 - Shadows, glows and other soft parts fade to transparent; solid parts stay solid however dark.
   **Fade shadows and glows** sets how far (100% by default). If a textured or grainy part of a logo turns
   see-through, lower it; 0% keeps every part solid.
+
+The defaults are automatic and suit most logos. If one doesn't come out right, look at it over the
+visuals and adjust for what you see:
+
+| You see | Change |
+|---|---|
+| Part of the background is left as a dark box, or the logo goes too | **Background**: pick the paper's colour (the logo may touch the image's edges) |
+| Black specks or blotches around text (JPEG noise) | Raise **JPEG clean-up** (12–18%). Above 8% it clears only specks, not pale parts of the logo |
+| Dark rims or grey halos round the edges of a soft or enlarged logo | Raise **Edge softness** (1.5–2.5 px) |
+| Thin lines or small text too faint, or see-through | **Thin lines and small text**: Solid |
+| Thin lines or small text too strong, with a hard outline, on a blurred logo | **Thin lines and small text**: Faint |
+| Light grey shapes or text in the logo come out see-through | Untick **Dark greys can be shadows** |
+| A textured or grainy part turns see-through | Lower **Fade shadows and glows** |
+
 - How each pixel's transparency is worked out is described at the top of
   [invert.effect](plugins/obs-invert/data/invert.effect); it was tuned on a suite of synthetic logos with
   known ideals (crisp, JPEG, blurred, cream paper, already transparent).

@@ -16,6 +16,10 @@ transparent background, and the scripts that score the real shader on them.
   error against the ideal (largest channel difference, 0–255, averaged over the backdrops) for each
   region kind: background, edge, interior, dark interior, seam, shadow, thin. The headline is the mean
   over region kinds. It's deterministic.
+- **`tuned.py --plugin obs-invert.so --data DATA --out OUT`** gives the **tuned** score: what a tech
+  could reach by adjusting the per-logo controls (JPEG clean-up, edge softness, thin lines, dark greys
+  as shadows). It renders the suite with every combination, takes each logo's best and scores those.
+  About 20 minutes.
 - **`oracle.py OUT`** gives the ceiling for a run: the error left if every pixel had the best alpha for
   the colour the filter produced. The difference from the run's own score is what better alpha
   estimation could still win.
@@ -34,6 +38,8 @@ Headline on the tuning logos / the held-out logos (lower is better):
 | Single-pass Invert (7123650) | 17.28 | 17.49* | grey parts fade, coloured stay solid |
 | Multi-pass (da4d2a6) | **12.70** | **11.71** | paper colour from the border; alpha from same-colour plateaus |
 | Ceiling for da4d2a6 | 5.02 | 6.41 | best possible alpha for its colours |
+| Per-logo controls, defaults | 12.70 | 11.71 | the defaults reproduce da4d2a6 exactly |
+| Per-logo controls, tuned | **10.55** | **10.82** | each logo with its best controls |
 
 \* measured on the first 3 held-out logos; on all 9, the multi-pass version's 11.71 compares with
 13.19 on those 3.
@@ -49,6 +55,13 @@ worse:
   text can't be told from a partial mix.
 - Using each part's plateau or crisp sides in the soft branch, or counting the radius-4 ring's steps
   as crisp evidence. Shadows near crisp shapes go solid.
+
+With the controls, edges gain most (19.2 to 13.0 on the tuning logos: edge softness on blurred
+logos), then thin features and dark interiors. JPEG clean-up above 8% used to crush pale parts of a
+logo along with the specks (dark interior 9 to 72 at 16%); it now leaves anything in an area of 8 or
+more similar pixels as at 8%, so raising it clears specks round text at little cost (12.74 at 12%,
+13.28 at 18%). The score barely shows the specks going, because they are few pixels, but to the eye
+it is the largest improvement for JPEG logos.
 
 What the review (Opus, Fable, GPT) thinks would take it further. All of it needs evidence from beyond
 a pixel's neighbourhood, and they estimate a headline of about 9–11:
