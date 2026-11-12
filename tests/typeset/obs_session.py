@@ -138,7 +138,11 @@ class ObsSession:
             shutil.rmtree(self.dir, ignore_errors=True)
 
     def __enter__(self):
-        self.start()
+        try:
+            self.start()
+        except BaseException:
+            self.stop()
+            raise
         return self
 
     def __exit__(self, *exc):
