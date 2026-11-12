@@ -6,6 +6,7 @@ Linux.
 | Plugin | What it is |
 |---|---|
 | [obs-invert](plugins/obs-invert) | **Invert**: swaps light and dark. By default it keeps each colour's hue and saturation and flips only lightness, so a logo supplied on white goes onto black and keeps its colours: the white background turns black, black text turns white, a red stays red and a dark navy becomes a light blue. **JPEG clean-up** clears the specks a JPEG leaves around text, repairs the colour JPEG smears along edges (which inverting would turn into dark bands) and takes cream or off-white paper as background too. **Transparent background** lets the logo go over visuals: edges blend into what's behind, shadows and glows fade to transparent, solid parts stay solid however dark, and over black it looks exactly the same as without. |
+| [obs-typeset](plugins/obs-typeset) | **Typeset Text**: a text source using any installed font in any weight or style. It **scales like a vector drawing**: resize it in the scene and it's redrawn at the size it's shown, never blurred or pixelated, and never drawn at more pixels than it covers. And it's **edited right in the preview**: double-click the text and type, as in a slide editor. |
 | [obs-shaderfilter](plugins/obs-shaderfilter) | A filter that applies a shader to a source, with a library of 150+ effects (blur, bloom, film grain, glitch, distortion, colour). A submodule: [xycoord/obs-shaderfilter](https://github.com/xycoord/obs-shaderfilter). |
 
 ### Using Invert on a logo
@@ -40,8 +41,9 @@ visuals and adjust for what you see:
 
 ## Installing
 
-On the machine that runs OBS (it needs `git`, `cmake`, a C compiler and, for OBS 32 and later, SIMDe:
-`sudo apt install git cmake build-essential libsimde-dev`):
+On the machine that runs OBS (it needs `git`, `cmake`, a C and C++ compiler, Pango and Qt 6's
+development files and, for OBS 32 and later, SIMDe:
+`sudo apt install git cmake build-essential libpango1.0-dev qt6-base-dev libsimde-dev`):
 
 ```bash
 git clone --recursive https://github.com/xycoord/obs-plugins
@@ -75,7 +77,8 @@ untested: a plugin built on the machine may need a newer C library than the Flat
 Put it in `plugins/<name>/`, as a folder or, if it has its own repository, as a submodule. It needs:
 
 - a `CMakeLists.txt` that builds a module called `<name>` and finds libobs with
-  `find_package(libobs REQUIRED)` (target `OBS::libobs`);
+  `find_package(libobs REQUIRED)` (target `OBS::libobs`) and, if it adds to OBS's window, the
+  frontend API with `find_package(obs-frontend-api REQUIRED)` (target `OBS::obs-frontend-api`);
 - its data files, if any, in `plugins/<name>/data/`.
 
 `install.sh` picks it up from there. A test scene for the smoke test can go in
@@ -87,6 +90,10 @@ Put it in `plugins/<name>/`, as a folder or, if it has its own repository, as a 
 every plugin, then loads each plugin's test scene and checks OBS reports no errors for it (for
 example a shader that doesn't compile). `@DATA@` in a scene file stands for the plugin's installed
 data folder. On a machine without a display, run it as `xvfb-run -a tests/smoke.sh`.
+
+[tests/typeset](tests/typeset) runs OBS on a virtual display and checks Typeset Text's scaling and
+editing in the preview, using OBS's window with the mouse and keyboard (it needs `xvfb`, `xdotool`,
+`imagemagick` and Python's numpy, pillow and websocket-client).
 
 [tests/invert-suite](tests/invert-suite) measures the Invert filter's transparent background against
 synthetic logos with exact ideals.

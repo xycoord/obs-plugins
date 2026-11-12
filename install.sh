@@ -123,6 +123,21 @@ fi
 if [ ! -d "$sdk/src/libobs/util/simde" ] && [ ! -f /usr/include/simde/x86/sse2.h ]; then
 	die "OBS $version's headers need SIMDe: sudo apt install libsimde-dev"
 fi
+# The frontend API header (for plugins that add to OBS's window), from the same
+# version: UI/obs-frontend-api up to OBS 30, frontend/api from 31.
+if [ ! -f "$sdk/src/UI/obs-frontend-api/obs-frontend-api.h" ] && [ ! -f "$sdk/src/frontend/api/obs-frontend-api.h" ]; then
+	git -C "$sdk/src" sparse-checkout add UI/obs-frontend-api frontend/api >/dev/null 2>&1 ||
+		say "warning: couldn't fetch OBS $version's frontend API header"
+fi
+frontend_inc=$sdk/src/frontend/api
+[ -f "$frontend_inc/obs-frontend-api.h" ] || frontend_inc=$sdk/src/UI/obs-frontend-api
+# The frontend API library OBS itself loads.
+if [ "$kind" = native ]; then
+	frontend_lib=$(ldd "$(command -v obs)" 2>/dev/null | sed -n 's/^[[:space:]]*libobs-frontend-api\.so[.0-9]* => \(\/[^ ]*\).*/\1/p' | head -1 || true)
+else
+	frontend_lib=$(ls "$(dirname "$libobs")"/libobs-frontend-api.so.* 2>/dev/null | head -1 || true)
+fi
+
 # Written every time: the libobs in use can change without its version changing.
 mkdir -p "$sdk/cmake"
 cat >"$sdk/cmake/libobsConfig.cmake" <<CMAKE
@@ -135,6 +150,23 @@ if(NOT TARGET OBS::libobs)
 endif()
 set(libobs_FOUND TRUE)
 CMAKE
+cat >"$sdk/cmake/obs-frontend-apiConfig.cmake" <<CMAKE
+# OBS's frontend API as installed, with the header of the same OBS version.
+if(NOT EXISTS "$frontend_lib" OR NOT EXISTS "$frontend_inc/obs-frontend-api.h")
+  set(obs-frontend-api_FOUND FALSE)
+  set(obs-frontend-api_NOT_FOUND_MESSAGE "OBS's frontend API (libobs-frontend-api and its header) wasn't found")
+  return()
+endif()
+find_package(libobs REQUIRED)
+if(NOT TARGET OBS::obs-frontend-api)
+  add_library(OBS::obs-frontend-api SHARED IMPORTED)
+  set_target_properties(OBS::obs-frontend-api PROPERTIES
+    IMPORTED_LOCATION "$frontend_lib"
+    INTERFACE_INCLUDE_DIRECTORIES "$frontend_inc"
+    INTERFACE_LINK_LIBRARIES OBS::libobs)
+endif()
+set(obs-frontend-api_FOUND TRUE)
+CMAKE
 
 # --- Build and install ---------------------------------------------------------
 if pgrep -x obs >/dev/null 2>&1; then
@@ -145,7 +177,7 @@ for name in "${plugins[@]}"; do
 	build=$CACHE/build/obs-$version/$name
 	say "building $name..."
 	mkdir -p "$build"
-	cmake -S "$src" -B "$build" -DCMAKE_BUILD_TYPE=RelWithDebInfo -Dlibobs_DIR="$sdk/cmake" \
+	cmake -S "$src" -B "$build" -DCMAKE_BUILD_TYPE=RelWithDebInfo -Dlibobs_DIR="$sdk/cmake" -Dobs-frontend-api_DIR="$sdk/cmake" \
 		-Wno-dev >"$build.log" 2>&1 || { cat "$build.log" >&2; die "configuring $name failed"; }
 	cmake --build "$build" -j"$(nproc)" >>"$build.log" 2>&1 || { tail -40 "$build.log" >&2; die "building $name failed"; }
 	module=$(find "$build" -maxdepth 2 -name "$name.so" | head -1)
