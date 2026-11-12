@@ -7,9 +7,23 @@
 // kept too. The result can't leave 0..1: the new max is 1 - min and the new
 // min is 1 - max. So white and black swap, greys invert, and a pure red stays
 // the same red.
+//
+// After inverting, a logo's background is black, and what's left of a JPEG's
+// off-white background is faint grey specks around the text. Clean-up maps
+// brightness (the largest channel) below black_point to 0 and stretches the
+// rest back to 0..1, scaling all three channels alike so colours keep their
+// hue. Then, for a transparent background, alpha is brightness / solid (at
+// most 1) and the colour is divided by it: parts at least `solid` bright stay
+// fully opaque, darker ones fade out, and composited over black the result is
+// exactly what it would be without transparency.
 
 uniform float4x4 ViewProj;
 uniform texture2d image;
+
+uniform float keep_hue;     // 1: keep hue and saturation, 0: plain inversion
+uniform float black_point;  // 0..1: brightness at and below which becomes black
+uniform float transparent;  // 1: make the background transparent
+uniform float solid;        // 0..1: brightness from which a part stays opaque
 
 sampler_state textureSampler {
 	Filter   = Linear;
@@ -30,45 +44,38 @@ VertData VSDefault(VertData v_in)
 	return v_out;
 }
 
-// The image arrives with premultiplied alpha.
-float4 unpremultiply(float4 c)
-{
-	c.rgb *= (c.a > 0.0) ? (1.0 / c.a) : 0.0;
-	return c;
-}
-
 float4 PSInvert(VertData v_in) : TARGET
 {
-	float4 c = unpremultiply(image.Sample(textureSampler, v_in.uv));
-	c.rgb = 1.0 - c.rgb;
-	c.rgb *= c.a;
-	return c;
-}
+	// The image arrives with premultiplied alpha.
+	float4 c = image.Sample(textureSampler, v_in.uv);
+	c.rgb *= (c.a > 0.0) ? (1.0 / c.a) : 0.0;
 
-float4 PSInvertKeepHue(VertData v_in) : TARGET
-{
-	float4 c = unpremultiply(image.Sample(textureSampler, v_in.uv));
 	float hi = max(c.r, max(c.g, c.b));
 	float lo = min(c.r, min(c.g, c.b));
-	c.rgb += 1.0 - hi - lo;
+	c.rgb = (keep_hue > 0.5) ? c.rgb + (1.0 - hi - lo) : 1.0 - c.rgb;
+
+	float v = max(c.r, max(c.g, c.b));
+	if (black_point > 0.0) {
+		float cleaned = saturate((v - black_point) / (1.0 - black_point));
+		c.rgb *= (v > 0.0) ? cleaned / v : 0.0;
+		v = cleaned;
+	}
+
+	if (transparent > 0.5) {
+		float a = min(v / max(solid, 0.001), 1.0);
+		c.rgb *= (a > 0.0) ? 1.0 / a : 0.0;
+		c.a *= a;
+	}
+
 	c.rgb *= c.a;
 	return c;
 }
 
-technique Invert
+technique Draw
 {
 	pass
 	{
 		vertex_shader = VSDefault(v_in);
 		pixel_shader  = PSInvert(v_in);
-	}
-}
-
-technique InvertKeepHue
-{
-	pass
-	{
-		vertex_shader = VSDefault(v_in);
-		pixel_shader  = PSInvertKeepHue(v_in);
 	}
 }

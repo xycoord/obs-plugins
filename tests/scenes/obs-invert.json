@@ -65,7 +65,10 @@
      "name": "Invert",
      "enabled": true,
      "settings": {
-      "keep_hue_saturation": false
+      "keep_hue_saturation": false,
+      "transparent": true,
+      "clean_up": 12.0,
+      "solid_above": 30.0
      }
     }
    ]
