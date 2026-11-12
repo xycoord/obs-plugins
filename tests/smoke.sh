@@ -33,8 +33,14 @@ run_obs() {
 	rm -rf "$cfg/logs"
 	# OBS is stopped by a signal, which it may not exit cleanly from; that
 	# isn't what's being tested.
-	(cd "$fake" && HOME=$fake timeout "$SECONDS_RUN" obs --disable-shutdown-check --disable-updater >/dev/null 2>&1) 2>/dev/null || true
-	ls -t "$cfg"/logs/*.txt 2>/dev/null | head -1
+	(cd "$fake" && HOME=$fake timeout "$SECONDS_RUN" obs --disable-shutdown-check --disable-updater >"$fake/obs.out" 2>&1) 2>/dev/null || true
+	ls -t "$cfg"/logs/*.txt 2>/dev/null | head -1 || true
+}
+
+no_log() {
+	echo "FAIL  OBS wrote no log; its output:"
+	tail -30 "$fake/obs.out" | sed 's/^/      /'
+	exit 1
 }
 
 failed=0
@@ -46,7 +52,7 @@ done
 # An empty scene collection: just check every plugin loads.
 echo '{"name":"Smoke","sources":[]}' >"$cfg/basic/scenes/Smoke.json"
 log=$(run_obs)
-[ -n "$log" ] || { echo "FAIL  OBS wrote no log"; exit 1; }
+[ -n "$log" ] || no_log
 for name in "${names[@]}"; do
 	if sed -n '/Loaded Modules:/,$p' "$log" | grep -q "^[0-9:.]*: *$name\.so$"; then
 		echo "ok    $name loads"
@@ -64,6 +70,7 @@ for name in "${names[@]}"; do
 	[ -f "$scene" ] || continue
 	sed "s|@DATA@|$PLUGINS/$name/data|g" "$scene" >"$cfg/basic/scenes/Smoke.json"
 	log=$(run_obs)
+	[ -n "$log" ] || no_log
 	# Lines after the scene starts loading that report an error or failure,
 	# except ones from parts of OBS the test machine lacks.
 	errors=$(sed -n '/Startup complete/,$p' "$log" |
