@@ -59,7 +59,7 @@ if command -v obs >/dev/null; then
 	kind=native
 	version=$(obs --version 2>/dev/null | sed -n 's/.*OBS Studio - \([0-9][0-9.]*\).*/\1/p' | head -1)
 	libobs=$(ldconfig -p 2>/dev/null | sed -n 's/.*libobs\.so\.0 (.*x86-64.*) => //p' | head -1)
-	dest_default=$HOME/.config/obs-studio/plugins
+	dest_default=${XDG_CONFIG_HOME:-$HOME/.config}/obs-studio/plugins
 elif command -v flatpak >/dev/null && flatpak info "$FLATPAK_ID" >/dev/null 2>&1; then
 	kind=flatpak
 	version=$(flatpak info "$FLATPAK_ID" | sed -n 's/^ *Version: *\([0-9][0-9.]*\).*/\1/p' | head -1)

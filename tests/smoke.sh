@@ -10,7 +10,7 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-PLUGINS=${OBS_PLUGINS_DIR:-$HOME/.config/obs-studio/plugins}
+PLUGINS=${OBS_PLUGINS_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/obs-studio/plugins}
 SECONDS_RUN=${SMOKE_SECONDS:-20}
 
 fake=$(mktemp -d)
@@ -33,7 +33,7 @@ run_obs() {
 	rm -rf "$cfg/logs"
 	# OBS is stopped by a signal, which it may not exit cleanly from; that
 	# isn't what's being tested.
-	(cd "$fake" && HOME=$fake timeout "$SECONDS_RUN" obs --disable-shutdown-check --disable-updater >"$fake/obs.out" 2>&1) 2>/dev/null || true
+	(cd "$fake" && HOME=$fake XDG_CONFIG_HOME=$fake/.config timeout "$SECONDS_RUN" obs --disable-shutdown-check --disable-updater >"$fake/obs.out" 2>&1) 2>/dev/null || true
 	ls -t "$cfg"/logs/*.txt 2>/dev/null | head -1 || true
 }
 
