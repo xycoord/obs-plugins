@@ -77,13 +77,26 @@ errors_after_startup() {
 		grep -i -E 'error|fail|unable|warning|not found' | grep -v -i -E "$not_ours" | sort -u || true
 }
 
-# An empty scene collection: check every plugin loads, and that nothing about
-# it went wrong while modules loaded (a missing locale, for one). What OBS
-# reports here after startup is OBS's own noise (it varies by version) and
+# A control scene with only OBS's own sources and filter: check every plugin
+# loads, and that nothing about it went wrong while modules loaded (a missing
+# locale, for one). What OBS reports here after startup is OBS's own noise (it
+# varies by version: OBS 32 logs Qt messages once a scene has sources) and
 # isn't held against the plugins' scenes.
-echo '{"name":"Smoke","sources":[]}' >"$cfg/basic/scenes/Smoke.json"
+cat >"$cfg/basic/scenes/Smoke.json" <<EOF
+{"name": "Smoke", "current_scene": "Scene", "current_program_scene": "Scene",
+ "scene_order": [{"name": "Scene"}],
+ "sources": [
+  {"id": "scene", "versioned_id": "scene", "name": "Scene", "settings": {"id_counter": 2,
+   "items": [{"name": "Image", "visible": true, "id": 1}, {"name": "Colour", "visible": true, "id": 2}]}},
+  {"id": "image_source", "versioned_id": "image_source", "name": "Image",
+   "settings": {"file": "$TESTS/fixtures/logo.jpg"},
+   "filters": [{"id": "color_filter", "versioned_id": "color_filter_v2", "name": "Colour Correction",
+                "enabled": true, "settings": {"gamma": 0.1}}]},
+  {"id": "color_source", "versioned_id": "color_source_v3", "name": "Colour",
+   "settings": {"color": 4282417407, "width": 64, "height": 64}}]}
+EOF
 baseline=""
-if run_obs "no scene"; then
+if run_obs "control scene"; then
 	baseline=$(errors_after_startup)
 	for name in "${names[@]}"; do
 		if sed -n '/Loaded Modules:/,$p' "$log" | grep -q "^[0-9:.]*: *$name\.so$"; then
