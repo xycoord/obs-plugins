@@ -19,7 +19,9 @@
 // 3. Process: JPEG colour repair (JPEG keeps colour at half resolution; each
 //    pixel's chroma is re-estimated from 5 x 5 neighbours of about the same
 //    luma, and luma lightly smoothed the same way, which keeps the smear from
-//    turning into dark bands once inverted), inversion and clean-up (faint
+//    turning into dark bands once inverted), inversion (where two of the
+//    logo's colours meet, of each of them, blended: see invert_blend) and
+//    clean-up (faint
 //    pixels with nothing brighter than the clean-up level around them become
 //    black; faint pixels next to something brighter are edges and stay). With
 //    a transparent background it also marks plateaus (flat 3 x 3; dark greys
@@ -33,7 +35,9 @@
 //      and a solid part stays solid however dark;
 //    - with no such plateau (a shadow, a glow, a blurred thin stroke): G is 1,
 //      full strength, so it fades to transparent; unless the feature has crisp
-//      sides (a sharp hairline), then its own brightest pixel;
+//      sides (a sharp hairline) and is bright enough once inverted, then its
+//      own brightest pixel (a pale hairline taken as solid would become an
+//      opaque dark line over the visuals);
 //    - where a solid part darker than (or about as dark as) the pixel is near
 //      and no background is (a seam between two of the logo's colours), the
 //      pixel stays solid; next to something soft (a shape over its own
@@ -43,7 +47,7 @@
 //
 // Measured on a suite of synthetic logos with exact ideals (crisp, JPEG,
 // blurred, cream paper, already transparent), against the earlier single-pass
-// version: mean error over three backdrops 17.3 -> 12.7 (out of 255).
+// version: mean error over three backdrops 17.3 -> 12.1 (out of 255).
 //
 // Per-image controls, for what a pixel's surroundings can't tell but a person
 // looking at the logo can (the defaults reproduce the automatic behaviour):
@@ -229,6 +233,85 @@ float solid_floor()
 	return min(black_point, 0.08);
 }
 
+// A pixel where two of the logo's colours meet is a blend of them, and keeping
+// hue isn't linear for such a blend: inverting it as one colour gives a fringe
+// of the wrong colour along the seam. JPEG makes it worse, since it keeps
+// colour at half resolution: a seam's pixels lose their colour, and a dull
+// dark one inverts to near white. So find the two colours the pixel lies
+// between (the neighbour farthest from it, then the one farthest from that;
+// each then averaged over the neighbours like it, to cancel JPEG noise), place
+// the pixel between them by luma (which JPEG keeps sharp and accurate) and
+// blend their inversions. Chroma only checks it is such a blend at all: a
+// third colour isn't. A blend with paper needs nothing (inversion is linear
+// for those), so a pixel that is a neighbour's colour part-way to paper is
+// left alone: edges against the background don't change.
+float3 invert_blend(float2 uv, float4 s, float4 paper)
+{
+	float3 a = s.rgb;
+	float da = 0.0;
+	float off_paper = 1.0e9;  // how far the pixel is from any neighbour-paper blend
+	float3 ds = float3(1.0, 1.0, 1.0) - s.rgb;
+	for (int dy = -2; dy <= 2; dy++) {
+		for (int dx = -2; dx <= 2; dx++) {
+			float4 n = source(uv + float2(float(dx), float(dy)) * texel);
+			float3 rgb = paper_correct(n.rgb, paper);
+			float3 e = rgb - s.rgb;
+			float3 dn = float3(1.0, 1.0, 1.0) - rgb;
+			float tn = dot(ds, dn) / max(dot(dn, dn), 1.0e-4);
+			float3 offn = ds - saturate(tn) * dn;
+			if (dot(dn, dn) > 0.01 && tn > 0.0 && tn < 0.9)
+				off_paper = min(off_paper, sqrt(dot(offn, offn)));
+			if (n.a > 0.99 && dot(e, e) > da) {
+				da = dot(e, e);
+				a = rgb;
+			}
+		}
+	}
+	float3 b = a;
+	float db = 0.0;
+	for (int dy2 = -2; dy2 <= 2; dy2++) {
+		for (int dx2 = -2; dx2 <= 2; dx2++) {
+			float4 n = source(uv + float2(float(dx2), float(dy2)) * texel);
+			float3 rgb = paper_correct(n.rgb, paper);
+			float3 e = rgb - a;
+			if (n.a > 0.99 && dot(e, e) > db) {
+				db = dot(e, e);
+				b = rgb;
+			}
+		}
+	}
+	float3 plain = invert(s.rgb);
+	float ya = luma(a);
+	float yb = luma(b);
+	if (s.a < 0.99 || abs(yb - ya) < 0.08)
+		return plain;
+	// Each side's colour: the mean of the neighbours within a quarter of the
+	// luma step of it.
+	float near_step = 0.25 * abs(yb - ya);
+	float4 sum_a = float4(0.0, 0.0, 0.0, 0.0);
+	float4 sum_b = float4(0.0, 0.0, 0.0, 0.0);
+	for (int dy3 = -2; dy3 <= 2; dy3++) {
+		for (int dx3 = -2; dx3 <= 2; dx3++) {
+			float3 rgb = paper_correct(source(uv + float2(float(dx3), float(dy3)) * texel).rgb, paper);
+			float y = luma(rgb);
+			if (abs(y - ya) < near_step)
+				sum_a += float4(rgb, 1.0);
+			if (abs(y - yb) < near_step)
+				sum_b += float4(rgb, 1.0);
+		}
+	}
+	a = sum_a.rgb / max(sum_a.a, 1.0);
+	b = sum_b.rgb / max(sum_b.a, 1.0);
+	ya = luma(a);
+	yb = luma(b);
+	if (abs(yb - ya) < 0.08)
+		return plain;
+	float t = saturate((luma(s.rgb) - ya) / (yb - ya));
+	float3 off = s.rgb - lerp(a, b, t);
+	float w = saturate(1.0 - sqrt(dot(off, off)) / 0.2) * saturate((off_paper - 0.02) / 0.04);
+	return lerp(plain, lerp(invert(a), invert(b), t), w);
+}
+
 float4 process(float2 uv, bool flags)
 {
 	float4 paper = paper_tex.Sample(textureSampler, float2(0.5, 0.5));
@@ -278,7 +361,7 @@ float4 process(float2 uv, bool flags)
 		s.rgb = saturate(float3(r, (y - 0.299 * r - 0.114 * b) / 0.587, b));
 	}
 
-	float3 c = invert(s.rgb);
+	float3 c = invert_blend(uv, s, paper);
 	float v = brightness(c);
 	if (clean_up) {
 		// Clean-up above the floor removes specks, not parts: a pixel by (or in)
@@ -397,6 +480,11 @@ float4 PSAlpha(VertData v_in) : TARGET
 	// No plateau of this colour nearby: a crisp feature reaches full strength
 	// at its brightest pixel, a blurred one (or a shadow) never does.
 	float sharp = saturate((step2 / max(near2, 0.001) - 0.45) / 0.3);
+	// Taken as solid, a thin feature that is dark once inverted becomes an
+	// opaque dark stroke over the visuals if it was really a faint one; taken
+	// as faint when it was solid, it only goes a little see-through. So the
+	// darker it is, the more it needs to be crisp to count as solid.
+	sharp *= saturate(near2 / 0.3);
 	// The tech's call on thin features: faint (0) or solid (1); 0.5 leaves it to the test.
 	sharp = saturate(sharp + (detail - 0.5) * 2.0);
 	if (g < 0.0)

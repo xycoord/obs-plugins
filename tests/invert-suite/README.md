@@ -40,6 +40,7 @@ Headline on the tuning logos / the held-out logos (lower is better):
 | Ceiling for da4d2a6 | 5.02 | 6.41 | best possible alpha for its colours |
 | Per-logo controls, defaults | 12.70 | 11.71 | the defaults reproduce da4d2a6 exactly |
 | Per-logo controls, tuned | **10.55** | **10.82** | each logo with its best controls |
+| Two-colour seams, pale hairlines | **12.14** | **11.34** | defaults; seams blended from both colours' inversions |
 
 \* measured on the first 3 held-out logos; on all 9, the multi-pass version's 11.71 compares with
 13.19 on those 3.
@@ -62,6 +63,16 @@ logo along with the specks (dark interior 9 to 72 at 16%); it now leaves anythin
 more similar pixels as at 8%, so raising it clears specks round text at little cost (12.74 at 12%,
 13.28 at 18%). The score barely shows the specks going, because they are few pixels, but to the eye
 it is the largest improvement for JPEG logos.
+
+Then two faults that were plain to see on one logo (Paper Wolves):
+- Where two of the logo's colours meet (dark text on a coloured badge), the pixels in between were
+  inverted as colours of their own, and keeping hue isn't linear for a blend of two colours: the text
+  got outlined in the wrong colour. Now such a pixel is placed between the two colours by luma (which
+  JPEG keeps sharp, unlike colour) and gets the blend of their inversions. Seam error on the crisp PNG
+  went from 20.6 to 3.0.
+- A pale grey hairline taken as solid turned into an opaque near-black line over the visuals. A thin
+  feature that is dark once inverted now has to be crisper to count as solid, since being wrongly
+  faint costs far less than being wrongly solid.
 
 What the review (Opus, Fable, GPT) thinks would take it further. All of it needs evidence from beyond
 a pixel's neighbourhood, and they estimate a headline of about 9–11:
