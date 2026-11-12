@@ -1,63 +1,63 @@
-// Invert, keeping hue and saturation or not.
+// Invert, keeping hue and saturation or not, for logos supplied on white (or
+// cream paper) that need to go on black or, with a transparent background,
+// over moving visuals.
 //
-// Keeping them: shifting all three channels by the same amount keeps a
-// colour's hue and its chroma (max - min). Shifting by 1 - max - min turns its
-// HSL lightness L = (max + min) / 2 into 1 - L, and since saturation depends on
-// L only through |2L - 1|, which is the same for L and 1 - L, saturation is
-// kept too. The result can't leave 0..1: the new max is 1 - min and the new
-// min is 1 - max. So white and black swap, greys invert, and a pure red stays
-// the same red.
+// Keeping hue and saturation: shifting all three channels by the same amount
+// keeps a colour's hue and its chroma (max - min). Shifting by 1 - max - min
+// turns its HSL lightness L = (max + min) / 2 into 1 - L, and since saturation
+// depends on L only through |2L - 1|, saturation is kept too, and the result
+// stays in 0..1. It is also linear for blends with white: a pixel that is a
+// fraction a of colour F over white inverts to exactly a x invert(F) over
+// black. So over black the inverted logo is exact; with a transparent
+// background, what's left to find is each pixel's alpha.
 //
-// JPEG colour repair (with clean-up): JPEG keeps colour at half resolution,
-// so along an edge a colour is smeared into its neighbour, and keeping hue and
-// saturation turns a pale colour that has lost a little of its colour into a
-// much darker one: a dark band inside a pale shape's edge. Before inverting,
-// each pixel's colour (YCbCr chroma) is re-estimated from neighbours of about
-// the same brightness (luma within ~0.04, 5 x 5), so a pale badge's edge takes
-// the badge's colour, not the white beyond it; luma is lightly smoothed the
-// same way (~0.03) to calm JPEG's ripples. Real edges differ by far more and
-// are left as they are.
+// Passes (the C side runs them):
+// 1. Copy: the source, so it can be read several times.
+// 2. Paper (one pixel): the paper colour from 24 patches along the border, if
+//    most of the border agrees on a light colour. Colours near it are moved to
+//    white, so cream paper becomes background too.
+// 3. Process: JPEG colour repair (JPEG keeps colour at half resolution; each
+//    pixel's chroma is re-estimated from 5 x 5 neighbours of about the same
+//    luma, and luma lightly smoothed the same way, which keeps the smear from
+//    turning into dark bands once inverted), inversion and clean-up (faint
+//    pixels with nothing brighter than the clean-up level around them become
+//    black; faint pixels next to something brighter are edges and stay). With
+//    a transparent background it also marks plateaus (flat 3 x 3; dark greys
+//    also flat at radius 4, so a shadow's gentle slope isn't one) and the
+//    largest one-pixel step around each pixel.
+// 4. Alpha: alpha = brightness / G, where G is how bright the part the pixel
+//    shows is at full strength:
+//    - next to background (a near-black pixel within 2): G is the brightest
+//      plateau of the same colour within 2, or on rings of radius 4 and 8; an
+//      anti-aliased edge then blends into what's behind as it did into black,
+//      and a solid part stays solid however dark;
+//    - with no such plateau (a shadow, a glow, a blurred thin stroke): G is 1,
+//      full strength, so it fades to transparent; unless the feature has crisp
+//      sides (a sharp hairline), then its own brightest pixel;
+//    - where a solid part darker than (or about as dark as) the pixel is near
+//      and no background is (a seam between two of the logo's colours), the
+//      pixel stays solid; next to something soft (a shape over its own
+//      shadow), alpha blends from that neighbour's.
+//    The colour shown (premultiplied) never changes, so over black the result
+//    is exactly the same as without transparency.
 //
-// After inverting, a logo's background is black, its edges are anti-aliased
-// blends of the logo's colours with that black, and what's left of a JPEG's
-// off-white background is faint specks. Telling a faint edge pixel from a
-// speck needs its neighbours: an edge pixel is next to the solid part it
-// belongs to, a speck isn't. Brightness here is a pixel's largest channel.
+// Measured on a suite of synthetic logos with exact ideals (crisp, JPEG,
+// blurred, cream paper, already transparent), against the earlier single-pass
+// version: mean error over three backdrops 17.3 -> 12.7 (out of 255).
 //
-// Clean-up: a pixel at least 2 x black_point bright, or next to one (3 x 3),
-// is kept as it is; one fainter than black_point with nothing brighter than
-// black_point next to it becomes black; in between it fades smoothly. Edges
-// keep their anti-aliasing and colours their hue (all channels scale alike).
-//
-// Transparent background: a pixel on an edge between the logo and the
-// background is coverage x the colour of the part it belongs to, so its alpha
-// (coverage) is its brightness divided by the brightest pixel near it (5 x 5),
-// and its colour that divided by alpha: edges blend into whatever is behind
-// as they did into black, and parts of the logo stay solid however dark. That
-// only applies next to background, i.e. when some pixel within 2 is about
-// black (2, so soft edges two or three pixels wide count too): where two of
-// the logo's colours meet (dark text on a light badge) the pixel stays solid
-// instead of leaving a see-through seam. Then grey parts darker than `solid`
-// fade out (alpha x part brightness / solid): a logo supplied on white has its
-// shadows and glows in grey, and a 5 x 5 view can't tell a shadow's slow fade
-// from a solid dark shape. Coloured parts stay solid however dark (a pastel
-// shape turns dark when inverted). Over black the result is always exactly
-// the same as without transparency.
-//
-// Limits: a line thinner than a pixel has no fully covered pixel to measure
-// against, so over bright visuals it shows as a solid, slightly darker line;
-// and a dark detail that touches the background within 2 pixels of a much
-// brighter part reads as a faint edge of that part and turns partly see-
-// through.
+// Limits: a part with no plateau and no crisp edge (a fine texture, grain)
+// reads as soft and fades; "Fade shadows and glows" below 100% keeps more of
+// it solid. Which pixels count as a plateau or a ring is measured in pixels,
+// so very large images behave as if their shadows were sharper.
 
 uniform float4x4 ViewProj;
-uniform texture2d image;
+uniform texture2d image;      // the input of the current pass
+uniform texture2d paper_tex;  // 1 x 1: the paper colour (rgb) and whether to use it (a)
 
-uniform float2 texel;       // 1 / the source's size in pixels
-uniform float keep_hue;     // 1: keep hue and saturation, 0: plain inversion
-uniform float black_point;  // 0..1: clean-up level (0: off)
-uniform float transparent;  // 1: make the background transparent
-uniform float solid;        // 0..1: grey parts darker than this fade out
+uniform float2 texel;         // 1 / the source's size in pixels
+uniform float keep_hue;       // 1: keep hue and saturation, 0: plain inversion
+uniform float black_point;    // 0..1: clean-up level (0: off)
+uniform float fade;           // 0..1: how far shadows and glows fade
 
 sampler_state textureSampler {
 	Filter   = Linear;
@@ -77,6 +77,8 @@ VertData VSDefault(VertData v_in)
 	v_out.uv  = v_in.uv;
 	return v_out;
 }
+
+// ---------------------------------------------------------------- helpers --
 
 // The colour at uv with straight alpha (the image arrives with premultiplied
 // alpha). Rounding, or an image source applying alpha in linear light, can
@@ -105,37 +107,133 @@ float luma(float3 rgb)
 	return dot(rgb, float3(0.299, 0.587, 0.114));
 }
 
-float4 PSInvert(VertData v_in) : TARGET
+float maxdiff(float3 a, float3 b)
 {
-	float4 s = source(v_in.uv);
-	bool clean_up = black_point > 0.0;
-	bool transparent_on = transparent > 0.5;
+	float3 d = abs(a - b);
+	return max(d.r, max(d.g, d.b));
+}
 
-	// Neighbours: the brightest (once inverted) within 1 pixel (near1) and
-	// within 2 (near2), the darkest within 2 (dark2); a see-through
-	// neighbour counts as dark as it shows. With clean-up, also the JPEG
-	// colour repair's sums (see the top).
+// Offset k (0..7) of the ring of radius r: the 8 compass points, rounded.
+float2 ring_offset(int k, float r)
+{
+	float t = float(k) * 0.7853982;
+	return float2(floor(r * cos(t) + 0.5), floor(r * sin(t) + 0.5));
+}
+
+// ------------------------------------------------------------------ copy --
+
+float4 PSCopy(VertData v_in) : TARGET
+{
+	return image.Sample(textureSampler, v_in.uv);
+}
+
+// ----------------------------------------------------------------- paper --
+// One pixel: the paper colour, from 24 small patches along the border. The
+// patch that most others agree with (within 0.06), averaged with them; used
+// only if at least 60% of the border agrees, is opaque and is light.
+
+float4 patch_at(int k)
+{
+	int side = k / 6;
+	float t = 0.05 + 0.18 * float(k - side * 6);
+	float2 size = 1.0 / texel;
+	float2 px;
+	if (side == 0)
+		px = float2(floor(t * size.x), 2.0);
+	else if (side == 1)
+		px = float2(floor(t * size.x), size.y - 3.0);
+	else if (side == 2)
+		px = float2(2.0, floor(t * size.y));
+	else
+		px = float2(size.x - 3.0, floor(t * size.y));
+	float4 sum = float4(0.0, 0.0, 0.0, 0.0);
+	for (int dy = -1; dy <= 1; dy++) {
+		for (int dx = -1; dx <= 1; dx++) {
+			float2 q = clamp(px + float2(float(dx), float(dy)), float2(0.0, 0.0), size - 1.0);
+			sum += source((q + 0.5) * texel);
+		}
+	}
+	return sum / 9.0;
+}
+
+float4 PSPaper(VertData v_in) : TARGET
+{
+	int best = 0;
+	float best_count = -1.0;
+	for (int i = 0; i < 24; i++) {
+		float4 pi = patch_at(i);
+		float count = 0.0;
+		for (int j = 0; j < 24; j++) {
+			float4 pj = patch_at(j);
+			if (maxdiff(pi.rgb, pj.rgb) < 0.06 && pj.a > 0.5)
+				count += 1.0;
+		}
+		if (count > best_count) {
+			best_count = count;
+			best = i;
+		}
+	}
+	float4 pb = patch_at(best);
+	float3 sum = float3(0.0, 0.0, 0.0);
+	float n = 0.0;
+	for (int j = 0; j < 24; j++) {
+		float4 pj = patch_at(j);
+		if (maxdiff(pb.rgb, pj.rgb) < 0.06 && pj.a > 0.5) {
+			sum += pj.rgb;
+			n += 1.0;
+		}
+	}
+	float3 paper = (n > 0.0) ? sum / n : float3(1.0, 1.0, 1.0);
+	bool use = best_count >= 0.6 * 24.0 && pb.a > 0.5 && luma(paper) > 0.75;
+	return float4(paper, use ? 1.0 : 0.0);
+}
+
+// --------------------------------------------------------------- process --
+// Paper correction, JPEG colour repair, inversion and clean-up. Writes the
+// result premultiplied (as it shows over black). For the alpha pass it also
+// writes, in alpha, the largest one-pixel step of brightness around the pixel,
+// plus 2 if the pixel is flat (part of a plateau).
+
+float3 paper_correct(float3 rgb, float4 paper)
+{
+	if (paper.a < 0.5 || black_point <= 0.0)
+		return rgb;
+	float w = saturate(1.0 - maxdiff(rgb, paper.rgb) / 0.3);
+	return lerp(rgb, saturate(rgb / max(paper.rgb, float3(0.001, 0.001, 0.001))), w);
+}
+
+float4 process(float2 uv, bool flags)
+{
+	float4 paper = paper_tex.Sample(textureSampler, float2(0.5, 0.5));
+	float4 s = source(uv);
+	s.rgb = paper_correct(s.rgb, paper);
+	bool clean_up = black_point > 0.0;
+
+	float v0 = brightness(invert(s.rgb)) * s.a;  // before repair
+	float y0 = luma(s.rgb);
 	float near1 = 0.0;
-	float near2 = 0.0;
-	float dark2 = 1.0;
-	if (clean_up || transparent_on) {
-		float y0 = luma(s.rgb);
-		float2 chroma_sum = float2(0.0, 0.0);
-		float chroma_weight = 0.0;
-		float luma_sum = 0.0;
-		float luma_weight = 0.0;
+	float lo3 = 1.0e9;
+	float hi3 = -1.0e9;
+	float step1 = 0.0;
+	float2 chroma_sum = float2(0.0, 0.0);
+	float chroma_weight = 0.0;
+	float luma_sum = 0.0;
+	float luma_weight = 0.0;
+	if (clean_up || flags) {
 		for (int dy = -2; dy <= 2; dy++) {
 			for (int dx = -2; dx <= 2; dx++) {
-				float4 n = source(v_in.uv + float2(float(dx), float(dy)) * texel);
+				float4 n = source(uv + float2(float(dx), float(dy)) * texel);
+				n.rgb = paper_correct(n.rgb, paper);
 				float nv = brightness(invert(n.rgb)) * n.a;
-				near2 = max(near2, nv);
-				dark2 = min(dark2, nv);
-				if (abs(dx) <= 1 && abs(dy) <= 1)
+				if (abs(dx) <= 1 && abs(dy) <= 1) {
 					near1 = max(near1, nv);
-
+					lo3 = min(lo3, nv);
+					hi3 = max(hi3, nv);
+					if (abs(dx) + abs(dy) == 1)
+						step1 = max(step1, abs(nv - v0));
+				}
 				float yn = luma(n.rgb);
-				float d = float(dx * dx + dy * dy);
-				float near_weight = exp(-d / 4.5) * n.a;
+				float near_weight = exp(-float(dx * dx + dy * dy) / 4.5) * n.a;
 				float wc = near_weight * exp(-((yn - y0) * (yn - y0)) / (0.04 * 0.04));
 				float wy = near_weight * exp(-((yn - y0) * (yn - y0)) / (0.03 * 0.03));
 				chroma_sum += wc * float2(n.b - yn, n.r - yn);
@@ -144,55 +242,176 @@ float4 PSInvert(VertData v_in) : TARGET
 				luma_weight += wy;
 			}
 		}
-		if (clean_up && chroma_weight > 0.0 && luma_weight > 0.0) {
-			float y = luma_sum / luma_weight;
-			float2 cbcr = chroma_sum / chroma_weight;
-			float r = y + cbcr.y;
-			float b = y + cbcr.x;
-			s.rgb = saturate(float3(r, (y - 0.299 * r - 0.114 * b) / 0.587, b));
-		}
+	}
+	if (clean_up && chroma_weight > 0.0 && luma_weight > 0.0) {
+		float y = luma_sum / luma_weight;
+		float2 cbcr = chroma_sum / chroma_weight;
+		float r = y + cbcr.y;
+		float b = y + cbcr.x;
+		s.rgb = saturate(float3(r, (y - 0.299 * r - 0.114 * b) / 0.587, b));
 	}
 
-	float4 c = float4(invert(s.rgb), s.a);
-	float v = brightness(c.rgb);
-
+	float3 c = invert(s.rgb);
+	float v = brightness(c);
 	if (clean_up) {
 		float keep = max(saturate((v - black_point) / black_point),
 				 saturate((near1 - black_point) / black_point));
-		c.rgb *= keep;
+		c *= keep;
 		v *= keep;
 	}
+	float3 p = c * s.a;
+	if (!flags)
+		return float4(p, s.a);
 
-	if (transparent_on) {
-		// Coverage: next to background, the share of the part nearby;
-		// between two of the logo's colours, all of it.
-		float black = max(black_point, 0.02);
-		float by_background = 1.0 - saturate((dark2 - black) / black);
-		float coverage = lerp(1.0, (v > 0.0) ? v / max(near2, v) : 0.0, by_background);
-		float part = (coverage > 0.0) ? v / coverage : 0.0;
-		// Grey parts darker than `solid` fade with their brightness, as
-		// shadows and glows should; coloured parts stay solid. Greyness:
-		// the saturation of the colour at full strength. A pastel turns
-		// into a strongly saturated dark colour when inverted (0.9 and
-		// up); a grey shadow tinted by JPEG's smeared colour stays below
-		// 0.4.
-		float saturation = (v > 0.0) ? 1.0 - min(c.r, min(c.g, c.b)) / v : 0.0;
-		float grey = 1.0 - saturate((saturation - 0.4) / 0.2);
-		float fade = (solid > 0.0) ? saturate(part / solid) : 1.0;
-		float a = (v > 0.0) ? coverage * lerp(1.0, fade, grey) : 0.0;
-		c.rgb *= (a > 0.0) ? 1.0 / a : 0.0;
-		c.a *= a;
+	// Flat: a plateau of the logo, not a slope or an edge. 3 x 3 range small;
+	// for dark greys (which shadows are, once inverted) also the ring of
+	// radius 4, so a shadow's gentle slope doesn't pass for a plateau.
+	float vv = v * s.a;
+	bool is_flat = (hi3 - lo3) <= 0.03 + 0.08 * vv && vv > black_point;
+	float saturation = (v > 0.0) ? 1.0 - min(c.r, min(c.g, c.b)) / v : 0.0;
+	if (is_flat && saturation < 0.5 && vv < 0.5) {
+		float lo4 = v0;
+		float hi4 = v0;
+		for (int k = 0; k < 8; k++) {
+			float4 n = source(uv + ring_offset(k, 4.0) * texel);
+			n.rgb = paper_correct(n.rgb, paper);
+			float nv = brightness(invert(n.rgb)) * n.a;
+			lo4 = min(lo4, nv);
+			hi4 = max(hi4, nv);
+		}
+		is_flat = (hi4 - lo4) <= 0.03 + 0.08 * vv;
 	}
-
-	c.rgb *= c.a;
-	return c;
+	return float4(p, step1 + (is_flat ? 2.0 : 0.0));
 }
 
-technique Draw
+float4 PSProcess(VertData v_in) : TARGET
+{
+	return process(v_in.uv, true);
+}
+
+float4 PSProcessOpaque(VertData v_in) : TARGET
+{
+	return process(v_in.uv, false);
+}
+
+// ----------------------------------------------------------------- alpha --
+// From the processed image: each pixel's alpha is its brightness over G, the
+// brightness of the part it shows at full strength.
+
+// n's brightness if it is a plateau of this pixel's colour at least as
+// bright as it, otherwise -1.
+float plateau_of(float4 n, float vv, float3 chroma)
+{
+	float nv = brightness(n.rgb);
+	float3 nchroma = (nv > 0.001) ? n.rgb / nv : float3(0.0, 0.0, 0.0);
+	if (n.a >= 1.5 && maxdiff(nchroma, chroma) < 0.15 && nv >= vv - 0.000001)
+		return nv;
+	return -1.0;
+}
+
+float4 PSAlpha(VertData v_in) : TARGET
+{
+	float4 t = image.Sample(textureSampler, v_in.uv);
+	float3 p = t.rgb;
+	float vv = brightness(p);
+	if (vv <= 0.0)
+		return float4(0.0, 0.0, 0.0, 0.0);
+	float3 chroma = (vv > 0.001) ? p / vv : float3(0.0, 0.0, 0.0);
+	float dark_limit = vv + 0.15 + 0.8 * vv;
+
+	float near2 = 0.0;
+	float d = 1.0e9;
+	float step2 = 0.0;
+	float g = -1.0;
+	float g_any = 0.0;
+	float support = 0.0;
+	for (int dy = -2; dy <= 2; dy++) {
+		for (int dx = -2; dx <= 2; dx++) {
+			float4 n = image.Sample(textureSampler, v_in.uv + float2(float(dx), float(dy)) * texel);
+			float nv = brightness(n.rgb);
+			bool nflat = n.a >= 1.5;
+			near2 = max(near2, nv);
+			d = min(d, nv);
+			step2 = max(step2, n.a - (nflat ? 2.0 : 0.0));
+			g = max(g, plateau_of(n, vv, chroma));
+			if (nflat) {
+				g_any = max(g_any, nv);
+				if (nv <= dark_limit)
+					support += 0.04;
+			}
+		}
+	}
+	for (int k = 0; k < 8; k++) {
+		float4 n4 = image.Sample(textureSampler, v_in.uv + ring_offset(k, 4.0) * texel);
+		g = max(g, plateau_of(n4, vv, chroma));
+		if (n4.a >= 1.5 && brightness(n4.rgb) <= dark_limit)
+			support += 0.0625;
+		float4 n8 = image.Sample(textureSampler, v_in.uv + ring_offset(k, 8.0) * texel);
+		g = max(g, plateau_of(n8, vv, chroma));
+	}
+
+	// No plateau of this colour nearby: a crisp feature reaches full strength
+	// at its brightest pixel, a blurred one (or a shadow) never does.
+	float sharp = saturate((step2 / max(near2, 0.001) - 0.45) / 0.3);
+	if (g < 0.0)
+		g = near2 * sharp + (1.0 - sharp);
+	if (g_any <= 0.0)
+		g_any = 1.0;
+
+	float bg = max(black_point, 0.02);
+	bool edge = d <= bg;
+	float a_dark = edge ? 0.0 : ((support >= 0.1) ? 1.0 : d);
+	float gs = edge ? g : g_any;
+	float tt = saturate((vv - d) / max(gs - d, 0.0001));
+	float a = min(max(a_dark + (1.0 - a_dark) * tt, vv), 1.0);
+
+	// With less fade, towards solid: only edges against the background blend.
+	float a_solid = edge ? min(max(saturate(vv / max(near2, 0.0001)), vv), 1.0) : 1.0;
+	a = lerp(a_solid, a, fade);
+	return float4(p, a);
+}
+
+technique Copy
 {
 	pass
 	{
 		vertex_shader = VSDefault(v_in);
-		pixel_shader  = PSInvert(v_in);
+		pixel_shader  = PSCopy(v_in);
+	}
+}
+
+technique Paper
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader  = PSPaper(v_in);
+	}
+}
+
+technique Process
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader  = PSProcess(v_in);
+	}
+}
+
+technique ProcessOpaque
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader  = PSProcessOpaque(v_in);
+	}
+}
+
+technique Alpha
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader  = PSAlpha(v_in);
 	}
 }

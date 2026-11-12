@@ -95,8 +95,8 @@
      "settings": {
       "keep_hue_saturation": false,
       "transparent": true,
-      "solid_above": 40.0,
-      "clean_up": 15.0
+      "clean_up": 15.0,
+      "fade_soft": 60.0
      }
     }
    ]
