@@ -74,6 +74,9 @@ every plugin, then loads each plugin's test scene and checks OBS reports no erro
 example a shader that doesn't compile). `@DATA@` in a scene file stands for the plugin's installed
 data folder. On a machine without a display, run it as `xvfb-run -a tests/smoke.sh`.
 
+[tests/invert-suite](tests/invert-suite) measures the Invert filter's transparent background against
+synthetic logos with exact ideals.
+
 CI builds, installs and smoke-tests everything against Ubuntu 24.04's OBS and against the latest OBS
 from the official PPA.
 
