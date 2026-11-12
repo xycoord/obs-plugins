@@ -1,0 +1,74 @@
+{
+ "name": "Smoke",
+ "current_scene": "Scene",
+ "current_program_scene": "Scene",
+ "scene_order": [
+  {
+   "name": "Scene"
+  }
+ ],
+ "sources": [
+  {
+   "id": "scene",
+   "versioned_id": "scene",
+   "name": "Scene",
+   "settings": {
+    "items": [
+     {
+      "name": "Keep hue",
+      "visible": true,
+      "id": 1
+     },
+     {
+      "name": "Plain",
+      "visible": true,
+      "id": 2
+     }
+    ],
+    "id_counter": 2
+   }
+  },
+  {
+   "id": "color_source",
+   "versioned_id": "color_source_v3",
+   "name": "Keep hue",
+   "settings": {
+    "color": 4282417407,
+    "width": 640,
+    "height": 360
+   },
+   "filters": [
+    {
+     "id": "grove_invert_filter",
+     "versioned_id": "grove_invert_filter",
+     "name": "Invert",
+     "enabled": true,
+     "settings": {
+      "keep_hue_saturation": true
+     }
+    }
+   ]
+  },
+  {
+   "id": "color_source",
+   "versioned_id": "color_source_v3",
+   "name": "Plain",
+   "settings": {
+    "color": 4282417407,
+    "width": 640,
+    "height": 360
+   },
+   "filters": [
+    {
+     "id": "grove_invert_filter",
+     "versioned_id": "grove_invert_filter",
+     "name": "Invert",
+     "enabled": true,
+     "settings": {
+      "keep_hue_saturation": false
+     }
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,74 @@
+// Invert, keeping hue and saturation or not.
+//
+// Keeping them: shifting all three channels by the same amount keeps a
+// colour's hue and its chroma (max - min). Shifting by 1 - max - min turns its
+// HSL lightness L = (max + min) / 2 into 1 - L, and since saturation depends on
+// L only through |2L - 1|, which is the same for L and 1 - L, saturation is
+// kept too. The result can't leave 0..1: the new max is 1 - min and the new
+// min is 1 - max. So white and black swap, greys invert, and a pure red stays
+// the same red.
+
+uniform float4x4 ViewProj;
+uniform texture2d image;
+
+sampler_state textureSampler {
+	Filter   = Linear;
+	AddressU = Clamp;
+	AddressV = Clamp;
+};
+
+struct VertData {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+VertData VSDefault(VertData v_in)
+{
+	VertData v_out;
+	v_out.pos = mul(float4(v_in.pos.xyz, 1.0), ViewProj);
+	v_out.uv  = v_in.uv;
+	return v_out;
+}
+
+// The image arrives with premultiplied alpha.
+float4 unpremultiply(float4 c)
+{
+	c.rgb *= (c.a > 0.0) ? (1.0 / c.a) : 0.0;
+	return c;
+}
+
+float4 PSInvert(VertData v_in) : TARGET
+{
+	float4 c = unpremultiply(image.Sample(textureSampler, v_in.uv));
+	c.rgb = 1.0 - c.rgb;
+	c.rgb *= c.a;
+	return c;
+}
+
+float4 PSInvertKeepHue(VertData v_in) : TARGET
+{
+	float4 c = unpremultiply(image.Sample(textureSampler, v_in.uv));
+	float hi = max(c.r, max(c.g, c.b));
+	float lo = min(c.r, min(c.g, c.b));
+	c.rgb += 1.0 - hi - lo;
+	c.rgb *= c.a;
+	return c;
+}
+
+technique Invert
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader  = PSInvert(v_in);
+	}
+}
+
+technique InvertKeepHue
+{
+	pass
+	{
+		vertex_shader = VSDefault(v_in);
+		pixel_shader  = PSInvertKeepHue(v_in);
+	}
+}

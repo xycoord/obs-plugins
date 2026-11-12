@@ -5,6 +5,7 @@ Linux.
 
 | Plugin | What it is |
 |---|---|
+| [obs-invert](plugins/obs-invert) | **Invert**: swaps light and dark. By default it keeps each colour's hue and saturation, so a logo supplied on white goes onto black with its colours intact: the white background turns black, black text turns white, and a red stays red. Turned off, it's a plain inversion. |
 | [obs-shaderfilter](plugins/obs-shaderfilter) | A filter that applies a shader to a source, with a library of 150+ effects (blur, bloom, film grain, glitch, distortion, colour). A submodule: [xycoord/obs-shaderfilter](https://github.com/xycoord/obs-shaderfilter). |
 
 ## Installing
