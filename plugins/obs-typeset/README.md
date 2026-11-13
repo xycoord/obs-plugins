@@ -20,7 +20,7 @@ Everything else is in groups you tick to turn on; a group's settings show only w
 
 | Group | For |
 |---|---|
-| **Text box** | A fixed width, so the text stays put when the words change. Text that's too long wraps onto more lines, or shrinks to fit (for band names of any length: the font size itself isn't changed). Wrapped lines can be balanced (as even in length as they can be) and kept from ending in a lone word. An optional height, with vertical alignment. While editing in the preview, a grip on the frame's right edge drags its width. |
+| **Text box** | A fixed width, so the text stays put when the words change. Text that's too long wraps onto more lines, or shrinks to fit (for band names of any length: the font size itself isn't changed). Wrapped lines can be balanced (as even in length as they can be) and kept from ending in a lone word. An optional height, with vertical alignment. In the preview, a selected text's side handles set the box: left and right its width (the text rewraps at its size), top and bottom its height. |
 | **Outline** | Colour and width. Drawn outside the letters, so it never thins them. |
 | **Shadow** | Colour, opacity, offset, blur and spread (how far it reaches past the letters before it softens, so it holds behind thin type). With no offset, it's a glow. On by default. |
 | **Background** | A plate behind the text: colour, opacity, padding, rounded corners. For lower thirds and messages over busy visuals. |
@@ -86,14 +86,20 @@ scales the text, as it would a picture, except that the text is redrawn for its 
 being stretched. 72 px text scaled 2x looks exactly like 144 px text at 1x, pixel for pixel.
 
 So you can set the size whichever way is handier, in the properties or by dragging, and the result
-is the same. OBS's handles always scale (a side handle stretches the letters, sharply); to change
-how text wraps, give it a text box and set the box's width.
+is the same. OBS's corner handles scale the text; its side handles set the text box instead (see
+Text box above), so the words rewrap at their size and the opposite edge stays put. Shift with a
+side handle stretches the letters, as OBS does for any source.
 
 How it's done: the text is laid out once at its font size, with hinting off and positions not
 rounded, so its layout is exactly the same at every scale. Each frame the source looks at how it's
 being drawn and, if that's changed, the text is drawn again for that size on a background thread (a
 few milliseconds), and the new texture replaces the old. In the output its pixels line up with the
-canvas's, so it isn't resampled at all unless it's rotated. Windows that show the source on its own
+canvas's, so it isn't resampled at all unless it's rotated. While it's moving or zooming (a drag, a
+move transition, an animated scale), its drawing slides and stretches as any image does, near the
+size it was drawn for, and it's drawn again exactly once it has been still a tenth of a second.
+Text in one colour (with or without its shadow) is kept on the graphics card as how much of each
+pixel the text covers, a quarter or half of a full-colour picture, and only the parts with ink are
+drawn. Windows that show the source on its own
 (the properties dialog's preview, a source projector) get a drawing of their own, at their size,
 freed again a few seconds after they close. While you drag a handle you may see the previous drawing
 stretched for a frame or two before the sharp one arrives. Nothing is done for a text that hasn't
@@ -123,9 +129,9 @@ crop cut them off at it.
 ## Editing in the preview
 
 Double-click the text in the preview: the word you double-clicked is selected. Or select the text
-and press **F2**: all of it is selected, so typing replaces it. The text gets a frame in OBS's
-theme's own accent colour (as for a selected source) and the format bar above it, in the preview
-only; then:
+and press **F2**: all of it is selected, so typing replaces it. The text stays selected, with OBS's
+own outline round it, the rest of the canvas dims a little, and the format bar sits above it, in the
+preview only; then:
 
 | | |
 |---|---|
@@ -141,9 +147,11 @@ only; then:
 
 While you're editing, every key goes to the text: OBS's shortcuts (Delete removing the source, the
 arrows nudging it) and its hotkeys (a scene switched by the 1 key) are back once you finish. The
-caret, selection and frame are drawn in the preview only, never into the output, so they don't show
+caret, selection and dimming are drawn in the preview only, never into the output, so they don't show
 on the stream, the recording or a projector. The text itself changes live, as you type, as any
-change in OBS does; in Studio Mode, editing is in the preview's scene.
+change in OBS does; in Studio Mode, editing is in the preview's scene, and with the same scene on air
+the words change there as you type too, unless Duplicate Sources is on (in the menu beside the
+Transition button), when they go on air with the transition.
 
 The properties dialog keeps what it had when it opened: with it open, words typed in the preview are
 undone by its **Cancel** (as any change made elsewhere would be). Each edit in the preview, from
