@@ -100,7 +100,7 @@ PangoLayout *create_layout(PangoContext *context, const Document &doc)
 	pango_layout_set_font_description(layout, desc);
 	// Bold in a run is bolder than the base, whatever the base is.
 	const int base_weight = pango_font_description_get_weight(desc);
-	const PangoWeight bold = base_weight < 600 ? PANGO_WEIGHT_BOLD : PANGO_WEIGHT_HEAVY;
+	const PangoWeight bold = PangoWeight(base_weight < 600 ? PANGO_WEIGHT_BOLD : std::min(base_weight + 300, 1000));
 	pango_font_description_free(desc);
 
 	switch (style.align) {

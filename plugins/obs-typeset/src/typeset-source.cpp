@@ -326,9 +326,20 @@ void TextSource::update(obs_data_t *settings)
 	bool follow = false;
 	{
 		std::lock_guard lock(layout_lock());
-		if (layout_ && doc.text != doc_.text && doc.spans == doc_.spans && !doc.spans.empty()) {
+		// (Until a move is written back, the settings still hold the runs
+		// from before it: those count as unchanged too, and the runs as
+		// moved are kept.)
+		const bool stale = !superseded_.empty() && doc.spans == superseded_;
+		const bool runs_unchanged = doc.spans == doc_.spans || stale;
+		if (layout_ && doc.text != doc_.text && runs_unchanged && !doc_.spans.empty()) {
+			superseded_ = doc.spans; // what the settings hold until this move is written back
+			doc.spans = doc_.spans;
 			follow_text(doc.spans, doc_.text, doc.text);
 			follow = true;
+		} else if (stale) {
+			doc.spans = doc_.spans;
+		} else {
+			superseded_.clear();
 		}
 	}
 	normalise(doc.spans, doc.text);
@@ -1030,7 +1041,7 @@ void fill_box(obs_properties_t *g, obs_data_t *settings)
 	obs_property_list_add_int(p, obs_module_text("Box.VAlign.Top"), int(VAlign::Top));
 	obs_property_list_add_int(p, obs_module_text("Box.VAlign.Middle"), int(VAlign::Middle));
 	obs_property_list_add_int(p, obs_module_text("Box.VAlign.Bottom"), int(VAlign::Bottom));
-	obs_property_set_visible(p, obs_data_get_int(settings, "box_height") > 0);
+	obs_property_set_visible(p, settings && obs_data_get_int(settings, "box_height") > 0);
 }
 
 obs_property_t *px_slider(obs_properties_t *g, const char *name, const char *label, int min, int max)
@@ -1099,36 +1110,26 @@ const Group groups[] = {
 	{"typography", "Typography", nullptr, fill_typography},
 };
 
-bool group_toggled(obs_properties_t *props, obs_property_t *group, obs_data_t *settings)
+// A feature is a checkbox; its settings show beneath it only while it's
+// ticked, so a feature not in use is one line in the dialog.
+bool feature_toggled(obs_properties_t *props, obs_property_t *box, obs_data_t *settings)
 {
-	const char *name = obs_property_name(group);
+	const char *name = obs_property_name(box);
 	const bool on = obs_data_get_bool(settings, name);
-	obs_properties_t *content = obs_property_group_content(group);
-	const bool filled = obs_properties_first(content) != nullptr;
-	if (on == filled)
-		return false;
-	if (on) {
-		// A box starts as wide as the text is now, so ticking it changes
-		// nothing until its width is changed.
-		if (strcmp(name, "box") == 0 && obs_data_get_int(settings, "box_width") <= 0) {
-			auto *text = static_cast<TextSource *>(obs_properties_get_param(props));
-			if (text) {
-				const Document doc = text->document();
-				const double pad = doc.style.plate ? doc.style.plate_padding : 0;
-				obs_data_set_int(settings, "box_width",
-						 std::max(1LL, (long long)std::lround(text->width() - 2 * pad)));
-			}
+	obs_property_t *group = obs_properties_get(props, (std::string(name) + "_settings").c_str());
+	// A box starts as wide as the text is now, so ticking it changes
+	// nothing until its width is changed.
+	if (on && strcmp(name, "box") == 0 && obs_data_get_int(settings, "box_width") <= 0) {
+		auto *text = static_cast<TextSource *>(obs_properties_get_param(props));
+		if (text) {
+			const Document doc = text->document();
+			const double pad = doc.style.plate ? doc.style.plate_padding : 0;
+			obs_data_set_int(settings, "box_width", std::max(1LL, (long long)std::lround(text->width() - 2 * pad)));
 		}
-		for (const Group &g : groups)
-			if (strcmp(g.name, name) == 0)
-				g.fill(content, settings);
-	} else {
-		std::vector<std::string> names;
-		for (obs_property_t *p = obs_properties_first(content); p; obs_property_next(&p))
-			names.push_back(obs_property_name(p));
-		for (const std::string &n : names)
-			obs_properties_remove_by_name(content, n.c_str());
 	}
+	if (!group || obs_property_visible(group) == on)
+		return false;
+	obs_property_set_visible(group, on);
 	return true;
 }
 
@@ -1205,7 +1206,6 @@ bool copy_style(obs_properties_t *, obs_property_t *, void *data)
 	return false;
 }
 
-bool group_toggled(obs_properties_t *props, obs_property_t *group, obs_data_t *settings);
 
 bool paste_style(obs_properties_t *props, obs_property_t *, void *data)
 {
@@ -1225,9 +1225,9 @@ bool paste_style(obs_properties_t *props, obs_property_t *, void *data)
 	// OBS rebuilds the dialog without asking the groups again: they're
 	// filled (or emptied) for the pasted style here.
 	obs_data_t *settings = obs_source_get_settings(text->source());
-	for (obs_property_t *p = obs_properties_first(props); p; obs_property_next(&p))
-		if (obs_property_get_type(p) == OBS_PROPERTY_GROUP && obs_property_group_type(p) == OBS_GROUP_CHECKABLE)
-			group_toggled(props, p, settings);
+	for (const Group &g : groups)
+		if (obs_property_t *p = obs_properties_get(props, g.name))
+			feature_toggled(props, p, settings);
 	obs_data_release(settings);
 	return true;
 }
@@ -1261,6 +1261,8 @@ obs_properties_t *get_properties(void *data)
 	obs_property_t *p;
 
 	obs_properties_add_text(props, "text", obs_module_text("Text"), OBS_TEXT_MULTILINE);
+	p = obs_properties_add_text(props, "edit_hint", obs_module_text("EditHint"), OBS_TEXT_INFO);
+	obs_property_text_set_info_word_wrap(p, true);
 	p = obs_properties_add_font(props, "font", obs_module_text("Font"));
 	obs_property_set_modified_callback(p, font_changed);
 	p = obs_properties_add_int_slider(props, "size", obs_module_text("Size"), 4, 1024, 1);
@@ -1301,11 +1303,15 @@ obs_properties_t *get_properties(void *data)
 	obs_property_set_visible(p, styled);
 
 	for (const Group &g : groups) {
-		p = obs_properties_add_group(props, g.name, obs_module_text(g.label), OBS_GROUP_CHECKABLE,
-					     obs_properties_create());
+		p = obs_properties_add_bool(props, g.name, obs_module_text(g.label));
 		if (g.help)
 			obs_property_set_long_description(p, obs_module_text(g.help));
-		obs_property_set_modified_callback(p, group_toggled);
+		obs_property_set_modified_callback(p, feature_toggled);
+		obs_properties_t *content = obs_properties_create();
+		g.fill(content, nullptr);
+		p = obs_properties_add_group(props, (std::string(g.name) + "_settings").c_str(), "", OBS_GROUP_NORMAL,
+					     content);
+		obs_property_set_visible(p, false);
 	}
 
 	obs_properties_t *style = obs_properties_create();
@@ -1315,8 +1321,6 @@ obs_properties_t *get_properties(void *data)
 	p = obs_properties_add_group(props, "style", obs_module_text("Style"), OBS_GROUP_NORMAL, style);
 	obs_property_set_long_description(p, obs_module_text("Style.Help"));
 
-	p = obs_properties_add_text(props, "edit_hint", obs_module_text("EditHint"), OBS_TEXT_INFO);
-	obs_property_text_set_info_word_wrap(p, true);
 	return props;
 }
 

@@ -386,6 +386,7 @@ def test_features(out):
 
         # F2 on the selected text edits all of it.
         obs.click(*title)
+        time.sleep(0.5)  # OBS selects on the click's release
         obs.key("F2")
         obs.type("Fresh")
         check(obs.settings("Title")["text"] == "Fresh", "F2 edits the selected text, all of it selected",
@@ -483,13 +484,11 @@ def test_rich(out):
         obs.key("ctrl+space")
         check(spans() == [], "Ctrl+Space puts the selection back to the text's own style", repr(spans()))
 
-        # The format bar above the frame: its B button (the first of seven
-        # 26-pixel buttons, right-aligned 7 pixels past the text's right end).
+        # The format bar above the frame: its B button (the first, 28 pixels
+        # square, starting 8 pixels left of the text and 14 above it).
         obs.key("ctrl+a")
-        t3 = obs.request("GetSceneItemTransform", sceneName="Scene", sceneItemId=2)["sceneItemTransform"]
-        right, top = to_screen(200 + t3["width"], 200)
-        bar_width = 7 * 26 + 8 * 2
-        obs.click(right + 7 - bar_width + 13, top - 7 - 4 - 13)
+        left, top = to_screen(200, 200)
+        obs.click(left - 8 + 14, top - 8 - 6 - 14)
         save(out, "rich-bar.png", obs.screen())
         check(spans() == [(0, 11, True, False, 0)], "the format bar's B makes the selection bold", repr(spans()))
         obs.key("ctrl+space")

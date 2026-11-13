@@ -88,6 +88,7 @@ private:
 	// reads the settings and lays out. One at a time, or an update that
 	// read the text just before an edit would lay out the old text after it.
 	std::mutex content_mutex_;
+	Spans superseded_; // runs the settings may still hold, moved since (being written back)
 	Document pending_doc_;
 	uint64_t doc_version_ = 0;
 

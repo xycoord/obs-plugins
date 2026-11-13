@@ -45,6 +45,7 @@ constexpr uint32_t accent = 0x2F8FFFFF;
 constexpr uint32_t accent_edge = 0x0A1830D0; // dark edge round the accent, so it shows on blue too
 constexpr uint32_t selection_keyline = 0xFFFFFFC0;
 constexpr uint32_t tag_fill = 0x10141CE8;
+constexpr uint32_t veil = 0x00000040; // over the rest of the canvas while editing
 constexpr uint32_t selection_fill = 0x2F6FE0E6; // nearly opaque: the selected glyphs are drawn again on it
 constexpr uint32_t selection_wash = 0x2F8FFF70; // when they can't be (a rotated source)
 constexpr uint32_t placeholder_line = 0xFFFFFFB0;
@@ -108,15 +109,14 @@ vec2 widget_to_canvas(const Mapping &m, QPointF p)
 // Whether the preview is set to Scale to Window. OBS keeps its Preview
 // Scaling menu's ticks up to date only when the menu opens, so it's asked to
 // update them first (the menu's "about to show" handler, by name: OBS 30 to
-// 33 have it). Unknown counts as yes, and the selection check in
-// mouse_event() then still guards against a wrong mapping.
+// 33 have it). If it can't be told, text isn't edited in the preview.
 bool scaled_to_window(QWidget *preview)
 {
 	QWidget *main = preview->window();
 	QMenu *menu = main ? main->findChild<QMenu *>("scalingMenu") : nullptr;
 	QAction *window = main ? main->findChild<QAction *>("actionScaleWindow") : nullptr;
 	if (!menu || !window)
-		return true;
+		return false; // can't tell: not edited, rather than edited at the wrong place
 	QMetaObject::invokeMethod(menu, "aboutToShow", Qt::DirectConnection);
 	return window->isChecked();
 }
@@ -213,6 +213,16 @@ struct Hit {
 	obs_sceneitem_t *item = nullptr;
 	obs_sceneitem_t *group = nullptr;
 };
+
+// A hit's references (item and group) let go.
+void release_hit(Hit &h)
+{
+	if (h.item)
+		obs_sceneitem_release(h.item);
+	if (h.group)
+		obs_sceneitem_release(h.group);
+	h = Hit();
+}
 
 bool point_in_item(obs_sceneitem_t *item, obs_sceneitem_t *group, const vec2 &pos, vec3 *local = nullptr)
 {
@@ -365,12 +375,13 @@ struct Quad {
 
 // The format bar above the text being edited: bold, italic, underline,
 // smaller, bigger, colour, clear. In display pixels.
-enum class BarAction { Bold, Italic, Underline, Smaller, Bigger, Colour, Clear };
+enum class BarAction { Bold, Italic, Underline, Smaller, SizeReadout, Bigger, Colour, Clear };
 struct BarButton {
 	BarAction action;
 	float x = 0, y = 0, w = 0, h = 0;
 	bool active = false;
 	uint32_t swatch = 0; // the colour button's colour, 0xAABBGGRR
+	std::string text;    // the size readout's
 };
 const char *bar_glyph(BarAction a)
 {
@@ -386,6 +397,8 @@ const char *bar_glyph(BarAction a)
 	case BarAction::Bigger:
 		return "A+";
 	case BarAction::Colour:
+		return "A";
+	case BarAction::SizeReadout:
 		return "";
 	case BarAction::Clear:
 		return "\u00d7";
@@ -455,12 +468,15 @@ private:
 		bool plate = false;      // a background plate behind the text
 		std::string tag;         // what the tag says
 		std::vector<BarButton> bar;
+		float tag_x = 0, strip_y = 0, strip_h = 0; // where the tag goes, after the bar
 		std::string preedit;
 		uint64_t blink_from = 0;
 		std::vector<Target> placeholders; // empty texts
 	} overlay_;
 	Label editing_label_, placeholder_label_; // graphics thread only
-	Label bar_labels_[7];
+	Label bar_labels_[8];
+	Label size_label_;
+	std::string size_label_text_;
 	std::vector<BarButton> bar_; // as last drawn, for clicks (display pixels)
 	void bar_action(BarAction action);
 	std::string editing_label_text_;
@@ -565,6 +581,7 @@ PreviewEditor::~PreviewEditor()
 	placeholder_label_.destroy();
 	for (Label &l : bar_labels_)
 		l.destroy();
+	size_label_.destroy();
 	preedit_label_.destroy();
 	obs_leave_graphics();
 	if (preview_)
@@ -854,6 +871,12 @@ void PreviewEditor::style(StyleChange change, bool toggle)
 			}
 			change.value = on_here ? -1 : 1;
 		}
+		// The latest of each kind wins; clearing starts afresh.
+		if (change.field == StyleChange::Clear)
+			pending_.clear();
+		pending_.erase(std::remove_if(pending_.begin(), pending_.end(),
+					      [&](const StyleChange &c) { return c.field == change.field; }),
+			       pending_.end());
 		pending_.push_back(change);
 		return;
 	}
@@ -922,7 +945,8 @@ bool PreviewEditor::key_press(QKeyEvent *event)
 			if (event->matches(QKeySequence::Cut))
 				replace(sel_from(), sel_to(), "", EditKind::Other);
 		}
-	} else if (event->matches(QKeySequence::Paste)) {
+	} else if (event->matches(QKeySequence::Paste) ||
+		   (event->key() == Qt::Key_V && mods == (Qt::ControlModifier | Qt::ShiftModifier))) {
 		// Always as plain text.
 		std::string s = QGuiApplication::clipboard()->text().toStdString();
 		// Control characters other than line breaks and tabs would be
@@ -941,10 +965,11 @@ bool PreviewEditor::key_press(QKeyEvent *event)
 		style(c, true);
 	} else if (word && (event->key() == Qt::Key_Greater || event->key() == Qt::Key_Less ||
 			    event->key() == Qt::Key_BracketRight || event->key() == Qt::Key_BracketLeft)) {
-		// Bigger or smaller: the selection, a tenth of the base size at a time.
-		if (has_selection()) {
+		// Bigger or smaller: the selection (or what's typed next), a tenth
+		// of the base size at a time.
+		{
 			const bool up = event->key() == Qt::Key_Greater || event->key() == Qt::Key_BracketRight;
-			const Span at = style_at(spans_, sel_from());
+			const Span at = style_at(spans_, has_selection() ? sel_from() : caret_ > 0 ? caret_ - 1 : 0);
 			StyleChange c;
 			c.field = StyleChange::Size;
 			const int now = at.size ? at.size : 100;
@@ -954,13 +979,10 @@ bool PreviewEditor::key_press(QKeyEvent *event)
 			style(c, false);
 		}
 	} else if (word && event->key() == Qt::Key_Space) {
-		// Back to the text's own style.
+		// Back to the text's own style (the selection, or what's typed next).
 		StyleChange c;
 		c.field = StyleChange::Clear;
-		if (has_selection())
-			style(c, false);
-		else
-			pending_.clear();
+		style(c, false);
 	} else if (event->matches(QKeySequence::Undo)) {
 		undo();
 	} else if (event->matches(QKeySequence::Redo)) {
@@ -1045,23 +1067,21 @@ bool PreviewEditor::edit_selected()
 		each_item(scene, [&](obs_sceneitem_t *item, obs_sceneitem_t *group) {
 			if (obs_sceneitem_selected(item) && TextSource::from(obs_sceneitem_get_source(item))) {
 				obs_sceneitem_addref(item); // inside the enumeration
-				if (hit.item)
-					obs_sceneitem_release(hit.item);
+				if (group)
+					obs_sceneitem_addref(group);
+				release_hit(hit);
 				hit = {item, group};
 				count++;
 			}
 		});
 	}
 	obs_source_release(scene_source);
-	if (count != 1) {
-		if (hit.item)
-			obs_sceneitem_release(hit.item);
-		return false;
-	}
 	struct Release {
-		obs_sceneitem_t *i;
-		~Release() { obs_sceneitem_release(i); }
-	} release_hit{hit.item};
+		Hit &h;
+		~Release() { release_hit(h); }
+	} release{hit};
+	if (count != 1)
+		return false;
 	if (obs_sceneitem_locked(hit.item) || (hit.group && obs_sceneitem_locked(hit.group)))
 		return false;
 	if (!scaled_to_window(preview_)) {
@@ -1092,9 +1112,7 @@ void PreviewEditor::bar_action(BarAction action)
 		break;
 	case BarAction::Smaller:
 	case BarAction::Bigger: {
-		if (!has_selection())
-			break;
-		const Span at = style_at(spans_, sel_from());
+		const Span at = style_at(spans_, has_selection() ? sel_from() : caret_ > 0 ? caret_ - 1 : 0);
 		c.field = StyleChange::Size;
 		const int now = at.size ? at.size : 100;
 		c.value = std::clamp(now + (action == BarAction::Bigger ? 10 : -10), 10, 1000);
@@ -1120,12 +1138,11 @@ void PreviewEditor::bar_action(BarAction action)
 		style(c, false);
 		break;
 	}
+	case BarAction::SizeReadout:
+		break;
 	case BarAction::Clear:
 		c.field = StyleChange::Clear;
-		if (has_selection())
-			style(c, false);
-		else
-			pending_.clear();
+		style(c, false);
 		break;
 	}
 	refresh_overlay();
@@ -1162,8 +1179,9 @@ Hit PreviewEditor::item_at(QPointF pos)
 				// Referenced here, inside the scene's enumeration; the
 				// one it replaces (lower down) let go.
 				obs_sceneitem_addref(item);
-				if (hit.item)
-					obs_sceneitem_release(hit.item);
+				if (group)
+					obs_sceneitem_addref(group);
+				release_hit(hit);
 				hit = {item, group};
 			}
 		});
@@ -1207,11 +1225,10 @@ bool PreviewEditor::mouse_event(QMouseEvent *event)
 	// overlapping items), so a double-click on selected text leaves
 	// something else selected by the time it arrives.
 	if (type == QEvent::MouseButtonPress && event->button() == Qt::LeftButton && !editing()) {
-		const Hit hit = item_at(pos);
+		Hit hit = item_at(pos);
 		pressed_item_ = hit.item;
 		pressed_selected_ = hit.item && obs_sceneitem_selected(hit.item);
-		if (hit.item)
-			obs_sceneitem_release(hit.item);
+		release_hit(hit);
 		return false;
 	}
 
@@ -1219,12 +1236,12 @@ bool PreviewEditor::mouse_event(QMouseEvent *event)
 		// Start editing the text item double-clicked on, if it's on top
 		// and not locked (OBS's own clicks skip locked items too).
 		Hit hit = item_at(pos);
+		struct Release {
+			Hit &h;
+			~Release() { release_hit(h); }
+		} release{hit};
 		if (!hit.item)
 			return false;
-		struct Release {
-			obs_sceneitem_t *i;
-			~Release() { obs_sceneitem_release(i); }
-		} release_hit{hit.item};
 
 		if (!TextSource::from(obs_sceneitem_get_source(hit.item)))
 			return false;
@@ -1269,6 +1286,8 @@ bool PreviewEditor::mouse_event(QMouseEvent *event)
 	if (type == QEvent::MouseButtonPress && event->button() == Qt::LeftButton) {
 		const QPointF d = pos * preview_mapping(preview_).dpr;
 		for (const BarButton &b : bar_) {
+			if (b.action == BarAction::SizeReadout)
+				continue;
 			if (d.x() >= b.x && d.x() <= b.x + b.w && d.y() >= b.y && d.y() <= b.y + b.h) {
 				swallow_release_ = true;
 				bar_action(b.action);
@@ -1578,6 +1597,11 @@ void PreviewEditor::detach_display()
 		std::lock_guard lock(overlay_mutex_);
 		display = display_;
 		display_ = nullptr;
+		// A display let go when the preview hid but which OBS kept (it's
+		// the preview's display again): it still has the callback.
+		if (!display && forgotten_ && preview_ && preview_display(preview_) == forgotten_)
+			display = forgotten_;
+		forgotten_ = nullptr;
 	}
 	// Outside the lock: removing waits for a draw in progress, which takes it.
 	if (display)
@@ -1609,13 +1633,15 @@ void PreviewEditor::refresh_overlay()
 	}
 	o.tag += std::string(" \u00b7 ") + obs_module_text("EscToFinish");
 
-	// The format bar, above the frame's right end (below it when there's no
-	// room above), showing what's on for the selection or what's typed next.
+	// One strip above the frame's left end (below it when there's no room
+	// above): the format bar, showing what's on for the selection or what's
+	// typed next, then the tag. Clear of OBS's distance labels, which sit
+	// over the middle of the box's edges.
 	{
 		matrix4 m;
 		item_to_canvas(item_, group_, &m);
 		const Box b = o.box;
-		float top = 1e9f, bottom = -1e9f, right = -1e9f;
+		float top = 1e9f, bottom = -1e9f, left = 1e9f;
 		for (int i = 0; i < 4; i++) {
 			vec3 p;
 			vec3_set(&p, float(i == 1 || i == 2 ? b.w : 0), float(i >= 2 ? b.h : 0), 0.0f);
@@ -1623,17 +1649,20 @@ void PreviewEditor::refresh_overlay()
 			const float x = float(o.mapping.x + p.x * o.mapping.scale), y = float(o.mapping.y + p.y * o.mapping.scale);
 			top = std::min(top, y);
 			bottom = std::max(bottom, y);
-			right = std::max(right, x);
+			left = std::min(left, x);
 		}
 		const float px = float(std::max(1.0, std::round(o.mapping.dpr)));
-		const float size = 26 * px, gap = 2 * px, margin = 7 * px;
-		const BarAction actions[] = {BarAction::Bold,    BarAction::Italic, BarAction::Underline, BarAction::Smaller,
-					     BarAction::Bigger,  BarAction::Colour, BarAction::Clear};
-		const float width = 7 * size + 6 * gap + 2 * gap; // a little space between the groups
-		float y = top - margin - size - 4 * px;
+		const float size = 28 * px, gap = 2 * px, margin = 8 * px;
+		// Kept within the preview: above if there's room, else below, else
+		// at the preview's top.
+		const float view_w = float(preview_->width() * o.mapping.dpr), view_h = float(preview_->height() * o.mapping.dpr);
+		const float strip_w = 28 * px * 8.6f + 300 * px; // the buttons and room for the tag
+		float y = top - margin - size - 6 * px;
 		if (y < 2)
-			y = bottom + margin + 4 * px;
-		float x = right + margin - width;
+			y = bottom + margin + 6 * px;
+		if (y + size > view_h - 2)
+			y = 2;
+		float x = std::clamp(left - margin, 2.0f, std::max(2.0f, view_w - strip_w));
 		auto on = [&](StyleChange::Field f) {
 			for (const StyleChange &c : pending_)
 				if (c.field == f)
@@ -1642,16 +1671,24 @@ void PreviewEditor::refresh_overlay()
 					       : caret_ > 0 && all_on(spans_, caret_ - 1, caret_, f);
 		};
 		const Span here = style_at(spans_, has_selection() ? sel_from() : caret_ > 0 ? caret_ - 1 : 0);
+		const BarAction actions[] = {BarAction::Bold,   BarAction::Italic,      BarAction::Underline,
+					     BarAction::Smaller, BarAction::SizeReadout, BarAction::Bigger,
+					     BarAction::Colour,  BarAction::Clear};
 		for (BarAction a : actions) {
-			BarButton btn{a, x, y, size, size};
+			BarButton btn{a, x, y, a == BarAction::SizeReadout ? size * 1.6f : size, size, false, 0, {}};
 			btn.active = (a == BarAction::Bold && on(StyleChange::Bold)) ||
 				     (a == BarAction::Italic && on(StyleChange::Italic)) ||
 				     (a == BarAction::Underline && on(StyleChange::Underline));
 			if (a == BarAction::Colour)
 				btn.swatch = here.has_colour ? here.colour : doc.style.colour;
+			if (a == BarAction::SizeReadout)
+				btn.text = std::to_string(here.size ? here.size : 100) + "%";
 			o.bar.push_back(btn);
-			x += size + gap + (a == BarAction::Underline || a == BarAction::Bigger ? gap : 0);
+			x += btn.w + gap + (a == BarAction::Underline || a == BarAction::Bigger ? 2 * gap : 0);
 		}
+		o.tag_x = x + 4 * px;
+		o.strip_y = y;
+		o.strip_h = size;
 	}
 	bar_ = o.bar;
 	o.preedit = preedit_;
@@ -1813,26 +1850,51 @@ void PreviewEditor::draw_overlay(uint32_t cx, uint32_t cy)
 
 		// A frame of its own, clear of OBS's red box, blue edged in dark so
 		// it shows on any background, and a tag saying what's going on.
-		const Quad frame = grown(box_quad(o.box), 7 * px);
+		const Quad frame = grown(box_quad(o.box), 8 * px);
+
+		// The rest of the canvas a little dimmer while editing (OBS's
+		// guides with it), so it's plain which text has the keyboard.
+		{
+			float top = 1e9f, left = 1e9f, bottom = -1e9f, right = -1e9f;
+			for (const vec2 &p : frame.p) {
+				top = std::min(top, p.y);
+				left = std::min(left, p.x);
+				bottom = std::max(bottom, p.y);
+				right = std::max(right, p.x);
+			}
+			obs_video_info ovi = {};
+			obs_get_video_info(&ovi);
+			const float cx0 = float(map.x), cy0 = float(map.y);
+			const float cx1 = float(map.x + ovi.base_width * map.scale), cy1 = float(map.y + ovi.base_height * map.scale);
+			auto rect = [](float x0, float y0, float x1, float y1) {
+				Quad q;
+				vec2_set(&q.p[0], x0, y0);
+				vec2_set(&q.p[1], x1, y0);
+				vec2_set(&q.p[2], x1, y1);
+				vec2_set(&q.p[3], x0, y1);
+				return q;
+			};
+			top = std::clamp(top, cy0, cy1);
+			bottom = std::clamp(bottom, cy0, cy1);
+			left = std::clamp(left, cx0, cx1);
+			right = std::clamp(right, cx0, cx1);
+			fill({rect(cx0, cy0, cx1, top), rect(cx0, bottom, cx1, cy1), rect(cx0, top, left, bottom),
+			      rect(right, top, cx1, bottom)},
+			     veil);
+		}
+
 		std::vector<Quad> edges, inner;
-		outline(edges, frame, 4 * px);
-		outline(inner, frame, 2 * px);
+		outline(edges, frame, 6 * px);
+		outline(inner, frame, 3 * px);
 		fill(edges, accent_edge);
 		fill(inner, accent);
 		if (!editing_label_.texture || editing_label_text_ != o.tag) {
 			editing_label_.destroy();
-			editing_label_.make(o.tag.c_str(), 13 * px, 0xFFFFFFFF, tag_fill);
+			editing_label_.make(o.tag.c_str(), 14 * px, 0xFFFFFFFF, tag_fill);
 			editing_label_text_ = o.tag;
 		}
-		float top = frame.p[0].y, left = frame.p[0].x, bottom = frame.p[0].y;
-		for (const vec2 &p : frame.p) {
-			top = std::min(top, p.y);
-			bottom = std::max(bottom, p.y);
-			left = std::min(left, p.x);
-		}
-		// Above the frame, or below it when there's no room above.
-		const float above = top - editing_label_.height - 3 * px;
-		editing_label_.draw(std::max(left, 2.0f), above >= 2 ? above : bottom + 3 * px);
+		// After the format bar, in the same strip.
+		editing_label_.draw(o.tag_x, o.strip_y + (o.strip_h - editing_label_.height) / 2);
 
 		// The format bar.
 		if (!o.bar.empty()) {
@@ -1845,24 +1907,38 @@ void PreviewEditor::draw_overlay(uint32_t cx, uint32_t cy)
 				vec2_set(&q.p[3], b.x, b.y + b.h);
 				(b.active ? actives : fills).push_back(q);
 				if (b.action == BarAction::Colour) {
-					const Quad inner = grown(q, -6 * px);
-					swatch_edge.push_back(grown(inner, 1 * px));
-					swatch.push_back(inner);
+					// An "A" over a bar of the colour, as in the slide tools.
+					Quad bar;
+					vec2_set(&bar.p[0], b.x + 6 * px, b.y + b.h - 8 * px);
+					vec2_set(&bar.p[1], b.x + b.w - 6 * px, b.y + b.h - 8 * px);
+					vec2_set(&bar.p[2], b.x + b.w - 6 * px, b.y + b.h - 4 * px);
+					vec2_set(&bar.p[3], b.x + 6 * px, b.y + b.h - 4 * px);
+					swatch_edge.push_back(grown(bar, 1 * px));
+					swatch.push_back(bar);
 				}
 			}
 			fill(fills, tag_fill);
 			fill(actives, accent);
-			fill(swatch_edge, 0xFFFFFFFF);
+			fill(swatch_edge, 0xFFFFFF90);
 			for (const BarButton &b : o.bar) {
 				if (b.action == BarAction::Colour) {
 					const uint32_t c = b.swatch;
 					fill(swatch, (c & 0xFF) << 24 | ((c >> 8) & 0xFF) << 16 | ((c >> 16) & 0xFF) << 8 | 0xFF);
+				}
+				if (b.action == BarAction::SizeReadout) {
+					if (!size_label_.texture || size_label_text_ != b.text) {
+						size_label_.destroy();
+						size_label_.make(b.text.c_str(), 12 * px, 0xFFFFFFFF, 0);
+						size_label_text_ = b.text;
+					}
+					size_label_.draw(b.x + (b.w - size_label_.width) / 2, b.y + (b.h - size_label_.height) / 2);
 					continue;
 				}
 				Label &l = bar_labels_[int(b.action)];
 				if (!l.texture)
-					l.make(bar_glyph(b.action), 13 * px, 0xFFFFFFFF, 0);
-				l.draw(b.x + (b.w - l.width) / 2, b.y + (b.h - l.height) / 2);
+					l.make(bar_glyph(b.action), 15 * px, 0xFFFFFFFF, 0);
+				const float lift = b.action == BarAction::Colour ? 3 * px : 0;
+				l.draw(b.x + (b.w - l.width) / 2, b.y + (b.h - l.height) / 2 - lift);
 			}
 		}
 
@@ -1890,9 +1966,26 @@ void PreviewEditor::draw_overlay(uint32_t cx, uint32_t cy)
 		for (const Box &b : o.selection)
 			selection.push_back(box_quad(b));
 		fill(selection, upright ? selection_fill : selection_wash);
+		// A keyline round the selection as one shape: the sides of each
+		// line's piece, the top of the first line and the bottom of the last.
 		std::vector<Quad> keylines;
-		for (const Quad &q : selection)
-			outline(keylines, q, 1 * px);
+		float sel_top = 1e9f, sel_bottom = -1e9f;
+		for (const Quad &q : selection) {
+			sel_top = std::min(sel_top, std::min(q.p[0].y, q.p[2].y));
+			sel_bottom = std::max(sel_bottom, std::max(q.p[0].y, q.p[2].y));
+		}
+		for (const Quad &q : selection) {
+			if (!upright) {
+				outline(keylines, q, 1 * px);
+				continue;
+			}
+			keylines.push_back(line_quad(q.p[1], q.p[2], 1 * px));
+			keylines.push_back(line_quad(q.p[3], q.p[0], 1 * px));
+			if (std::fabs(q.p[0].y - sel_top) < 0.5f)
+				keylines.push_back(line_quad(q.p[0], q.p[1], 1 * px));
+			if (std::fabs(q.p[2].y - sel_bottom) < 0.5f)
+				keylines.push_back(line_quad(q.p[2], q.p[3], 1 * px));
+		}
 		fill(keylines, selection_keyline);
 		if (upright && !selection.empty()) {
 			TextSource *text = TextSource::from(obs_sceneitem_get_source(o.target.item));
