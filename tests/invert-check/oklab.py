@@ -21,17 +21,20 @@ def solve(y,ab):
     """OKLab colour with chroma ab and luminance y (Newton on L)."""
     u=ab@M2i[:,1:].T                # (..., 3) offsets of l', m', s' from L
     L=np.cbrt(np.maximum(y,0))
-    for _ in range(8):
+    done=np.zeros(np.shape(L),bool)
+    for _ in range(20):  # as the filter: Newton, each colour stopping once it moves less than 1e-9
         q=L[...,None]+u
         f=(q**3)@CW-y; df=3*(q**2)@CW
-        L=np.clip(L-f/np.where(np.abs(df)>1e-4,df,1e-4),0,1)
+        nxt=np.clip(L-f/np.where(np.abs(df)>1e-4,df,1e-4),0,1)
+        step=np.abs(nxt-L); L=np.where(done,L,nxt); done|=step<1e-9
+        if done.all(): break
     return lin_of(np.concatenate([L[...,None],ab],-1))
 def tone_invert(rgb):
     rgb=np.asarray(rgb,float); lin=to_lin(rgb); y=lin@LUM
     yt=lstar_inv(1-lstar(y)); ab=lab(rgb)[...,1:]
     c=solve(yt,ab); good=in_gamut(c)
     lo=np.zeros(y.shape); hi=np.ones(y.shape)
-    for _ in range(10):
+    for _ in range(14):
         k=(lo+hi)/2; ok=in_gamut(solve(yt,ab*k[...,None])); lo=np.where(ok,k,lo); hi=np.where(ok,hi,k)
     c=np.where(good[...,None],c,solve(yt,ab*lo[...,None]))
     return to_enc(c)
