@@ -361,6 +361,7 @@ PreviewEditor::~PreviewEditor()
 {
 	closing_ = true;
 	end_edit();
+	end_box_drag(); // a side handle still held (no undo step: closing)
 	detach_display();
 	{
 		std::lock_guard lock(draw_hook()->mutex);
@@ -1253,7 +1254,7 @@ void PreviewEditor::end_box_drag()
 	// One step in OBS's undo history for the drag.
 	obs_data_t *after = box_undo_state(bd.item, bd.text->document());
 	const std::string undo_json = obs_data_get_json(bd.before), redo_json = obs_data_get_json(after);
-	if (undo_json != redo_json) {
+	if (undo_json != redo_json && !closing_) {
 		char name[256];
 		snprintf(name, sizeof(name), obs_module_text("Undo.Box"), obs_source_get_name(bd.source));
 		obs_frontend_add_undo_redo_action(name, restore_box_state, restore_box_state, undo_json.c_str(),
@@ -1271,17 +1272,22 @@ bool PreviewEditor::mouse_event(QMouseEvent *event)
 	const QPointF pos = event->position();
 	const bool left = event->button() == Qt::LeftButton;
 
-	// A side handle of a selected Typeset Text: its box (see above).
+	// A side handle of a selected Typeset Text: its box (see above). Should
+	// the button's release have gone elsewhere (another window took the
+	// pointer), the drag ends at the next event with it up, or the next
+	// press, which then goes on as usual.
 	if (box_drag_.item) {
-		if (type == QEvent::MouseMove) {
-			move_box_drag(pos);
-			return true;
-		}
 		if (type == QEvent::MouseButtonRelease && left) {
 			end_box_drag();
 			return true;
 		}
-		return true;
+		if (type != QEvent::MouseButtonPress && type != QEvent::MouseButtonDblClick &&
+		    (event->buttons() & Qt::LeftButton)) {
+			if (type == QEvent::MouseMove)
+				move_box_drag(pos);
+			return true;
+		}
+		end_box_drag();
 	}
 	if (type == QEvent::MouseButtonPress && left && !(event->modifiers() & Qt::ShiftModifier)) {
 		ItemRef hit;
