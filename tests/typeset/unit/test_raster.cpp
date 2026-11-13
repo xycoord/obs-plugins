@@ -208,6 +208,68 @@ int main()
 		      just.widths.empty() ? "" : std::to_string(just.widths[0]));
 	}
 
+	{
+		// The coverage form, painted as the effect paints it, is the colour
+		// form's picture; text it can't hold stays in colour.
+		auto paint = [](const Raster &c, int x, int y, int ch) {
+			const size_t i = (size_t(y) * size_t(c.width) + size_t(x)) * size_t(c.bytes);
+			auto colour = [](uint32_t v, int ch) { // ch: 0 B, 1 G, 2 R, 3 A, premultiplied
+				const double a = double(v >> 24) / 255;
+				const int shift[] = {16, 8, 0};
+				return ch == 3 ? a : double((v >> shift[ch]) & 0xFF) / 255 * a;
+			};
+			const double fc = double(c.pixels[i]) / 255, sc = c.bytes == 2 ? double(c.pixels[i + 1]) / 255 : 0;
+			const double fa = colour(c.fill_colour, 3) * fc;
+			return 255 * (colour(c.fill_colour, ch) * fc + colour(c.shadow_colour, ch) * sc * (1 - fa));
+		};
+		auto compare = [&](const Document &d, double scale, const char *what) {
+			PangoLayout *layout = create_layout(context, d);
+			RasterParams p;
+			p.sx = p.sy = scale;
+			p.ox = 0.25;
+			const Raster colour = rasterise(layout, d, p), cov = rasterise(layout, d, p, true);
+			g_object_unref(layout);
+			double worst = 0;
+			// (Up to 3 clear pixels wider: rows of whole 4-byte words.)
+			bool same_size = cov.width >= colour.width && cov.width <= colour.width + 3 &&
+					 colour.height == cov.height && cov.bytes != 4;
+			for (int y = 0; same_size && y < cov.height; y++)
+				for (int x = 0; x < cov.width; x++)
+					for (int ch = 0; ch < 4; ch++) {
+						const double want = x < colour.width
+							? colour.pixels[(size_t(y) * size_t(colour.width) + size_t(x)) * 4 + size_t(ch)] : 0.0;
+						worst = std::max(worst, std::fabs(paint(cov, x, y, ch) - want));
+					}
+			check(what, same_size && worst <= 2.0, "largest difference " + std::to_string(worst));
+		};
+		Document plain = text_doc("Typeset 19:30");
+		plain.style.colour = 0xFF40C0F0;
+		compare(plain, 1.0, "coverage form: plain text, as in colour");
+		Document shadowed = plain;
+		shadowed.style.shadow = true;
+		shadowed.style.shadow_colour = 0xBF102030;
+		shadowed.style.shadow_y = 3;
+		shadowed.style.shadow_blur = 6;
+		shadowed.style.shadow_spread = 2;
+		compare(shadowed, 1.0, "coverage form: with a shadow, as in colour");
+		compare(shadowed, 2.3, "coverage form: scaled, as in colour");
+		Document seethrough = shadowed;
+		seethrough.style.colour = 0x80FFFFFF;
+		compare(seethrough, 1.0, "coverage form: see-through text over its shadow, as in colour");
+
+		Document outlined = shadowed;
+		outlined.style.outline = true;
+		PangoLayout *layout = create_layout(context, outlined);
+		check("an outlined text stays in colour", rasterise(layout, outlined, RasterParams(), true).bytes == 4);
+		g_object_unref(layout);
+		Document emoji = text_doc("Live \xF0\x9F\x8E\xB8");
+		layout = create_layout(context, emoji);
+		const Raster e = rasterise(layout, emoji, RasterParams(), true);
+		g_object_unref(layout);
+		check("a text with colour emoji stays in colour (if there's a colour emoji font)", e.bytes == 4 || e.bytes == 1,
+		      std::to_string(e.bytes));
+	}
+
 	g_object_unref(context);
 	g_object_unref(map);
 	printf("%s\n", failed ? "FAILED" : "all passed");

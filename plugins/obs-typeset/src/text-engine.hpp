@@ -125,7 +125,17 @@ struct Raster {
 	std::string error;    // why, when it failed
 	int x0 = 0, y0 = 0;
 	int width = 0, height = 0;
-	std::vector<uint8_t> pixels; // BGRA, premultiplied, width*4 per row
+	// Its pixels, row after row with no gaps, in one of two forms:
+	// - colour (bytes 4): BGRA, premultiplied;
+	// - coverage (bytes 1 or 2): how much of each pixel the text covers,
+	//   and with 2, how much its shadow does, to be drawn in fill_colour
+	//   and shadow_colour (0xAABBGGRR), the text over its shadow. The colour
+	//   form's picture (but for a part-covered row at a letter's edge, which
+	//   Cairo draws a little differently into each) from a quarter or half
+	//   the data, for text in one colour with no outline or plate.
+	int bytes = 4;
+	uint32_t fill_colour = 0, shadow_colour = 0;
+	std::vector<uint8_t> pixels;
 	// The parts with anything in them, in its pixels: runs of tiles along
 	// each row of tiles, everything else clear. Only these are drawn. Empty
 	// when it's all to be drawn (it's nearly all ink).
@@ -145,7 +155,8 @@ constexpr double max_raster_pixels = 32.0 * 1024 * 1024;
 
 // Draws the document at the given scale. A raster comes out empty when
 // there's no ink, and failed when memory couldn't be had for it.
-Raster rasterise(PangoLayout *layout, const Document &doc, RasterParams params);
+// coverage: in the coverage form where the text allows (see Raster).
+Raster rasterise(PangoLayout *layout, const Document &doc, RasterParams params, bool coverage = false);
 
 // Where Backspace at a byte index of a layout's text deletes back to: the
 // whole grapheme before it, as Pango divides graphemes (an emoji sequence, a

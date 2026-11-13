@@ -26,6 +26,12 @@ extern const char *const source_id;
 
 void register_source();
 
+// The effect that draws text from its coverage form (data/coverage.effect):
+// loaded at load, in OBS's graphics context, and released at unload.
+// Without it, text is drawn in colour form only.
+void load_effects();
+void unload_effects();
+
 // Text is laid out for its size and for editing on OBS's UI thread (an
 // update OBS makes on its graphics thread is passed there; see update()),
 // with this one font map. The lock is for what other threads read of a

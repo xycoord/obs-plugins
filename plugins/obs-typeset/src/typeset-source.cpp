@@ -33,6 +33,9 @@ PangoContext *layout_context()
 namespace {
 
 std::thread::id ui_thread;
+
+// Graphics thread (set at load, before any source draws; cleared at unload).
+gs_effect_t *coverage_effect = nullptr;
 std::atomic<bool> ui_thread_known{false};
 
 bool on_ui_thread()
@@ -295,6 +298,7 @@ void TextSource::request(View &view, const RasterParams &params)
 		job.source_height = pending_height_;
 	}
 	job.params = params;
+	job.coverage = coverage_effect != nullptr;
 	job.seq = next_seq_++;
 	view.requested = true;
 	view.requested_params = params;
@@ -487,14 +491,16 @@ void TextSource::upload_result(View &view)
 	// Only the drawing's part of the texture is drawn.
 	auto padded = [](int n, int to) { return uint32_t((n + to) / to * to); };
 	const uint32_t want_w = padded(r.width, 64), want_h = padded(r.height, 16);
+	const gs_color_format format = r.bytes == 1 ? GS_R8 : r.bytes == 2 ? GS_R8G8 : GS_BGRA;
 	const uint32_t have_w = view.texture ? gs_texture_get_width(view.texture) : 0;
 	const uint32_t have_h = view.texture ? gs_texture_get_height(view.texture) : 0;
-	const bool fits = have_w > uint32_t(r.width) && have_h > uint32_t(r.height) && have_w <= want_w + 128 &&
+	const bool fits = view.texture && gs_texture_get_color_format(view.texture) == format &&
+			  have_w > uint32_t(r.width) && have_h > uint32_t(r.height) && have_w <= want_w + 128 &&
 			  have_h <= want_h + 32;
 	if (!fits) {
 		// The new texture made before the old one goes, so if it can't be
 		// (out of video memory) the text still shows as it was.
-		gs_texture_t *texture = gs_texture_create(want_w, want_h, GS_BGRA, 1, nullptr, GS_DYNAMIC);
+		gs_texture_t *texture = gs_texture_create(want_w, want_h, format, 1, nullptr, GS_DYNAMIC);
 		if (!texture) {
 			const std::string why = "no " + std::to_string(want_w) + "x" + std::to_string(want_h) + " texture";
 			retry_later(view, why.c_str(), r.version);
@@ -511,17 +517,17 @@ void TextSource::upload_result(View &view)
 		return;
 	}
 	const uint32_t tex_w = gs_texture_get_width(view.texture), tex_h = gs_texture_get_height(view.texture);
-	const size_t row = size_t(r.width) * 4;
+	const size_t bytes = size_t(r.bytes), row = size_t(r.width) * bytes;
 	for (int y = 0; y < r.height; y++) {
 		uint8_t *dst = ptr + size_t(y) * linesize;
 		memcpy(dst, &r.pixels[size_t(y) * row], row);
 		// A clear pixel beyond its edge, where filtering a scaled drawing
 		// reaches (the rest of the texture is never sampled).
 		if (uint32_t(r.width) < tex_w)
-			memset(dst + row, 0, 4);
+			memset(dst + row, 0, bytes);
 	}
 	if (uint32_t(r.height) < tex_h)
-		memset(ptr + size_t(r.height) * linesize, 0, std::min(size_t(linesize), size_t(r.width + 1) * 4));
+		memset(ptr + size_t(r.height) * linesize, 0, std::min(size_t(linesize), row + bytes));
 	gs_texture_unmap(view.texture);
 
 	// Only its parts with ink are drawn: two triangles each, in the
@@ -645,8 +651,25 @@ void TextSource::draw(View &view, const RasterParams *at)
 	if (!view.texture)
 		return;
 	const RasterParams &p = view.drawn.params;
-	gs_effect_t *effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+	const bool coverage = view.drawn.bytes != 4;
+	if (coverage && !coverage_effect)
+		return; // (only drawn in that form when the effect's loaded)
+	gs_effect_t *effect = coverage ? coverage_effect : obs_get_base_effect(OBS_EFFECT_DEFAULT);
 	gs_eparam_t *image = gs_effect_get_param_by_name(effect, "image");
+	const char *technique = !coverage ? "Draw" : view.drawn.bytes == 2 ? "FillShadow" : "Fill";
+	if (coverage) {
+		// Their colours, premultiplied, as Cairo paints them.
+		auto premultiplied = [](uint32_t c) {
+			const float a = float(c >> 24) / 255.0f;
+			vec4 v;
+			vec4_set(&v, float(c & 0xFF) / 255.0f * a, float((c >> 8) & 0xFF) / 255.0f * a,
+				 float((c >> 16) & 0xFF) / 255.0f * a, a);
+			return v;
+		};
+		vec4 fill = premultiplied(view.drawn.fill_colour), shadow = premultiplied(view.drawn.shadow_colour);
+		gs_effect_set_vec4(gs_effect_get_param_by_name(effect, "fill_colour"), &fill);
+		gs_effect_set_vec4(gs_effect_get_param_by_name(effect, "shadow_colour"), &shadow);
+	}
 	if (at && p.close_to(*at)) {
 		// Drawn for exactly where it is: each of its pixels on one of the
 		// frame's, so it's copied rather than filtered (the same pixels;
@@ -671,7 +694,7 @@ void TextSource::draw(View &view, const RasterParams *at)
 	gs_matrix_translate3f(float((view.drawn.x0 - p.ox) / p.sx), float((view.drawn.y0 - p.oy) / p.sy), 0.0f);
 	gs_matrix_scale3f(float(1.0 / p.sx), float(1.0 / p.sy), 1.0f);
 	gs_effect_set_texture(image, view.texture);
-	while (gs_effect_loop(effect, "Draw")) {
+	while (gs_effect_loop(effect, technique)) {
 		if (view.parts) {
 			gs_load_vertexbuffer(view.parts);
 			gs_load_indexbuffer(nullptr);
@@ -1171,6 +1194,31 @@ void video_render(void *data, gs_effect_t *)
 }
 
 } // namespace
+
+void load_effects()
+{
+	char *path = obs_module_file("coverage.effect");
+	if (!path)
+		return;
+	obs_enter_graphics();
+	char *errors = nullptr;
+	coverage_effect = gs_effect_create_from_file(path, &errors);
+	obs_leave_graphics();
+	if (!coverage_effect)
+		blog(LOG_WARNING, "[obs-typeset] couldn't load coverage.effect (text is drawn in colour only): %s",
+		     errors ? errors : "no reason given");
+	bfree(errors);
+	bfree(path);
+}
+
+void unload_effects()
+{
+	obs_enter_graphics();
+	if (coverage_effect)
+		gs_effect_destroy(coverage_effect);
+	coverage_effect = nullptr;
+	obs_leave_graphics();
+}
 
 void register_source()
 {

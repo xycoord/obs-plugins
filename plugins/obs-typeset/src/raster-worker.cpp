@@ -66,7 +66,7 @@ void run(Worker *w)
 				cached = create_layout(context, job->doc);
 				cached_doc = job->doc;
 			}
-			raster = rasterise(cached, job->doc, job->params);
+			raster = rasterise(cached, job->doc, job->params, job->coverage);
 			if (raster.failed)
 				raster.error = "out of memory";
 		} catch (const std::exception &e) {

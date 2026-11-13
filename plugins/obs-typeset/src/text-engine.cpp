@@ -9,6 +9,8 @@
 #include <new>
 #include <strings.h>
 
+#include <hb-ot.h>
+
 namespace typeset {
 
 PangoContext *create_context(PangoFontMap *map)
@@ -656,7 +658,43 @@ static void dilate(uint8_t *data, int w, int h, int stride, double rx, double ry
 	}
 }
 
-Raster rasterise(PangoLayout *layout, const Document &doc, RasterParams params)
+// Whether any of the layout's letters come from a colour font (emoji):
+// those keep their own colours, so the text isn't one colour.
+static bool has_colour_glyphs(PangoLayout *layout)
+{
+	bool colour = false;
+	PangoLayoutIter *it = pango_layout_get_iter(layout);
+	do {
+		PangoLayoutRun *run = pango_layout_iter_get_run_readonly(it);
+		if (!run || !run->item || !run->item->analysis.font)
+			continue;
+		hb_font_t *font = pango_font_get_hb_font(run->item->analysis.font);
+		hb_face_t *face = font ? hb_font_get_face(font) : nullptr;
+		if (face && (hb_ot_color_has_layers(face) || hb_ot_color_has_png(face) || hb_ot_color_has_svg(face)
+#if HB_VERSION_ATLEAST(7, 0, 0)
+			     || hb_ot_color_has_paint(face)
+#endif
+			     ))
+			colour = true;
+	} while (!colour && pango_layout_iter_next_run(it));
+	pango_layout_iter_free(it);
+	return colour;
+}
+
+// Text that's one colour (with, at most, a shadow of another): it can be
+// drawn in the coverage form.
+static bool one_colour(PangoLayout *layout, const Document &doc)
+{
+	const Style &s = doc.style;
+	if (s.plate || (s.outline && s.outline_width > 0))
+		return false;
+	for (const Span &sp : doc.spans)
+		if (sp.has_colour)
+			return false;
+	return !has_colour_glyphs(layout);
+}
+
+Raster rasterise(PangoLayout *layout, const Document &doc, RasterParams params, bool coverage)
 {
 	Raster out;
 	const Style &s = doc.style;
@@ -705,6 +743,111 @@ Raster rasterise(PangoLayout *layout, const Document &doc, RasterParams params)
 		out.failed = true; // out of memory: try again later
 		return out;
 	};
+	// The shadow's shape, blurred: a mask of how much each pixel has, in
+	// the raster's pixels. No shadow is a wrong drawing, not a lesser one:
+	// a failure here fails the whole drawing, to be tried again.
+	auto shadow_mask = [&]() -> Surface {
+		// The blur's size is in source units, like everything else; half
+		// of it is the Gaussian's standard deviation. The spread grows the
+		// silhouette's pixels (fast) where the blur is wide enough to hide
+		// the difference; otherwise it's a stroke round each letter (exact).
+		const double sigma = std::max(0.0, s.shadow_blur) * 0.5;
+		const double spread = std::max(0.0, s.shadow_spread);
+		const double blur_px = sigma * std::min(params.sx, params.sy);
+		const double spread_px = spread * std::max(params.sx, params.sy);
+		const bool grow_after = spread > 0 && blur_px >= 1.0 && blur_px >= spread_px / 2;
+		Surface mask(cairo_image_surface_create(CAIRO_FORMAT_A8, out.width, out.height), cairo_surface_destroy);
+		if (cairo_surface_status(mask.get()) != CAIRO_STATUS_SUCCESS)
+			return Surface(nullptr, cairo_surface_destroy);
+		{
+			Context mcr(cairo_create(mask.get()), cairo_destroy);
+			cairo_translate(mcr.get(), params.ox - out.x0, params.oy - out.y0);
+			cairo_scale(mcr.get(), params.sx, params.sy);
+			cairo_translate(mcr.get(), s.shadow_x, s.shadow_y);
+			cairo_set_source_rgba(mcr.get(), 0, 0, 0, 1);
+			draw_text(mcr.get(), layout, s, f, true, grow_after ? 0.0 : spread);
+			if (cairo_status(mcr.get()) != CAIRO_STATUS_SUCCESS)
+				return Surface(nullptr, cairo_surface_destroy);
+		}
+		cairo_surface_flush(mask.get());
+		uint8_t *mask_data = cairo_image_surface_get_data(mask.get());
+		const int mask_stride = cairo_image_surface_get_stride(mask.get());
+		if (grow_after)
+			dilate(mask_data, out.width, out.height, mask_stride, spread * params.sx, spread * params.sy);
+		box_blur(mask_data, out.width, out.height, mask_stride, sigma * params.sx, sigma * params.sy);
+		cairo_surface_mark_dirty(mask.get());
+		return mask;
+	};
+
+	if (coverage && one_colour(layout, doc)) {
+		// The text's coverage, and its shadow's, side by side in each pixel.
+		// With no shadow, drawn straight into the raster's pixels: rows of
+		// a whole number of 4 bytes (as Cairo's A8 rows are), the few
+		// pixels added on the right clear.
+		if (!s.shadow)
+			out.width = (out.width + 3) / 4 * 4;
+		std::vector<uint8_t> direct_pixels;
+		if (!s.shadow) {
+			try {
+				direct_pixels.assign(size_t(out.width) * size_t(out.height), 0);
+			} catch (const std::bad_alloc &) {
+				return fail();
+			}
+		}
+		Surface fill(s.shadow ? cairo_image_surface_create(CAIRO_FORMAT_A8, out.width, out.height)
+				      : cairo_image_surface_create_for_data(direct_pixels.data(), CAIRO_FORMAT_A8,
+									    out.width, out.height, out.width),
+			     cairo_surface_destroy);
+		if (cairo_surface_status(fill.get()) != CAIRO_STATUS_SUCCESS)
+			return fail();
+		{
+			Context cr(cairo_create(fill.get()), cairo_destroy);
+			cairo_translate(cr.get(), params.ox - out.x0, params.oy - out.y0);
+			cairo_scale(cr.get(), params.sx, params.sy);
+			cairo_set_source_rgba(cr.get(), 0, 0, 0, 1);
+			draw_text(cr.get(), layout, s, f, true); // the letters alone (no outline: see one_colour)
+			if (cairo_status(cr.get()) != CAIRO_STATUS_SUCCESS)
+				return fail();
+		}
+		cairo_surface_flush(fill.get());
+		Surface shadow(nullptr, cairo_surface_destroy);
+		if (s.shadow) {
+			shadow = shadow_mask();
+			if (!shadow)
+				return fail();
+		}
+		out.bytes = shadow ? 2 : 1;
+		out.fill_colour = s.colour;
+		out.shadow_colour = s.shadow_colour;
+		if (!shadow) {
+			fill.reset(); // before its pixels move
+			out.pixels = std::move(direct_pixels);
+			find_parts(out);
+			return out;
+		}
+		try {
+			out.pixels.assign(size_t(out.width) * size_t(out.height) * size_t(out.bytes), 0);
+		} catch (const std::bad_alloc &) {
+			return fail();
+		}
+		const uint8_t *fd = cairo_image_surface_get_data(fill.get());
+		const int fs = cairo_image_surface_get_stride(fill.get());
+		{
+			const uint8_t *sd = cairo_image_surface_get_data(shadow.get());
+			const int ss = cairo_image_surface_get_stride(shadow.get());
+			for (int y = 0; y < out.height; y++) {
+				uint8_t *o = &out.pixels[size_t(y) * size_t(out.width) * 2];
+				const uint8_t *a = fd + size_t(y) * size_t(fs), *b = sd + size_t(y) * size_t(ss);
+				for (int x = 0; x < out.width; x++) {
+					o[2 * x] = a[x];
+					o[2 * x + 1] = b[x];
+				}
+			}
+		}
+		find_parts(out);
+		return out;
+	}
+
 	const int packed = out.width * 4;
 	const bool direct = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, out.width) == packed;
 	try {
@@ -730,40 +873,9 @@ Raster rasterise(PangoLayout *layout, const Document &doc, RasterParams params)
 		}
 
 		if (s.shadow) {
-			// No shadow is a wrong drawing, not a lesser one: a failure
-			// here fails the whole drawing, to be tried again.
-			// The blur's size is in source units, like everything else;
-			// half of it is the Gaussian's standard deviation. The spread
-			// grows the silhouette's pixels (fast) where the blur is wide
-			// enough to hide their whole-pixel steps; otherwise it's a
-			// stroke round each letter (exact).
-			const double sigma = std::max(0.0, s.shadow_blur) * 0.5;
-			const double spread = std::max(0.0, s.shadow_spread);
-			const double blur_px = sigma * std::min(params.sx, params.sy);
-			const double spread_px = spread * std::max(params.sx, params.sy);
-			const bool grow_after = spread > 0 && blur_px >= 1.0 && blur_px >= spread_px / 2;
-			Surface mask(cairo_image_surface_create(CAIRO_FORMAT_A8, out.width, out.height),
-				     cairo_surface_destroy);
-			if (cairo_surface_status(mask.get()) != CAIRO_STATUS_SUCCESS)
+			Surface mask = shadow_mask();
+			if (!mask)
 				return fail();
-			{
-				Context mcr(cairo_create(mask.get()), cairo_destroy);
-				cairo_translate(mcr.get(), params.ox - out.x0, params.oy - out.y0);
-				cairo_scale(mcr.get(), params.sx, params.sy);
-				cairo_translate(mcr.get(), s.shadow_x, s.shadow_y);
-				cairo_set_source_rgba(mcr.get(), 0, 0, 0, 1);
-				draw_text(mcr.get(), layout, s, f, true, grow_after ? 0.0 : spread);
-				if (cairo_status(mcr.get()) != CAIRO_STATUS_SUCCESS)
-					return fail();
-			}
-			cairo_surface_flush(mask.get());
-			uint8_t *mask_data = cairo_image_surface_get_data(mask.get());
-			const int mask_stride = cairo_image_surface_get_stride(mask.get());
-			if (grow_after)
-				dilate(mask_data, out.width, out.height, mask_stride, spread * params.sx, spread * params.sy);
-			box_blur(mask_data, out.width, out.height, mask_stride, sigma * params.sx, sigma * params.sy);
-			cairo_surface_mark_dirty(mask.get());
-
 			cairo_save(cr.get());
 			cairo_identity_matrix(cr.get());
 			set_colour(cr.get(), s.shadow_colour);
@@ -798,21 +910,39 @@ void find_parts(Raster &r)
 	constexpr int tile = 16;
 	const int tx = (r.width + tile - 1) / tile, ty = (r.height + tile - 1) / tile;
 	std::vector<uint8_t> inked(size_t(tx) * size_t(ty), 0);
+	const size_t bytes = size_t(r.bytes);
+	// Whether any of n bytes is set, eight at a time.
+	auto any = [](const uint8_t *p, size_t n) {
+		uint64_t acc = 0;
+		size_t i = 0;
+		for (; i + 8 <= n; i += 8) {
+			uint64_t v;
+			memcpy(&v, p + i, 8);
+			acc |= v;
+		}
+		for (; i < n; i++)
+			acc |= p[i];
+		return acc != 0;
+	};
 	for (int y = 0; y < r.height; y++) {
-		const uint32_t *row = reinterpret_cast<const uint32_t *>(&r.pixels[size_t(y) * size_t(r.width) * 4]);
+		const uint8_t *row = &r.pixels[size_t(y) * size_t(r.width) * bytes];
 		const int t0 = std::max(0, (y - 1) / tile), t1 = std::min(ty - 1, (y + 1) / tile);
-		for (int x = 0; x < r.width; x++) {
-			if (!row[x])
-				continue;
-			// This pixel, and the tiles a pixel either side of it.
-			const int u0 = std::max(0, (x - 1) / tile), u1 = std::min(tx - 1, (x + 1) / tile);
+		auto mark = [&](int u) {
 			for (int t = t0; t <= t1; t++)
-				for (int u = u0; u <= u1; u++)
-					inked[size_t(t) * size_t(tx) + size_t(u)] = 1;
-			// The rest of this tile is marked: on to the next tile.
-			const int next = (x / tile + 1) * tile - 2;
-			if (next > x)
-				x = next;
+				inked[size_t(t) * size_t(tx) + size_t(u)] = 1;
+		};
+		for (int u = 0; u < tx; u++) {
+			const int x0 = u * tile, x1 = std::min(r.width, x0 + tile);
+			const uint8_t *chunk = row + size_t(x0) * bytes;
+			const size_t n = size_t(x1 - x0) * bytes;
+			if (!any(chunk, n))
+				continue;
+			mark(u);
+			// Ink at a tile's edge reaches the tile beside it.
+			if (u > 0 && any(chunk, bytes))
+				mark(u - 1);
+			if (u + 1 < tx && any(chunk + n - bytes, bytes))
+				mark(u + 1);
 		}
 	}
 	long drawn = 0;

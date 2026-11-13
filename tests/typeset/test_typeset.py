@@ -213,6 +213,37 @@ def test_scaling(out):
               "mean difference %.3f, largest %d" % (mean, peak))
 
 
+def test_coverage(out):
+    """Text in one colour is drawn from its coverage (a quarter or half the
+    data) through the plugin's own effect, with the same picture as in colour
+    form (here forced by a run in the same colour). Cairo puts letters into
+    the two forms' surfaces by slightly different routes, so a part-covered
+    row at a letter's top or bottom edge can differ: the rest is the same."""
+    print("-- drawn from coverage")
+    text = "Typeset 19:30"
+    look = {"colour": 0xFF40C0F0, "shadow": True, "shadow_colour": 0xFF302010, "shadow_opacity": 75}
+    same = [{"start": 0, "end": len(text), "colour": 0xFF40C0F0}]
+    sources = [text_source("Coverage", text, 90, **look),
+               text_source("Colour", text, 90, spans=same, **look),
+               text_source("Coverage scaled", text, 36, **look),
+               text_source("Colour scaled", text, 36, spans=same, **look)]
+    items = [item("Coverage", 2, 40, 40), item("Colour", 3, 960, 40),
+             item("Coverage scaled", 4, 40.5, 400.25, 2.3), item("Colour scaled", 5, 960.5, 400.25, 2.3)]
+    with ObsSession(collection(sources, items)) as obs:
+        time.sleep(2)
+        frame = obs.frame().astype(int)
+        save(out, "coverage.png", frame.astype(np.uint8))
+        for name, y, h in (("as drawn", 0, 300), ("scaled 2.3x, part-way across a pixel", 360, 360)):
+            a, b = frame[y:y + h, 0:920, :3], frame[y:y + h, 920:1840, :3]
+            d = np.abs(a - b)
+            inked = (np.abs(a - np.array(BG)).sum(axis=2) > 30).sum()
+            differing = (d.max(axis=2) > 8).sum()
+            check(d.mean() < 0.05 and differing < inked * 0.005 and inked > 2000,
+                  "one-colour text drawn from coverage matches colour form, %s" % name,
+                  "mean difference %.3f; %d of %d inked pixels differ by more than 8 of 255" % (
+                      d.mean(), differing, inked))
+
+
 # --- 2. Editing in the preview -----------------------------------------------------------------
 
 def canvas_on_screen(screen):
@@ -715,7 +746,7 @@ def test_history(out):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", help="keep the frames and screenshots in this folder")
-    parser.add_argument("tests", nargs="*", default=["scaling", "editing", "features", "rich", "history"])
+    parser.add_argument("tests", nargs="*", default=["scaling", "coverage", "editing", "features", "rich", "history"])
     args = parser.parse_args()
     if args.out:
         os.makedirs(args.out, exist_ok=True)
