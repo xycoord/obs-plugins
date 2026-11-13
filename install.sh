@@ -172,16 +172,36 @@ CMAKE
 if pgrep -x obs >/dev/null 2>&1; then
 	say "note: OBS is running; restart it to load the new plugins."
 fi
+# A plugin that doesn't build is reported and skipped, and the rest are still
+# installed; the script fails at the end, naming it.
+failed=()
+skip() {
+	printf 'install.sh: %s (its log: %s)\n' "$1" "$build.log" >&2
+	failed+=("$name")
+}
 for name in "${plugins[@]}"; do
 	src=$ROOT/plugins/$name
 	build=$CACHE/build/obs-$version/$name
 	say "building $name..."
 	mkdir -p "$build"
-	cmake -S "$src" -B "$build" -DCMAKE_BUILD_TYPE=RelWithDebInfo -Dlibobs_DIR="$sdk/cmake" -Dobs-frontend-api_DIR="$sdk/cmake" \
-		-Wno-dev >"$build.log" 2>&1 || { cat "$build.log" >&2; die "configuring $name failed"; }
-	cmake --build "$build" -j"$(nproc)" >>"$build.log" 2>&1 || { tail -40 "$build.log" >&2; die "building $name failed"; }
+	# (--no-warn-unused-cli: the frontend API's folder is given to every
+	# plugin, and only those that add to OBS's window use it.)
+	if ! cmake -S "$src" -B "$build" -DCMAKE_BUILD_TYPE=RelWithDebInfo -Dlibobs_DIR="$sdk/cmake" \
+		-Dobs-frontend-api_DIR="$sdk/cmake" --no-warn-unused-cli -Wno-dev >"$build.log" 2>&1; then
+		cat "$build.log" >&2
+		skip "configuring $name failed"
+		continue
+	fi
+	if ! cmake --build "$build" -j"$(nproc)" >>"$build.log" 2>&1; then
+		tail -40 "$build.log" >&2
+		skip "building $name failed"
+		continue
+	fi
 	module=$(find "$build" -maxdepth 2 -name "$name.so" | head -1)
-	[ -n "$module" ] || die "building $name made no $name.so"
+	if [ -z "$module" ]; then
+		skip "building $name made no $name.so"
+		continue
+	fi
 
 	# Put the new copy together beside the old one and swap it in, so a
 	# failure part-way leaves the working copy in place.
@@ -206,3 +226,7 @@ for name in "${plugins[@]}"; do
 		fi
 	done
 done
+
+if [ ${#failed[@]} -gt 0 ]; then
+	die "not installed: ${failed[*]} (see above); the others were"
+fi
