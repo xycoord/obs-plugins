@@ -2,14 +2,14 @@
 // cream paper) that need to go on black or, with a transparent background,
 // over moving visuals.
 //
-// Keeping hue: each colour's perceived lightness (OKLab L) is flipped, with
-// its hue and chroma kept, so the contrast between any two neighbouring
-// colours, mostly their difference in L, is the same after as before: text
-// that stands out from its badge on the page still does. (Flipping HSL
-// lightness instead, as this filter used to, leaves vivid colours where they
-// are and moves pale and dark ones, so orange text on navy, say, loses almost
-// all its contrast.) Light vivid colours lose chroma: no dark yellow is as
-// colourful as yellow.
+// Keeping hue: each colour's tone (CIELAB L*, perceived lightness from its
+// luminance alone, as in Google's HCT) is flipped, with its OKLab hue and
+// chroma kept, so the contrast between any two neighbouring colours, which is
+// a matter of luminance, is the same after as before: text that stands out
+// from its badge on the page still does. (Flipping HSL lightness instead, as
+// this filter used to, leaves vivid colours where they are and moves pale and
+// dark ones, so orange text on navy, say, loses almost all its contrast.)
+// Light vivid colours lose chroma: no dark yellow is as colourful as yellow.
 //
 // The perceptual inversion isn't linear for blends with paper, so it is
 // applied to each part's full-strength colour, not to the pixel. Coverage is
@@ -128,12 +128,14 @@ float3 invert(float3 rgb)
 }
 
 // ---------------------------------------------------- perceptual inversion --
-// Keeping hue: OKLab lightness L becomes 1 - L, with hue and chroma (a, b)
-// kept. L is perceived lightness on an even scale, so every difference of
-// lightness between two colours, which is most of their contrast, is the same
-// after as before: text that stands out from its badge still does. A colour
-// whose inverse is outside sRGB (a light, vivid one: no dark yellow is as
-// colourful as yellow) loses chroma, at the same lightness.
+// Keeping hue: each colour's tone, CIELAB L* (which depends only on its
+// luminance), becomes 1 - L*, keeping its OKLab hue and chroma. This is how
+// HCT (Material Design's colour system) makes dark themes: contrast is a
+// matter of luminance, and L* is luminance on a perceptually even scale, so
+// every difference of tone between two colours, and with it their contrast,
+// is the same after as before. A colour whose inverse is outside sRGB (a
+// light, vivid one: no dark yellow is as colourful as yellow) loses chroma, at
+// the same tone.
 
 float3 srgb_to_linear(float3 c)
 {
@@ -175,22 +177,52 @@ bool in_gamut(float3 c)
 	return min(c.r, min(c.g, c.b)) >= -0.0001 && max(c.r, max(c.g, c.b)) <= 1.0001;
 }
 
+// CIELAB L* (0..1) of a luminance, and back.
+float tone_of(float y)
+{
+	return (y > 0.008856) ? 1.16 * pow(y, 1.0 / 3.0) - 0.16 : y * 9.033;
+}
+
+float luminance_of_tone(float t)
+{
+	return (t > 0.08) ? pow((t + 0.16) / 1.16, 3.0) : t / 9.033;
+}
+
+// The linear colour with OKLab chroma ab and luminance y: Newton on OKLab L
+// (luminance is a cubic in it).
+float3 with_luminance(float y, float2 ab)
+{
+	float3 u = float3(dot(float2(0.3963377774, 0.2158037573), ab),
+			  dot(float2(-0.1055613458, -0.0638541728), ab),
+			  dot(float2(-0.0894841775, -1.2914855480), ab));
+	float3 cw = float3(-0.04077454, 1.11249218, -0.07171764);  // luminance from cubed LMS
+	float l = pow(max(y, 0.0), 1.0 / 3.0);
+	for (int i = 0; i < 8; i++) {
+		float3 q = l + u;
+		float f = dot(cw, q * q * q) - y;
+		float df = 3.0 * dot(cw, q * q);
+		l = saturate(l - f / ((abs(df) > 0.0001) ? df : 0.0001));
+	}
+	return oklab_to_linear(float3(l, ab));
+}
+
 float3 perceptual_invert(float3 rgb)
 {
-	float3 lab = linear_to_oklab(srgb_to_linear(rgb));
-	lab.x = 1.0 - lab.x;
-	float3 c = oklab_to_linear(lab);
+	float3 lin = srgb_to_linear(rgb);
+	float y = luminance_of_tone(1.0 - tone_of(dot(float3(0.2126, 0.7152, 0.0722), lin)));
+	float2 ab = linear_to_oklab(lin).yz;
+	float3 c = with_luminance(y, ab);
 	if (!in_gamut(c)) {
 		float lo = 0.0;
 		float hi = 1.0;
-		for (int i = 0; i < 12; i++) {
+		for (int i = 0; i < 10; i++) {
 			float k = 0.5 * (lo + hi);
-			if (in_gamut(oklab_to_linear(float3(lab.x, lab.yz * k))))
+			if (in_gamut(with_luminance(y, ab * k)))
 				lo = k;
 			else
 				hi = k;
 		}
-		c = oklab_to_linear(float3(lab.x, lab.yz * lo));
+		c = with_luminance(y, ab * lo);
 	}
 	return linear_to_srgb(c);
 }

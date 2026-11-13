@@ -79,24 +79,35 @@ Then two faults that were plain to see on one logo (Paper Wolves):
 ### Perceptual inversion
 
 Inverting HSL lightness doesn't keep contrast: it leaves vivid colours where they are and moves pale
-and dark ones, so of the 87 pairs of the suite's colours (with paper) that differ clearly in perceived
-lightness (OKLab ΔL > 0.25), 14 lose more than half of it (orange on navy: 0.46 to 0.07). Flipping
-OKLab L keeps every difference exactly. The filter now does that, and the suite's ideals use it, so
-the scores below aren't comparable with those above.
+and dark ones. Of the 92 pairs of the suite's colours (with paper) that differ clearly in tone (CIELAB
+L* by more than 25), 13 lose more than half of it (orange on navy: 0.46 to 0.07 in OKLab L).
 
-The inversion is no longer linear for blends with paper, so the colour can't be right over black
-regardless of alpha any more: each part's full-strength colour is inverted at the alpha estimated for
-it, and alpha errors show over black too. The ceiling (ideal alpha) is about the same as before.
+The filter now flips tone instead, L* to 100 - L*, keeping OKLab hue and chroma (chroma reduced at the
+same tone outside sRGB). That is how Google's HCT makes dark themes: L* depends only on luminance, so
+tone differences are contrast, and every one is kept exactly. An OKLab-lightness flip was tried first;
+OKLab L isn't a function of luminance alone, so it kept contrast less well and crushed pale parts to
+near black. Over the same 153 pairs:
+
+| Inversion | Mean change in tone contrast (L*) | Mean change in WCAG ratio (log) | Clear pairs losing over half |
+|---|---|---|---|
+| HSL lightness | 14.8 | 0.476 | 13 of 92 |
+| OKLab lightness | 5.9 | 0.234 | 1 of 92 |
+| Tone (L*) | 0.0 | 0.046 | 0 of 92 |
+
+The suite's ideals use the same inversion (`oklab.py`), so the scores below aren't comparable with
+those above. The inversion is no longer linear for blends with paper, so the colour can't be right over
+black regardless of alpha any more: each part's full-strength colour is inverted at the alpha estimated
+for it, and alpha errors show over black too.
 
 | Version | Tuning | Held out | Notes |
 |---|---|---|---|
-| HSL inversion (0f9003b) against these ideals | 36.16 | 48.36 | the colours differ |
-| OKLab inversion | **14.71** | **13.16** | |
-| Ceiling for it | 5.59 | | best possible alpha for its colours |
+| OKLab lightness, against its own ideals | 14.71 | 13.16 | |
+| Tone | **12.30** | **10.98** | |
+| Ceiling for it | 5.25 | | best possible alpha for its colours |
 
-Tried and not kept: treating a band three or more pixels wide beside a sharp edge as a plateau, so a
-pale outline in a tint of its neighbour's hue isn't read as that neighbour at partial coverage. Seams
-improve, thin features and shadows get worse; no net gain.
+Tried and not kept (with the OKLab version): treating a band three or more pixels wide beside a sharp
+edge as a plateau, so a pale outline in a tint of its neighbour's hue isn't read as that neighbour at
+partial coverage. Seams improve, thin features and shadows get worse; no net gain.
 
 What the review (Opus, Fable, GPT) thinks would take it further. All of it needs evidence from beyond
 a pixel's neighbourhood, and they estimate a headline of about 9–11:
