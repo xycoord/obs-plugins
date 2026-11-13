@@ -154,8 +154,11 @@ FormatBar::FormatBar(QWidget *parent, Actions actions)
 	setObjectName("typesetFormatBar");
 
 	auto *row = new QHBoxLayout(this);
-	row->setContentsMargins(5, 4, 5, 4);
-	row->setSpacing(2);
+	// One margin all round, one gap within a group, a wider one between
+	// groups (and either side of the line).
+	constexpr int margin = 6, gap = 4, group_gap = 8; // group_gap is added to gap
+	row->setContentsMargins(margin, margin, margin, margin);
+	row->setSpacing(gap);
 
 	// The typeface: OBS's fonts, each shown in itself; type to find one.
 	family_ = new QFontComboBox(this);
@@ -210,7 +213,7 @@ FormatBar::FormatBar(QWidget *parent, Actions actions)
 		}
 	});
 	row->addWidget(size);
-	row->addSpacing(6);
+	row->addSpacing(group_gap);
 
 	auto button = [&](const QString &tooltip, bool checkable) {
 		auto *b = new QToolButton(this);
@@ -259,9 +262,9 @@ FormatBar::FormatBar(QWidget *parent, Actions actions)
 	line->setFrameShadow(QFrame::Plain);
 	line->setFixedWidth(1);
 	line->setStyleSheet("color: palette(mid);");
-	row->addSpacing(4);
+	row->addSpacing(group_gap / 2);
 	row->addWidget(line);
-	row->addSpacing(4);
+	row->addSpacing(group_gap / 2);
 	align_ = button(tip("Bar.Align"), false);
 	align_->setPopupMode(QToolButton::InstantPopup);
 	auto *menu = new QMenu(align_);
@@ -279,6 +282,18 @@ FormatBar::FormatBar(QWidget *parent, Actions actions)
 	// pressed button in OBS's own toolbars.
 	// (Only the colour: the shape is the theme's own, as on its buttons.)
 	setStyleSheet("QToolButton:checked { background: palette(highlight); color: palette(highlighted-text); }");
+
+	// Every control the same height (OBS's theme sizes each kind its own
+	// way), the buttons square at it, and the line a little shorter.
+	int h = 0;
+	for (QWidget *w : std::initializer_list<QWidget *>{family_, weight_, size_, italic_, underline_, super_, sub_,
+							    colour_, clear_, align_})
+		h = std::max(h, w->sizeHint().height());
+	for (QWidget *w : std::initializer_list<QWidget *>{family_, weight_, size_})
+		w->setFixedHeight(h);
+	for (QToolButton *b : {italic_, underline_, super_, sub_, colour_, clear_, align_})
+		b->setFixedSize(b == align_ ? h + h / 3 : h, h); // (alignment has its menu's arrow)
+	line->setFixedHeight(h - 2 * gap);
 
 	// Keys typed into the size field or the weight list are theirs, not
 	// OBS's shortcuts (Delete would remove the source).
