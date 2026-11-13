@@ -497,26 +497,27 @@ void TextSource::upload_result(View &view)
 	const bool fits = view.texture && gs_texture_get_color_format(view.texture) == format &&
 			  have_w > uint32_t(r.width) && have_h > uint32_t(r.height) && have_w <= want_w + 128 &&
 			  have_h <= want_h + 32;
+	// A new texture is made and filled before the old one goes, so if it
+	// can't be (out of video memory) the text still shows as it was.
+	gs_texture_t *fresh = nullptr;
 	if (!fits) {
-		// The new texture made before the old one goes, so if it can't be
-		// (out of video memory) the text still shows as it was.
-		gs_texture_t *texture = gs_texture_create(want_w, want_h, format, 1, nullptr, GS_DYNAMIC);
-		if (!texture) {
+		fresh = gs_texture_create(want_w, want_h, format, 1, nullptr, GS_DYNAMIC);
+		if (!fresh) {
 			const std::string why = "no " + std::to_string(want_w) + "x" + std::to_string(want_h) + " texture";
 			retry_later(view, why.c_str(), r.version);
 			return;
 		}
-		if (view.texture)
-			gs_texture_destroy(view.texture);
-		view.texture = texture;
 	}
+	gs_texture_t *target = fresh ? fresh : view.texture;
 	uint8_t *ptr = nullptr;
 	uint32_t linesize = 0;
-	if (!gs_texture_map(view.texture, &ptr, &linesize)) {
+	if (!gs_texture_map(target, &ptr, &linesize)) {
+		if (fresh)
+			gs_texture_destroy(fresh);
 		retry_later(view, "couldn't write to its texture", r.version);
 		return;
 	}
-	const uint32_t tex_w = gs_texture_get_width(view.texture), tex_h = gs_texture_get_height(view.texture);
+	const uint32_t tex_w = gs_texture_get_width(target), tex_h = gs_texture_get_height(target);
 	const size_t bytes = size_t(r.bytes), row = size_t(r.width) * bytes;
 	for (int y = 0; y < r.height; y++) {
 		uint8_t *dst = ptr + size_t(y) * linesize;
@@ -528,7 +529,12 @@ void TextSource::upload_result(View &view)
 	}
 	if (uint32_t(r.height) < tex_h)
 		memset(ptr + size_t(r.height) * linesize, 0, std::min(size_t(linesize), row + bytes));
-	gs_texture_unmap(view.texture);
+	gs_texture_unmap(target);
+	if (fresh) {
+		if (view.texture)
+			gs_texture_destroy(view.texture);
+		view.texture = fresh;
+	}
 
 	// Only its parts with ink are drawn: two triangles each, in the
 	// drawing's pixels, as gs_draw_sprite would draw the whole.
