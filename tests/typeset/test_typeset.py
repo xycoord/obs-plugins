@@ -579,15 +579,14 @@ def test_history(out):
         check(text() == "After all" and bool(obs.settings("Title").get("spans")),
               "and Redo puts it back, styles too", "%r" % text())
 
-        # The format bar's alignment menu: at once, in the same undo step as
+        # The format bar's centre button: at once, in the same undo step as
         # the edit's words.
         tw, th = size("Title")
         obs.click(*to_screen(200 + tw * 0.5, 200 + th / 2), repeat=2)
         obs.key("End")
         obs.type("!")
         time.sleep(0.3)
-        obs.click(*bar_button(obs, "align"))
-        obs.key("Down", "Down", "Return")  # Left, Centre
+        obs.click(*bar_button(obs, "centre"))
         obs.key("Escape")
         align = lambda: obs.settings("Title").get("align", 0)  # noqa: E731
         check(align() == 1 and text() == "After all!", "the bar's alignment button aligns the text",

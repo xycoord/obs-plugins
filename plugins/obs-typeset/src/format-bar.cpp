@@ -126,37 +126,55 @@ QIcon script_icon(QWidget *w, bool super)
 	});
 }
 
-// The colour: an A over a bar of it, as slide tools show it.
+// The colour: an A over a chip of it, as slide tools show it. The chip is
+// framed, with a gap, so it reads as a colour (white included), not an
+// underline.
 QIcon colour_icon(QWidget *w, uint32_t abgr)
 {
 	return drawn_icon(w, [abgr](QPainter &p, QColor c) {
-		p.setPen(stroke(c));
+		p.setPen(stroke(c, 1.6));
 		QPainterPath a;
-		a.moveTo(5.5, 13.5);
+		a.moveTo(6, 12);
 		a.lineTo(10, 2.5);
-		a.lineTo(14.5, 13.5);
+		a.lineTo(14, 12);
 		p.drawPath(a);
-		p.drawLine(QPointF(7.2, 9.5), QPointF(12.8, 9.5));
+		p.drawLine(QPointF(7.6, 8.6), QPointF(12.4, 8.6));
+		// A frame, a gap of the button's own colour, then the colour: a chip
+		// for any colour, white on a light frame included.
 		const QColor fill(abgr & 0xFF, (abgr >> 8) & 0xFF, (abgr >> 16) & 0xFF);
-		p.setPen(QPen(c, 0.8));
+		p.setPen(QPen(c, 1));
+		p.setBrush(Qt::NoBrush);
+		p.drawRoundedRect(QRectF(3.5, 13.5, 13, 6), 2, 2);
+		p.setPen(Qt::NoPen);
 		p.setBrush(fill);
-		p.drawRoundedRect(QRectF(3.5, 15.5, 13, 3), 1, 1);
+		p.drawRoundedRect(QRectF(5.5, 15.5, 9, 2), 0.8, 0.8);
 	});
 }
 
-// Clear formatting: an eraser, rubbing out.
+// Clear formatting: an eraser at work, its rubber end solid, on a line it
+// has rubbed out.
 QIcon clear_icon(QWidget *w)
 {
 	return drawn_icon(w, [](QPainter &p, QColor c) {
+		p.save();
+		p.translate(10, 9.5);
+		p.rotate(-45);
+		// The eraser lies along x: its body, 14 long and 7 high, the left
+		// third the rubber.
+		const QRectF body(-7, -3.5, 14, 7);
+		QPainterPath outline;
+		outline.addRoundedRect(body, 1.6, 1.6);
+		QPainterPath rubber;
+		rubber.addRect(QRectF(-7, -3.5, 5, 7));
+		p.setPen(Qt::NoPen);
+		p.setBrush(c);
+		p.drawPath(outline.intersected(rubber));
 		p.setPen(stroke(c, 1.5));
 		p.setBrush(Qt::NoBrush);
-		// The eraser, tilted: its body and the band across it.
-		QPolygonF body;
-		body << QPointF(4, 12.5) << QPointF(11, 5.5) << QPointF(16, 10.5) << QPointF(9, 17.5);
-		p.drawPolygon(body);
-		p.drawLine(QPointF(7.5, 9), QPointF(12.5, 14));
-		// What it has rubbed out: a line under it.
-		p.drawLine(QPointF(9, 17.5), QPointF(16.5, 17.5));
+		p.drawPath(outline);
+		p.restore();
+		p.setPen(stroke(c, 1.5));
+		p.drawLine(QPointF(9.5, 17.5), QPointF(17, 17.5));
 	});
 }
 
@@ -277,10 +295,17 @@ FormatBar::FormatBar(QWidget *parent, Actions actions)
 		row->addWidget(b);
 		return b;
 	};
-	auto toggle = [this](Toggle t) {
-		return [this, t] {
+	// After any button, the keyboard is the text's again (a click on the bar
+	// makes its window the active one), so typing carries on.
+	auto then_back = [this] {
+		if (actions_.back_to_text)
+			actions_.back_to_text();
+	};
+	auto toggle = [this, then_back](Toggle t) {
+		return [this, t, then_back] {
 			if (!updating_ && actions_.toggle)
 				actions_.toggle(t);
+			then_back();
 		};
 	};
 	italic_ = button(tip("Bar.Italic", "Ctrl+I"), true);
@@ -302,9 +327,10 @@ FormatBar::FormatBar(QWidget *parent, Actions actions)
 	});
 	clear_ = button(tip("Bar.Clear", "Ctrl+Space"), false);
 	clear_->setIcon(clear_icon(this));
-	QObject::connect(clear_, &QToolButton::clicked, this, [this] {
+	QObject::connect(clear_, &QToolButton::clicked, this, [this, then_back] {
 		if (actions_.clear)
 			actions_.clear();
+		then_back();
 	});
 
 	// Everything before acts on the selection (or what's typed next);
@@ -319,18 +345,20 @@ FormatBar::FormatBar(QWidget *parent, Actions actions)
 	row->addSpacing((group_gap - gap) / 2);
 	row->addWidget(line);
 	row->addSpacing((group_gap - gap) / 2);
-	align_ = button(tip("Bar.Align"), false);
-	align_->setPopupMode(QToolButton::InstantPopup);
-	auto *menu = new QMenu(align_);
+	// Alignment: left, centre and right, the text's own lit, as slide tools
+	// show it (all three in sight, one click each).
 	const char *names[] = {"Align.Left", "Align.Centre", "Align.Right"};
 	for (int i = 0; i < 3; i++) {
-		QAction *a = menu->addAction(align_icon(this, i), tip(names[i]));
-		QObject::connect(a, &QAction::triggered, this, [this, i] {
-			if (actions_.align)
+		QToolButton *b = button(tip(names[i]) + " \u2014 " + tip("Bar.Align"), true);
+		b->setIcon(align_icon(this, i));
+		QObject::connect(b, &QToolButton::clicked, this, [this, i, then_back] {
+			if (!updating_ && actions_.align)
 				actions_.align(i);
+			set_state(state_); // lit as the text is, whatever the click did to the button
+			then_back();
 		});
+		aligns_[i] = b;
 	}
-	align_->setMenu(menu);
 
 	// A style that's on shows in the theme's highlight, as plainly as a
 	// pressed button in OBS's own toolbars.
@@ -345,12 +373,12 @@ FormatBar::FormatBar(QWidget *parent, Actions actions)
 	// way), the buttons square at it, and the line a little shorter.
 	int h = 0;
 	for (QWidget *w : std::initializer_list<QWidget *>{family_, weight_, size_, italic_, underline_, super_, sub_,
-							    colour_, clear_, align_})
+							    colour_, clear_, aligns_[0]})
 		h = std::max(h, w->sizeHint().height());
 	for (QWidget *w : std::initializer_list<QWidget *>{family_, weight_, size_})
 		w->setFixedHeight(h);
-	for (QToolButton *b : {italic_, underline_, super_, sub_, colour_, clear_, align_})
-		b->setFixedSize(b == align_ ? h + h / 3 : h, h); // (alignment has its menu's arrow)
+	for (QToolButton *b : {italic_, underline_, super_, sub_, colour_, clear_, aligns_[0], aligns_[1], aligns_[2]})
+		b->setFixedSize(h, h);
 	line->setFixedHeight(h - 2 * gap);
 
 	// Keys typed into the size field or the weight list are theirs, not
@@ -451,7 +479,8 @@ void FormatBar::set_state(const State &s)
 	super_->setChecked(s.script == 1);
 	sub_->setChecked(s.script == 2);
 	colour_->setIcon(colour_icon(this, s.colour));
-	align_->setIcon(align_icon(this, s.align));
+	for (int i = 0; i < 3; i++)
+		aligns_[i]->setChecked(s.align == i);
 	updating_ = false;
 	adjustSize();
 }
@@ -503,9 +532,10 @@ void FormatBar::log_geometry() const
 		return QString("%1,%2").arg(g.x()).arg(g.y());
 	};
 	const QString line = QString("typeface=%1 weight=%2 size=%3 italic=%4 underline=%5 super=%6 sub=%7 "
-				     "colour=%8 align=%9 clear=%10")
+				     "colour=%8 align=%9 clear=%10 centre=%11")
 				     .arg(c(family_), c(weight_), c(size_), c(italic_), c(underline_), c(super_), c(sub_),
-					  c(colour_), c(align_), c(clear_));
+					  c(colour_), c(aligns_[0]), c(clear_))
+				     .arg(c(aligns_[1]));
 	blog(LOG_INFO, "[obs-typeset] bar %s", line.toUtf8().constData());
 }
 

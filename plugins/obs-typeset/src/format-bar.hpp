@@ -72,7 +72,8 @@ private:
 	QFontComboBox *family_;
 	QComboBox *weight_;
 	QComboBox *size_;
-	QToolButton *italic_, *underline_, *super_, *sub_, *colour_, *align_, *clear_;
+	QToolButton *italic_, *underline_, *super_, *sub_, *colour_, *clear_;
+	QToolButton *aligns_[3]; // left, centre, right
 	State state_;
 	int listed_base_ = -1; // the base size the list was made with
 	bool select_on_release_ = false;

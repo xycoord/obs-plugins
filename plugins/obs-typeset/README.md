@@ -52,8 +52,8 @@ text, made of OBS's own controls in OBS's theme:
   height), lit for what the selection has.
 - **Colour**, and **Clear formatting** (the eraser), which puts the selection back to the text's own
   style.
-- After a line, the whole text's **Alignment**: the one control that's for all of the text, not the
-  selection.
+- After a line, the whole text's **Alignment**: left, centre and right, the text's own lit. It's the
+  one control that's for all of the text, not the selection.
 
 Each has a tooltip naming its shortcut:
 
