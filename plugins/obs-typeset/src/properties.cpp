@@ -254,8 +254,10 @@ bool paste_style(obs_properties_t *props, obs_property_t *, void *data)
 	obs_source_update(text->source(), style);
 	obs_data_release(style);
 	// OBS rebuilds the dialog without asking the groups again: they're
-	// shown on or off for the pasted style here.
+	// shown on or off for the pasted style here, and the size field is set
+	// to the pasted font's size.
 	obs_data_t *settings = obs_source_get_settings(text->source());
+	sync_size(settings);
 	for (const Group &g : groups)
 		if (obs_property_t *p = obs_properties_get(props, g.name))
 			group_toggled(props, p, settings);

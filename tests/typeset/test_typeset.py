@@ -564,6 +564,20 @@ def test_history(out):
         check(align() == 0 and text() == "After all", "and OBS's Undo takes it back with the words",
               "%r %r" % (align(), text()))
 
+        # Aligned from elsewhere (the properties, a script) during an edit:
+        # typing keeps it, and OBS's Undo of the edit doesn't take it back.
+        obs.click(*to_screen(200 + tw * 0.5, 200 + th / 2), repeat=2)
+        obs.key("End")
+        obs.request("SetInputSettings", inputName="Title", inputSettings={"align": 2})
+        time.sleep(0.5)
+        obs.type("?")
+        obs.key("Escape")
+        check(align() == 2 and text() == "After all?", "an alignment set elsewhere mid-edit survives typing",
+              "%r %r" % (align(), text()))
+        obs.key("ctrl+z")
+        time.sleep(0.5)
+        check(align() == 2 and text() == "After all", "and OBS's Undo of the edit leaves it", "%r %r" % (align(), text()))
+
         # Hidden while it's being edited: editing ends at once, so keys
         # typed straight after don't go into it.
         ow, oh = size("Other")

@@ -273,6 +273,7 @@ void TextSource::apply(Document doc)
 	// Published for the rasteriser in the same order as laid out.
 	std::lock_guard doc_lock(doc_mutex_);
 	pending_doc_ = std::move(doc);
+	size_ = uint64_t(width_.load()) << 32 | height_.load();
 	pending_width_ = width_;
 	pending_height_ = height_;
 	doc_version_++;
@@ -334,23 +335,23 @@ void TextSource::retry_later(View &view, const char *why, uint64_t version)
 	}
 }
 
-uint32_t TextSource::shown(const std::atomic<uint32_t> &shown, const std::atomic<uint32_t> &now) const
+uint64_t TextSource::size_for_obs() const
 {
 	constexpr uint64_t longest_ns = 100'000'000; // a slow or failing drawing can't hold the old size longer
-	const uint32_t s = shown.load();
+	const uint64_t s = shown_size_.load();
 	if (s && os_gettime_ns() - laid_out_ns_.load() < longest_ns)
 		return s;
-	return now.load();
+	return size_.load();
 }
 
 uint32_t TextSource::width() const
 {
-	return shown(shown_width_, width_);
+	return uint32_t(size_for_obs() >> 32);
 }
 
 uint32_t TextSource::height() const
 {
-	return shown(shown_height_, height_);
+	return uint32_t(size_for_obs());
 }
 
 void TextSource::tick(float seconds)
@@ -483,8 +484,7 @@ void TextSource::shown_now(const View &view, const Raster &r)
 {
 	if (&view != &views_[0] || !r.source_width || !r.source_height)
 		return;
-	shown_width_ = r.source_width;
-	shown_height_ = r.source_height;
+	shown_size_ = uint64_t(r.source_width) << 32 | r.source_height;
 }
 
 void TextSource::render()

@@ -146,6 +146,7 @@ private:
 	bool warned_display_ = false;
 	bool collection_changing_ = false; // its scenes are going: no new references to their items
 	bool closing_ = false;             // OBS is closing: no more steps in its undo history
+	bool scaled_to_window_ = false;    // the preview at Scale to Window, as last read from OBS's menu
 
 	// The edit under way.
 	ItemRef item_;
@@ -215,6 +216,7 @@ private:
 
 	void sync_text();
 	void commit();
+	void add_undo_step(obs_data_t *after);
 	BaseStyle base() const;
 	void style(StyleChange change, bool toggle);
 	void step_size(int direction);
@@ -267,8 +269,10 @@ PreviewEditor::PreviewEditor(QWidget *preview) : preview_(preview)
 		for (const char *name : {"actionScaleWindow", "actionScaleCanvas", "actionScaleOutput"}) {
 			if (QAction *a = main->findChild<QAction *>(name))
 				QObject::connect(a, &QAction::triggered, this, [this] {
-					if (editing() && preview_scaling(preview_) != Scaling::Window)
+					scaled_to_window_ = known_obs() && preview_scaling(preview_) == Scaling::Window;
+					if (editing() && !scaled_to_window_)
 						end_edit();
+					refresh_placeholders();
 				});
 		}
 	}
@@ -276,6 +280,7 @@ PreviewEditor::PreviewEditor(QWidget *preview) : preview_(preview)
 	// edited is still in the preview's scene, and whether the preview has a
 	// new display. It only looks at the preview's scene; nothing is drawn
 	// or laid out.
+	scaled_to_window_ = known_obs() && preview_scaling(preview) == Scaling::Window;
 	timer_.setInterval(500);
 	QObject::connect(&timer_, &QTimer::timeout, this, [this] { on_timer(); });
 	timer_.start();
@@ -355,7 +360,9 @@ void PreviewEditor::on_timer()
 void PreviewEditor::refresh_placeholders()
 {
 	std::vector<ItemRef> found;
-	if (preview_ && preview_->isVisible() && !collection_changing_) {
+	// (Only where the preview is laid out as editing assumes, and text can
+	// be double-clicked to type into.)
+	if (preview_ && preview_->isVisible() && !collection_changing_ && scaled_to_window_) {
 		each_preview_item([&](obs_sceneitem_t *item, obs_sceneitem_t *group) {
 			TextSource *t = TextSource::from(obs_sceneitem_get_source(item));
 			if (t && item != item_.item() && t->text().empty())
@@ -363,14 +370,16 @@ void PreviewEditor::refresh_placeholders()
 		});
 	}
 	const Mapping mapping = preview_ ? preview_mapping(preview_) : Mapping();
+	// The words, laid out here, before the lock the drawing waits on.
+	const Label words = found.empty() ? nullptr : placeholder_label(mapping);
 	std::vector<ItemRef> old; // let go after the lock (see attach_display)
 	std::lock_guard lock(overlay_mutex_);
 	old.swap(overlay_.placeholders);
 	overlay_.placeholders = std::move(found);
 	if (!overlay_.editing)
 		overlay_.mapping = mapping;
-	if (!overlay_.placeholders.empty() && preview_)
-		overlay_.placeholder = placeholder_label(mapping);
+	if (words)
+		overlay_.placeholder = words;
 }
 
 void PreviewEditor::clear_placeholders()
@@ -535,19 +544,9 @@ void PreviewEditor::end_edit()
 	restore_hotkeys();
 	signal_handler_disconnect(obs_source_get_signal_handler(source_), "update", source_updated, this);
 	watch_scenes(false);
-	// One step in OBS's undo history for the whole edit, if it changed
-	// anything.
-	obs_data_t *after = undo_state(source_, text_->document());
-	const std::string undo_json = obs_data_get_json(before_), redo_json = obs_data_get_json(after);
-	if (undo_json != redo_json && !closing_) {
-		char name[256];
-		snprintf(name, sizeof(name), obs_module_text("Undo.Edit"), obs_source_get_name(source_));
-		obs_frontend_add_undo_redo_action(name, restore_undo_state, restore_undo_state, undo_json.c_str(),
-						  redo_json.c_str(), false);
-	}
-	obs_data_release(after);
-	obs_data_release(before_);
-	before_ = nullptr;
+	// One step in OBS's undo history for the edit (since any change made
+	// elsewhere during it), if it changed anything.
+	add_undo_step(undo_state(source_, text_->document()));
 	item_.reset();
 	obs_source_release(source_);
 	source_ = nullptr;
@@ -584,15 +583,37 @@ bool PreviewEditor::edit_selected()
 void PreviewEditor::sync_text()
 {
 	Document now = text_->document();
-	if (now.text == model_.text() && now.spans == model_.spans())
+	if (now.text == model_.text() && now.spans == model_.spans() && strip_layout(now) == model_.layout())
 		return;
 	const size_t caret = text_->cursor_at_or_before(model_.caret());
 	const size_t anchor = text_->cursor_at_or_before(model_.anchor());
-	// OBS's undo step for this edit covers what's done in the preview from
-	// here on, not the change made elsewhere (which has its own).
-	obs_data_release(before_);
+	// What was done in the preview up to here is one step in OBS's undo
+	// history; the change made elsewhere isn't folded into it (the dialog
+	// has its own), and the edit's next step starts from it.
+	Document edited = now;
+	edited.text = model_.text();
+	edited.spans = model_.spans();
+	edited.style.align = Align(model_.layout().align);
+	edited.style.box_width = model_.layout().box_width;
+	add_undo_step(undo_state(source_, edited));
 	before_ = undo_state(source_, now);
 	model_.take(std::move(now.text), std::move(now.spans), caret, anchor, strip_layout(now));
+}
+
+// A step in OBS's undo history from before_ to after, if they differ; both
+// let go.
+void PreviewEditor::add_undo_step(obs_data_t *after)
+{
+	const std::string undo_json = obs_data_get_json(before_), redo_json = obs_data_get_json(after);
+	if (undo_json != redo_json && !closing_) {
+		char name[256];
+		snprintf(name, sizeof(name), obs_module_text("Undo.Edit"), obs_source_get_name(source_));
+		obs_frontend_add_undo_redo_action(name, restore_undo_state, restore_undo_state, undo_json.c_str(),
+						  redo_json.c_str(), false);
+	}
+	obs_data_release(after);
+	obs_data_release(before_);
+	before_ = nullptr;
 }
 
 // The model written to the text: its words and runs, and the strip's

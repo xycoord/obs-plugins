@@ -101,15 +101,18 @@ private:
 	Document doc_;
 	PangoLayout *layout_ = nullptr;
 	Frame frame_;
-	std::atomic<uint32_t> width_{0}, height_{0}; // as laid out now
+	std::atomic<uint32_t> width_{0}, height_{0}; // as laid out now (for the editor)
+	std::atomic<uint64_t> size_{0};              // the same, width and height in one (for OBS)
 	std::atomic<uint64_t> laid_out_ns_{0};      // when
 	// The size the output's drawing was made for (0: none yet).
-	std::atomic<uint32_t> shown_width_{0}, shown_height_{0};
+	// Width and height in one value, so OBS never gets one drawing's width
+	// with another's height.
+	std::atomic<uint64_t> shown_size_{0};
 	std::atomic<bool> update_queued_{false}; // an update passed to the UI thread, not yet applied
 
 	void update_now(obs_data_t *settings);
 	void queue_update();
-	uint32_t shown(const std::atomic<uint32_t> &shown, const std::atomic<uint32_t> &now) const;
+	uint64_t size_for_obs() const;
 
 	// The document as it stands, for the rasteriser, with its version;
 	// guarded by doc_mutex_ (taken inside the layout lock, never around it).
