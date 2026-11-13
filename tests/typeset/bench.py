@@ -55,6 +55,11 @@ def settings(kind, text, wrap=None):
         if wrap:
             s.update(box=True, box_width=wrap)
         return s
+    if kind == "pthread":  # obs-text-pthread (third-party, Pango on a thread of its own)
+        s = {"text": text, "font": FONT, "color": 0xFFFFFF, "color.alpha": 0xFF, "markup": False}
+        if wrap:
+            s["width"] = wrap
+        return s
     s = {"text": text, "font": FONT, "color1": 0xFFFFFFFF, "color2": 0xFFFFFFFF}
     if wrap:
         s.update(word_wrap=True, custom_width=wrap)
@@ -67,8 +72,9 @@ def collection(kind, sc):
     sources = [{"id": "color_source", "versioned_id": "color_source_v3", "name": "Back",
                 "settings": {"color": 0xFF202020, "width": 1920, "height": 1080}}]
     if kind != "none":
-        sid = "typeset_text" if kind.startswith("typeset") else "text_ft2_source"
-        vid = "typeset_text" if kind.startswith("typeset") else "text_ft2_source_v2"
+        sid, vid = {"ft2": ("text_ft2_source", "text_ft2_source_v2"),
+                    "pthread": ("obs_text_pthread_source", "obs_text_pthread_source")}.get(
+            kind, ("typeset_text", "typeset_text"))
         for i in range(sc["n"]):
             name = "T%d" % i
             sources.append({"id": sid, "versioned_id": vid, "name": name,
@@ -294,7 +300,8 @@ def main():
     parser.add_argument("--json")
     parser.add_argument("--editing", action="store_true", help="the editing measurements instead")
     parser.add_argument("--kinds", default="none,ft2,typeset-plain,typeset",
-                        help="which texts: none (a baseline), ft2 (OBS's own), typeset-plain (no shadow), typeset")
+                        help="which texts: none (a baseline), ft2 (OBS's own), pthread (obs-text-pthread, if "
+                             "installed), typeset-plain (no shadow), typeset")
     parser.add_argument("scenarios", nargs="*", default=list(SCENARIOS))
     args = parser.parse_args()
     results = {}
