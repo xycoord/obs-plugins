@@ -506,10 +506,65 @@ def test_rich(out):
         check(not warnings, "no warnings from obs-typeset", "; ".join(warnings))
 
 
+# --- 5. OBS's undo history, and the text going while it's edited ---------------------------------
+
+def test_history(out):
+    print("-- undo history, and removal while editing")
+    sources = [text_source("Title", "Before", 160), text_source("Other", "Stays", 100)]
+    items = [item("Title", 2, 200, 200), item("Other", 3, 200, 600)]
+    with ObsSession(collection(sources, items)) as obs:
+        time.sleep(1)
+        ids = {i["sourceName"]: i["sceneItemId"]
+               for i in obs.request("GetSceneItemList", sceneName="Scene")["sceneItems"]}
+        x0, y0, sx, sy = canvas_on_screen(obs.screen())
+        to_screen = lambda cx, cy: (x0 + cx * sx, y0 + cy * sy)  # noqa: E731
+
+        def size(name):
+            t = obs.request("GetSceneItemTransform", sceneName="Scene", sceneItemId=ids[name])["sceneItemTransform"]
+            return t["sourceWidth"], t["sourceHeight"]
+
+        # A whole edit, from double-click to Escape, is one step in OBS's
+        # own undo history.
+        tw, th = size("Title")
+        obs.click(*to_screen(200 + tw * 0.5, 200 + th / 2), repeat=2)
+        obs.key("ctrl+a")
+        obs.type("After all")
+        obs.key("ctrl+a")
+        obs.key("ctrl+b")
+        obs.key("Escape")
+        text = lambda: obs.settings("Title")["text"]  # noqa: E731
+        check(text() == "After all", "(edited)", repr(text()))
+        obs.key("ctrl+z")
+        time.sleep(0.5)
+        check(text() == "Before" and not obs.settings("Title").get("spans"),
+              "OBS's Undo takes the whole edit back", "%r %r" % (text(), obs.settings("Title").get("spans")))
+        obs.key("ctrl+shift+z")
+        time.sleep(0.5)
+        if text() != "After all":  # OBS's Redo is Ctrl+Y on some setups
+            obs.key("ctrl+y")
+            time.sleep(0.5)
+        check(text() == "After all" and bool(obs.settings("Title").get("spans")),
+              "and Redo puts it back, styles too", "%r" % text())
+
+        # Hidden while it's being edited: editing ends at once, so keys
+        # typed straight after don't go into it.
+        ow, oh = size("Other")
+        obs.click(*to_screen(200 + ow * 0.5, 600 + oh / 2), repeat=2)
+        obs.request("SetSceneItemEnabled", sceneName="Scene", sceneItemId=ids["Other"], sceneItemEnabled=False)
+        time.sleep(0.15)
+        obs.xdo("type", "--delay", "20", "zz")
+        time.sleep(0.5)
+        check(obs.settings("Other")["text"] == "Stays", "hiding the text being edited ends the edit at once",
+              repr(obs.settings("Other")["text"]))
+
+        warnings = [line for line in obs.log().splitlines() if "[obs-typeset]" in line and "editing" not in line and "] drew " not in line]
+        check(not warnings, "no warnings from obs-typeset", "; ".join(warnings))
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", help="keep the frames and screenshots in this folder")
-    parser.add_argument("tests", nargs="*", default=["scaling", "editing", "features", "rich"])
+    parser.add_argument("tests", nargs="*", default=["scaling", "editing", "features", "rich", "history"])
     args = parser.parse_args()
     if args.out:
         os.makedirs(args.out, exist_ok=True)

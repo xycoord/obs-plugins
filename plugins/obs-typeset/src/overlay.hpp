@@ -63,12 +63,16 @@ private:
 	struct Label {
 		gs_texture_t *texture = nullptr;
 		int width = 0, height = 0;
+		// What it was made for: made again when any of it changes (a
+		// different text, or the preview moved to a screen of another scale).
 		std::string text;
+		double px = 0;
+		uint32_t fg = 0, bg = 0;
 		void make(const std::string &text, double px, uint32_t fg, uint32_t bg);
-		void ensure(const std::string &text, double px, uint32_t fg, uint32_t bg)
+		void ensure(const std::string &t, double p, uint32_t f, uint32_t b)
 		{
-			if (!texture || text != this->text)
-				make(text, px, fg, bg);
+			if (!texture || t != text || p != px || f != fg || b != bg)
+				make(t, p, f, b);
 		}
 		void draw(float x, float y) const;
 		void destroy();

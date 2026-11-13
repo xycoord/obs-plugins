@@ -32,8 +32,9 @@ struct BaseStyle {
 // would stall OBS while it's laid out.
 constexpr size_t max_paste_chars = 20000;
 
-// Pasted text as it's typed: control characters other than line breaks and
-// tabs dropped (they'd be cut off or shown as boxes), and at most
+// Pasted text as it's typed: every kind of line break made "\n", other
+// control characters but tabs dropped (they'd be cut off or shown as boxes),
+// and at most
 // max_paste_chars characters, cut at a character's edge.
 std::string clean_paste(std::string text, bool *cut = nullptr);
 

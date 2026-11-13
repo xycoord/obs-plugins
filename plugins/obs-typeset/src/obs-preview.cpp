@@ -49,8 +49,23 @@ Scaling preview_scaling(QWidget *preview)
 	return window->isChecked() ? Scaling::Window : Scaling::Other;
 }
 
+bool known_obs()
+{
+	const uint32_t major = obs_get_version() >> 24;
+	return major >= known_obs_first && major <= known_obs_last;
+}
+
 bool can_edit_in(QWidget *preview)
 {
+	if (!known_obs()) {
+		static bool warned = false;
+		if (!warned)
+			blog(LOG_WARNING, "[obs-typeset] text is edited in the preview only in OBS %u to %u, whose "
+					  "preview it's known to fit; edit it in its properties",
+			     known_obs_first, known_obs_last);
+		warned = true;
+		return false;
+	}
 	switch (preview_scaling(preview)) {
 	case Scaling::Window:
 		return true;
@@ -69,13 +84,14 @@ bool can_edit_in(QWidget *preview)
 
 // The preview widget is an OBSQTDisplay, whose first member is an OBSDisplay
 // (one obs_display_t pointer) straight after its QWidget base. That's read
-// only in the known OBS versions; in any other, nothing is drawn (no caret)
-// rather than risk reading the wrong thing. Within them it's still checked
-// against the display's size before use.
+// only in the known OBS versions (in any other, the editor doesn't start).
+// Within them it's also checked against the display's size before use: a
+// check that confirms the layout, not one that protects against a wrong one
+// (reading the size goes through the pointer), so the version gate is the
+// real protection.
 obs_display_t *preview_display(QWidget *preview)
 {
-	const uint32_t major = obs_get_version() >> 24;
-	if (major < known_obs_first || major > known_obs_last)
+	if (!known_obs())
 		return nullptr;
 	bool is_display = false;
 	for (const QMetaObject *mo = preview->metaObject(); mo; mo = mo->superClass()) {

@@ -171,6 +171,9 @@ void OverlayPainter::Label::make(const std::string &s, double px, uint32_t fg, u
 {
 	destroy();
 	text = s;
+	this->px = px;
+	this->fg = fg;
+	this->bg = bg;
 	static PangoContext *context = create_context(pango_cairo_font_map_new());
 	PangoLayout *layout = pango_layout_new(context);
 	PangoFontDescription *desc = pango_font_description_from_string("Sans Bold");

@@ -4,9 +4,29 @@
 
 namespace typeset {
 
+namespace {
+
+void replace_all(std::string &s, const std::string &from, const std::string &to)
+{
+	for (size_t at = s.find(from); at != std::string::npos; at = s.find(from, at + to.size()))
+		s.replace(at, from.size(), to);
+}
+
+} // namespace
+
 std::string clean_paste(std::string s, bool *cut)
 {
-	s.erase(std::remove_if(s.begin(), s.end(), [](char c) { return (unsigned char)c < 0x20 && c != '\n' && c != '\t'; }),
+	// Line breaks of every kind (Windows', old Macs', Unicode's line and
+	// paragraph separators) as the one the text uses.
+	replace_all(s, "\r\n", "\n");
+	replace_all(s, "\r", "\n");
+	replace_all(s, "\u2028", "\n");
+	replace_all(s, "\u2029", "\n");
+	s.erase(std::remove_if(s.begin(), s.end(),
+			       [](char c) {
+				       const auto u = static_cast<unsigned char>(c);
+				       return (u < 0x20 && c != '\n' && c != '\t') || u == 0x7F;
+			       }),
 		s.end());
 	// Characters counted by their first bytes (anything but 10xxxxxx).
 	size_t chars = 0, at = 0;

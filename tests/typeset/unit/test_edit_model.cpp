@@ -129,7 +129,9 @@ int main()
 	}
 	{
 		bool cut = false;
-		check("paste drops control characters", clean_paste("a\x01" "b\nc\td\r", &cut) == "ab\nc\td" && !cut);
+		check("paste drops control characters", clean_paste("a\x01" "b\nc\td\x7f", &cut) == "ab\nc\td" && !cut);
+		check("paste makes every line break a new line",
+		      clean_paste("a\r\nb\rc\u2028" "d\u2029" "e") == "a\nb\nc\nd\ne", clean_paste("a\r\nb\rc\u2028" "d\u2029" "e"));
 		std::string big;
 		for (size_t i = 0; i < max_paste_chars + 10; i++)
 			big += "\xC3\xA9"; // é, two bytes

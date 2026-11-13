@@ -34,7 +34,10 @@ enum class Scaling { Window, Other, Unknown };
 // Whether the preview is set to Scale to Window, from OBS's own Preview
 // Scaling menu (Unknown: the menu isn't there to ask).
 Scaling preview_scaling(QWidget *preview);
-// Logs why text isn't edited when the scaling isn't Scale to Window.
+// Whether this OBS is one of the known versions.
+bool known_obs();
+// Whether text can be edited in the preview now: a known OBS, its preview
+// at Scale to Window. Logs why not.
 bool can_edit_in(QWidget *preview);
 
 // The preview's obs_display_t, or null if it can't be found safely.

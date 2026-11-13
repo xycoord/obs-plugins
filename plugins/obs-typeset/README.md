@@ -83,9 +83,11 @@ for the smaller, which is then a little soft. A text that isn't on screen keeps 
 graphics card, so it's ready the moment it's cut to.
 
 A few things in OBS draw a source into a texture of the source's own size first and scale *that*,
-and then the text is as sharp as its font size, no sharper: filters on the source; crop, or Scale
-Filtering other than Disable, on the scene item; and a scene used inside another scene, when the
-outer scene item is scaled. Outlines and shadows reach outside the source's box, and filters and
+and then the text is as sharp as its font size, no sharper: filters on the source; crop, Scale
+Filtering other than Disable, or a Blending Mode other than Normal (Additive, Screen and so on) on
+the scene item; and a scene used inside another scene, when the outer scene item is scaled. Windows
+that show a whole scene (the Studio Mode preview, a scene projector, the multiview) show the text as
+it's drawn for the canvas, scaled to the window. Outlines and shadows reach outside the source's box, and filters and
 crop cut them off at it.
 
 ## Editing in the preview
@@ -113,8 +115,10 @@ on the stream, the recording or a projector. The text itself changes live, as yo
 change in OBS does; in Studio Mode, editing is in the preview's scene.
 
 The properties dialog keeps what it had when it opened: with it open, words typed in the preview are
-undone by its **Cancel** (as any change made elsewhere would be). Edits in the preview aren't in OBS's
-own undo history (Edit, Undo): OBS has no way for a plugin to add to it.
+undone by its **Cancel** (as any change made elsewhere would be). Each edit in the preview, from
+starting to finishing, is one step in OBS's own undo history: **Edit, Undo** (Ctrl+Z, once you've
+finished) takes it all back, styles, box width and alignment included, and Redo puts it back. While
+you're editing, Ctrl+Z undoes a word at a time instead.
 
 A Typeset Text with no words shows where it is with a dashed frame and "Double-click to type", in
 the preview only.
@@ -138,10 +142,13 @@ OBS doesn't give plugins a way to take part in its preview, so the editor works 
 - It draws the caret, selection and placeholders with a draw callback on the preview's display,
   which it finds inside OBS's preview widget (the display's pointer is that widget's first
   member). That's read only in the OBS versions it's known to hold in, and checked against the
-  display's size; otherwise editing still works, without the caret.
+  display's size.
+- Each edit is added to OBS's undo history (`obs_frontend_add_undo_redo_action`), naming the source
+  by its UUID.
 
 All of this is in `src/obs-preview.cpp`, and is known to hold in OBS 28 to 33 (`known_obs_first` and
-`known_obs_last` there); in any other version the editor stays out of the way and OBS's log says why.
+`known_obs_last` there); in any other version text isn't edited in the preview (its properties
+work as ever) and OBS's log says why.
 The editing itself (`src/edit-model.cpp`: the text, its styled runs, caret, selection and undo) has
 no OBS or Qt in it, and what's drawn on the preview is in `src/overlay.cpp`.
 
@@ -150,7 +157,8 @@ no OBS or Qt in it, and what's drawn on the preview is in `src/overlay.cpp`.
 [tests/typeset](../../tests/typeset) runs the installed OBS on a virtual display and checks that
 text scaled in a scene comes out identical to text at the matching font size; and, using the mouse
 and keyboard on OBS's window, that editing in the preview works, never shows in the output, isn't
-interrupted by OBS's shortcuts or hotkeys, and works in Studio Mode; and the text box's sizes.
+interrupted by OBS's shortcuts or hotkeys, and works in Studio Mode; that OBS's Undo and Redo take
+a whole edit back and forth; that hiding the text ends its edit at once; and the text box's sizes.
 `capture.py` there takes a fixed set of screenshots for reviewing the design. `unit/run.sh` tests the
 styled runs, the editing model (typing, undo, bold on and off, size steps, pasting), where the canvas
 sits in the preview, and the reading of font style names, on their own, without OBS.

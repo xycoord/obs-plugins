@@ -3,6 +3,7 @@
 #include "edit-model.hpp"
 #include "obs-preview.hpp"
 #include "overlay.hpp"
+#include "settings.hpp"
 #include "typeset-source.hpp"
 
 #include <obs-frontend-api.h>
@@ -26,6 +27,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -35,15 +37,68 @@ namespace typeset {
 namespace {
 
 // Printable text from a key: every code point (not UTF-16 unit, so emoji
-// count) printable.
+// count) printable, or a format character (the zero-width joiner and
+// non-joiner, typed with Shift+Space on a Persian keyboard).
 bool printable(const QString &text)
 {
 	if (text.isEmpty())
 		return false;
 	for (char32_t c : text.toUcs4())
-		if (!QChar::isPrint(c))
+		if (!QChar::isPrint(c) && QChar::category(c) != QChar::Other_Format)
 			return false;
 	return true;
+}
+
+// --- OBS's undo history ------------------------------------------------------------------------
+//
+// An edit in the preview, from starting to finishing, is one step in OBS's
+// own undo history (Edit, Undo): its words, their styles, and the text box's
+// width and alignment as they were before and after. A step names the source
+// by its UUID, so it still finds it after a rename, and does nothing once
+// it's gone.
+
+obs_data_t *undo_state(obs_source_t *source, const Document &doc)
+{
+	obs_data_t *settings = obs_data_create();
+	obs_data_set_string(settings, "text", doc.text.c_str());
+	obs_data_array_t *spans = spans_array(doc.spans);
+	obs_data_set_array(settings, "spans", spans);
+	obs_data_array_release(spans);
+	obs_data_set_int(settings, "box_width", (long long)std::lround(doc.style.box_width));
+	obs_data_set_int(settings, "align", int(doc.style.align));
+	obs_data_t *state = obs_data_create();
+	obs_data_set_string(state, "uuid", obs_source_get_uuid(source));
+	obs_data_set_obj(state, "settings", settings);
+	obs_data_release(settings);
+	return state;
+}
+
+void restore_undo_state(const char *json)
+{
+	obs_data_t *state = json ? obs_data_create_from_json(json) : nullptr;
+	if (!state)
+		return;
+	if (obs_source_t *source = obs_get_source_by_uuid(obs_data_get_string(state, "uuid"))) {
+		obs_data_t *settings = obs_data_get_obj(state, "settings");
+		obs_source_update(source, settings);
+		obs_data_release(settings);
+		obs_source_release(source);
+	}
+	obs_data_release(state);
+}
+
+// The preview's draw callback is given this, not the editor: it outlives
+// the editor (never freed), so a callback left registered by mistake finds
+// no editor and draws nothing, instead of drawing with one that's gone.
+class PreviewEditor;
+struct DrawHook {
+	std::mutex mutex;
+	PreviewEditor *editor = nullptr;
+};
+DrawHook *draw_hook()
+{
+	static DrawHook *hook = new DrawHook;
+	return hook;
 }
 
 // UTF-16 units (what input methods count in) to a byte index, and back.
@@ -83,11 +138,14 @@ private:
 	QTimer timer_;
 	bool warned_display_ = false;
 	bool collection_changing_ = false; // its scenes are going: no new references to their items
+	bool closing_ = false;             // OBS is closing: no more steps in its undo history
 
 	// The edit under way.
 	ItemRef item_;
 	obs_source_t *source_ = nullptr; // referenced
 	TextSource *text_ = nullptr;
+	obs_data_t *before_ = nullptr; // for OBS's undo history: as it was when editing started
+	std::vector<obs_source_t *> watched_scenes_; // referenced: their items' removal ends the edit
 	EditModel model_;
 	Document shown_; // as the overlay was last drawn for
 	bool dragging_ = false;
@@ -99,6 +157,7 @@ private:
 	Qt::FocusPolicy saved_focus_policy_ = Qt::NoFocus;
 	bool saved_input_method_ = false;
 	std::string preedit_; // an input method's composition, not yet in the text
+	bool committed_ = false; // an input method committed text (while it was asked to finish)
 	// Dragging the text box's width grip.
 	bool resizing_ = false;
 	QPointF resize_from_pos_;
@@ -116,6 +175,19 @@ private:
 	OverlayPainter painter_; // graphics thread only
 
 	bool editing() const { return text_ != nullptr; }
+	static void scene_changed_signal(void *param, calldata_t *)
+	{
+		// From any thread: checked on the UI thread.
+		QMetaObject::invokeMethod(
+			static_cast<PreviewEditor *>(param),
+			[e = static_cast<PreviewEditor *>(param)] {
+				if (e->editing() && !e->still_editable())
+					e->end_edit();
+			},
+			Qt::QueuedConnection);
+	}
+	void watch_scenes(bool on);
+	void paint(uint32_t cx, uint32_t cy);
 	static void source_updated(void *param, calldata_t *)
 	{
 		QMetaObject::invokeMethod(
@@ -161,6 +233,10 @@ PreviewEditor *editor = nullptr;
 
 PreviewEditor::PreviewEditor(QWidget *preview) : preview_(preview)
 {
+	{
+		std::lock_guard lock(draw_hook()->mutex);
+		draw_hook()->editor = this;
+	}
 	preview->installEventFilter(this);
 	watch_window();
 	// So the preview can take keys (F2) once it's clicked.
@@ -200,8 +276,13 @@ PreviewEditor::PreviewEditor(QWidget *preview) : preview_(preview)
 
 PreviewEditor::~PreviewEditor()
 {
+	closing_ = true;
 	end_edit();
 	detach_display();
+	{
+		std::lock_guard lock(draw_hook()->mutex);
+		draw_hook()->editor = nullptr;
+	}
 	clear_placeholders();
 	obs_enter_graphics();
 	painter_.destroy();
@@ -245,6 +326,17 @@ void PreviewEditor::on_timer()
 			// here (a belt to the signal's braces): drawn for it.
 			sync_text();
 			refresh_overlay();
+		} else {
+			// The canvas's size changed in Settings: drawn for it.
+			const Mapping now = preview_mapping(preview_);
+			bool moved;
+			{
+				std::lock_guard lock(overlay_mutex_);
+				moved = now.x != overlay_.mapping.x || now.y != overlay_.mapping.y ||
+					now.scale != overlay_.mapping.scale || now.dpr != overlay_.mapping.dpr;
+			}
+			if (moved)
+				refresh_overlay();
 		}
 	}
 	refresh_placeholders();
@@ -373,6 +465,8 @@ bool PreviewEditor::begin_edit(const ItemRef &hit)
 	preedit_.clear();
 	const Document d = text_->document();
 	model_.start(d.text, d.spans);
+	before_ = undo_state(source_, d);
+	watch_scenes(true);
 
 	saved_focus_policy_ = preview_->focusPolicy();
 	if (saved_focus_policy_ == Qt::NoFocus)
@@ -400,12 +494,14 @@ void PreviewEditor::end_edit()
 	// input method is asked to finish it (it may commit it now, which
 	// arrives as an input method event), and whatever's left is typed.
 	if (!preedit_.empty()) {
+		const std::string composing = preedit_;
+		committed_ = false;
 		QGuiApplication::inputMethod()->reset();
 		if (!editing())
 			return; // finished from inside the reset
-		if (!preedit_.empty()) {
+		if (!committed_) { // it was dropped, not committed: typed as it stood
 			sync_text();
-			if (model_.replace_selection(preedit_, EditKind::Typing))
+			if (model_.replace_selection(composing, EditKind::Typing))
 				commit();
 		}
 	}
@@ -426,6 +522,20 @@ void PreviewEditor::end_edit()
 	}
 	restore_hotkeys();
 	signal_handler_disconnect(obs_source_get_signal_handler(source_), "update", source_updated, this);
+	watch_scenes(false);
+	// One step in OBS's undo history for the whole edit, if it changed
+	// anything.
+	obs_data_t *after = undo_state(source_, text_->document());
+	const std::string undo_json = obs_data_get_json(before_), redo_json = obs_data_get_json(after);
+	if (undo_json != redo_json && !closing_) {
+		char name[256];
+		snprintf(name, sizeof(name), obs_module_text("Undo.Edit"), obs_source_get_name(source_));
+		obs_frontend_add_undo_redo_action(name, restore_undo_state, restore_undo_state, undo_json.c_str(),
+						  redo_json.c_str(), false);
+	}
+	obs_data_release(after);
+	obs_data_release(before_);
+	before_ = nullptr;
 	item_.reset();
 	obs_source_release(source_);
 	source_ = nullptr;
@@ -598,9 +708,9 @@ bool PreviewEditor::key_press(QKeyEvent *event)
 			changed = model_.replace_selection("\t", EditKind::Typing);
 			break;
 		default:
-			// Ctrl (without the Alt of AltGr) or Meta makes it a command,
-			// not text.
-			if ((word && !(mods & Qt::AltModifier)) || (mods & Qt::MetaModifier))
+			// Ctrl or Alt (but not both: that's AltGr on some systems) or
+			// Meta makes it a command, not text.
+			if ((word != bool(mods & Qt::AltModifier)) || (mods & Qt::MetaModifier))
 				break;
 			if (printable(event->text()))
 				changed = model_.replace_selection(event->text().toStdString(), EditKind::Typing);
@@ -716,7 +826,7 @@ bool PreviewEditor::mouse_event(QMouseEvent *event)
 		return false;
 	}
 
-	if (type == QEvent::MouseButtonDblClick && left && !editing()) {
+	if (type == QEvent::MouseButtonDblClick && left && !editing() && !collection_changing_) {
 		// Start editing the text item double-clicked on, if it's on top
 		// and not locked (OBS's own clicks skip locked items too).
 		const ItemRef hit = item_at(widget_to_canvas(preview_mapping(preview_), pos));
@@ -874,6 +984,8 @@ void PreviewEditor::input_method(QInputMethodEvent *event)
 	// the preview until it's committed.
 	preedit_ = event->preeditString().toStdString();
 	const std::string commit_text = event->commitString().toStdString();
+	if (!commit_text.empty())
+		committed_ = true;
 	if (event->replacementLength() > 0 && !model_.has_selection()) {
 		// The input method replaces text round the caret (counted in
 		// UTF-16 units from it).
@@ -961,7 +1073,7 @@ bool PreviewEditor::eventFilter(QObject *obj, QEvent *event)
 		});
 		return false;
 	case QEvent::KeyPress:
-		if (!editing() && static_cast<QKeyEvent *>(event)->key() == Qt::Key_F2 &&
+		if (!editing() && !collection_changing_ && static_cast<QKeyEvent *>(event)->key() == Qt::Key_F2 &&
 		    static_cast<QKeyEvent *>(event)->modifiers() == Qt::NoModifier)
 			return edit_selected();
 		break;
@@ -1035,10 +1147,10 @@ void PreviewEditor::attach_display()
 	if (previous == display)
 		return;
 	if (previous)
-		obs_display_remove_draw_callback(previous, draw, this);
+		obs_display_remove_draw_callback(previous, draw, draw_hook());
 	if (display) {
-		obs_display_add_draw_callback(display, draw, this);
-	} else if (!warned_display_) {
+		obs_display_add_draw_callback(display, draw, draw_hook());
+	} else if (!warned_display_ && preview_ && preview_->isVisible()) { // hidden, it has none yet
 		warned_display_ = true;
 		blog(LOG_WARNING, "[obs-typeset] couldn't find the preview's display: text can be edited in "
 				  "the preview, but without a caret");
@@ -1060,14 +1172,48 @@ void PreviewEditor::detach_display()
 	}
 	// Outside the lock: removing waits for a draw in progress, which takes it.
 	if (display)
-		obs_display_remove_draw_callback(display, draw, this);
+		obs_display_remove_draw_callback(display, draw, draw_hook());
 }
 
 void PreviewEditor::draw(void *param, uint32_t cx, uint32_t cy)
 {
-	auto *e = static_cast<PreviewEditor *>(param);
-	std::lock_guard lock(e->overlay_mutex_);
-	e->painter_.paint(e->overlay_, cx, cy, &e->drawn_bar_);
+	auto *hook = static_cast<DrawHook *>(param);
+	std::lock_guard lock(hook->mutex);
+	if (hook->editor)
+		hook->editor->paint(cx, cy);
+}
+
+void PreviewEditor::paint(uint32_t cx, uint32_t cy)
+{
+	std::lock_guard lock(overlay_mutex_);
+	painter_.paint(overlay_, cx, cy, &drawn_bar_);
+}
+
+// The scenes the text being edited is in (and its group's, if it's in one):
+// an item removed or hidden there may be it, and editing ends at once.
+void PreviewEditor::watch_scenes(bool on)
+{
+	auto each = [&](void (*f)(signal_handler_t *, const char *, signal_callback_t, void *)) {
+		for (obs_source_t *scene : watched_scenes_) {
+			signal_handler_t *h = obs_source_get_signal_handler(scene);
+			f(h, "item_remove", scene_changed_signal, this);
+			f(h, "item_visible", scene_changed_signal, this);
+			f(h, "remove", scene_changed_signal, this);
+		}
+	};
+	if (!on) {
+		each(signal_handler_disconnect);
+		for (obs_source_t *scene : watched_scenes_)
+			obs_source_release(scene);
+		watched_scenes_.clear();
+		return;
+	}
+	for (obs_sceneitem_t *it : {item_.item(), item_.group()}) {
+		obs_scene_t *scene = it ? obs_sceneitem_get_scene(it) : nullptr;
+		if (obs_source_t *s = scene ? obs_source_get_ref(obs_scene_get_source(scene)) : nullptr)
+			watched_scenes_.push_back(s);
+	}
+	each(signal_handler_connect);
 }
 
 } // namespace
