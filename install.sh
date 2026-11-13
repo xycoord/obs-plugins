@@ -228,5 +228,8 @@ for name in "${plugins[@]}"; do
 done
 
 if [ ${#failed[@]} -gt 0 ]; then
-	die "not installed: ${failed[*]} (see above); the others were"
+	if [ ${#failed[@]} -lt ${#plugins[@]} ]; then
+		die "not installed: ${failed[*]} (see above); the others were"
+	fi
+	die "not installed: ${failed[*]} (see above)"
 fi
