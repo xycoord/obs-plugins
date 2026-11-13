@@ -1,0 +1,58 @@
+// Typeset Text drawn from its coverage form (see Raster in text-engine.hpp):
+// how much of each pixel the text covers (red), and its shadow (green),
+// painted in their colours, premultiplied, the text over its shadow, as
+// Cairo composites the colour form.
+
+uniform float4x4 ViewProj;
+uniform texture2d image;
+uniform float4 fill_colour;   // premultiplied
+uniform float4 shadow_colour; // premultiplied
+
+sampler_state def_sampler {
+	Filter   = Linear;
+	AddressU = Clamp;
+	AddressV = Clamp;
+};
+
+struct VertInOut {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+VertInOut VSDefault(VertInOut vert_in)
+{
+	VertInOut vert_out;
+	vert_out.pos = mul(float4(vert_in.pos.xyz, 1.0), ViewProj);
+	vert_out.uv  = vert_in.uv;
+	return vert_out;
+}
+
+float4 PSFill(VertInOut vert_in) : TARGET
+{
+	return fill_colour * image.Sample(def_sampler, vert_in.uv).r;
+}
+
+float4 PSFillShadow(VertInOut vert_in) : TARGET
+{
+	float2 c = image.Sample(def_sampler, vert_in.uv).rg;
+	float4 fill = fill_colour * c.r;
+	return fill + shadow_colour * (c.g * (1.0 - fill.a));
+}
+
+technique Fill
+{
+	pass
+	{
+		vertex_shader = VSDefault(vert_in);
+		pixel_shader  = PSFill(vert_in);
+	}
+}
+
+technique FillShadow
+{
+	pass
+	{
+		vertex_shader = VSDefault(vert_in);
+		pixel_shader  = PSFillShadow(vert_in);
+	}
+}

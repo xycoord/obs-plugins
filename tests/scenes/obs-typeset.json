@@ -1,0 +1,21 @@
+{
+ "name": "Smoke",
+ "current_scene": "Scene",
+ "current_program_scene": "Scene",
+ "scene_order": [{"name": "Scene"}],
+ "sources": [
+  {"id": "scene", "versioned_id": "scene", "name": "Scene",
+   "settings": {"id_counter": 3, "items": [
+    {"name": "Typeset, scaled up", "visible": true, "id": 1, "pos": {"x": 40, "y": 40}, "scale": {"x": 4, "y": 4}},
+    {"name": "Typeset, styled", "visible": true, "id": 2, "pos": {"x": 40, "y": 500}, "scale": {"x": 0.5, "y": 0.75}, "rot": 10},
+    {"name": "Typeset, empty", "visible": true, "id": 3, "pos": {"x": 1000, "y": 500}}]}},
+  {"id": "typeset_text", "versioned_id": "typeset_text", "name": "Typeset, scaled up",
+   "settings": {"text": "Typeset\nText"}},
+  {"id": "typeset_text", "versioned_id": "typeset_text", "name": "Typeset, styled",
+   "settings": {"text": "Right-aligned, Bold Italic,\nunderlined, half-transparent", "align": 2, "line_spacing": 1.4,
+                "colour": 2164195327,
+                "font": {"face": "DejaVu Sans", "style": "Bold Oblique", "size": 120, "flags": 4}}},
+  {"id": "typeset_text", "versioned_id": "typeset_text", "name": "Typeset, empty",
+   "settings": {"text": ""}}
+ ]
+}
