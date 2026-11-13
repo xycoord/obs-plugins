@@ -11,6 +11,7 @@
 #include <graphics/matrix4.h>
 #include <obs.h>
 
+#include <QColor>
 #include <QPointF>
 
 #include <cstdint>
@@ -43,6 +44,11 @@ bool can_edit_in(QWidget *preview);
 
 // The preview's obs_display_t, or null if it can't be found safely.
 obs_display_t *preview_display(QWidget *preview);
+
+// OBS's theme's accent (its blue, in its default theme), as it draws a
+// button that's on: read from a hidden checked button in its main window, so
+// it's the theme's own whatever theme is in use. UI thread; kept once read.
+QColor theme_accent(QWidget *main_window);
 
 // The scene the preview shows (in Studio Mode, the preview scene),
 // referenced.

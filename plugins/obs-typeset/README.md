@@ -52,6 +52,9 @@ text, made of OBS's own controls in OBS's theme:
   height), lit for what the selection has.
 - **Colour**, and **Clear formatting** (the eraser), which puts the selection back to the text's own
   style.
+- **Spacing**: a small pop-up with letter spacing (tracking) for the selection and line spacing
+  (leading) for the whole text, each a slider and a field (type a value and press Enter). A drag of a
+  slider is one undo.
 - After a line, the whole text's **Alignment**: left, centre and right, the text's own lit. It's the
   one control that's for all of the text, not the selection.
 
@@ -117,7 +120,8 @@ crop cut them off at it.
 
 Double-click the text in the preview: the word you double-clicked is selected. Or select the text
 and press **F2**: all of it is selected, so typing replaces it. The text gets a frame in OBS's
-highlight colour and the format bar above it, in the preview only; then:
+theme's own accent colour (as for a selected source) and the format bar above it, in the preview
+only; then:
 
 | | |
 |---|---|

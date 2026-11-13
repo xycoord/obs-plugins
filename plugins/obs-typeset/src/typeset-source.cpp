@@ -660,6 +660,30 @@ void TextSource::set_align(int align)
 	obs_data_release(settings);
 }
 
+void TextSource::set_line_spacing(double spacing)
+{
+	std::lock_guard content(content_mutex_);
+	Document doc;
+	{
+		std::lock_guard lock(layout_lock());
+		doc = doc_;
+	}
+	spacing = std::clamp(spacing, 0.5, 3.0);
+	doc.style.line_spacing = spacing;
+	apply(std::move(doc));
+
+	// Still under content_mutex_ (see the header and writing_edit). Line
+	// spacing is in the dialog's Spacing and case group, turned on for it.
+	obs_data_t *settings = obs_data_create();
+	obs_data_set_bool(settings, "typography", true);
+	obs_data_set_double(settings, "line_spacing", spacing);
+	{
+		WritingEdit writing;
+		obs_source_update(source_, settings);
+	}
+	obs_data_release(settings);
+}
+
 Frame TextSource::frame() const
 {
 	std::lock_guard lock(layout_lock());

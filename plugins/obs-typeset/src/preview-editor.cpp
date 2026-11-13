@@ -53,7 +53,7 @@ bool printable(const QString &text)
 // What the editing strip sets on a text: its alignment and box width.
 StripLayout strip_layout(const Document &d)
 {
-	return {int(d.style.align), int(std::lround(d.style.box_width))};
+	return {int(d.style.align), int(std::lround(d.style.box_width)), d.style.line_spacing};
 }
 
 // --- OBS's undo history ------------------------------------------------------------------------
@@ -418,7 +418,7 @@ void PreviewEditor::refresh_overlay()
 	o.grip = doc.style.box && doc.style.box_width > 0;
 	o.plate = doc.style.plate;
 	// The marks in OBS's theme's own highlight colour.
-	const QColor h = preview_->palette().color(QPalette::Highlight);
+	const QColor h = theme_accent(preview_->window());
 	o.accent = uint32_t(h.red()) << 24 | uint32_t(h.green()) << 16 | uint32_t(h.blue()) << 8 | 0xFF;
 	make_labels(o, preedit_); // laid out here, on the UI thread, not while drawing
 	o.placeholder = placeholder_label(o.mapping);
@@ -630,6 +630,8 @@ void PreviewEditor::commit()
 		text_->set_align(l.align);
 	if (l.box_width > 0 && l.box_width != int(std::lround(d.style.box_width)))
 		text_->set_box_width(l.box_width);
+	if (std::fabs(l.line_spacing - d.style.line_spacing) > 1e-9)
+		text_->set_line_spacing(l.line_spacing);
 }
 
 // What the text's own font has.
@@ -838,6 +840,14 @@ void PreviewEditor::make_bar()
 		if (model_.set_align(align))
 			text_->set_align(align);
 	});
+	a.tracking = then([this](double percent, bool new_step) {
+		if (model_.set_tracking(percent, new_step))
+			commit();
+	});
+	a.line_spacing = then([this](double spacing, bool new_step) {
+		if (model_.set_line_spacing(spacing, new_step))
+			text_->set_line_spacing(spacing);
+	});
 	a.clear = then([this] {
 		StyleChange c;
 		c.field = StyleChange::Clear;
@@ -850,6 +860,14 @@ void PreviewEditor::make_bar()
 		}
 	};
 	bar_ = new FormatBar(parent, std::move(a));
+	// The bar is a window of its own, which OBS's theme's palette doesn't
+	// reach, and the theme's blue is in its style sheet, not its palette:
+	// the bar takes the preview's palette, with the theme's own accent for
+	// a button that's on (theme_accent()).
+	QPalette palette = preview_->palette();
+	palette.setColor(QPalette::Highlight, theme_accent(preview_->window()));
+	bar_->setPalette(palette);
+	bar_->set_accent(theme_accent(preview_->window()));
 }
 
 // What the bar shows: what the selection (or what's typed next) has, the
@@ -876,6 +894,11 @@ void PreviewEditor::bar_state()
 	st.base_px = int(std::lround(doc.style.size));
 	st.colour = model_.colour(doc.style.colour);
 	st.align = model_.layout().align;
+	bool own = false;
+	st.tracking_mixed = !model_.tracking(&st.tracking, &own);
+	if (own)
+		st.tracking = doc.style.letter_spacing;
+	st.line_spacing = model_.layout().line_spacing;
 	bar_->set_state(st);
 }
 

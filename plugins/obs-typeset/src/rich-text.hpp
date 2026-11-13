@@ -29,17 +29,20 @@ struct Span {
 	double size = 0;     // percent of the base size; 0: as the base
 	int8_t script = 0;   // 0: on the line; 1: superscript; 2: subscript
 	std::string family;  // a typeface of its own; empty: the base's
+	bool has_tracking = false;
+	double tracking = 0; // letter spacing of its own, percent of its size (with has_tracking)
 
 	bool same_style(const Span &o) const
 	{
 		return bold == o.bold && italic == o.italic && underline == o.underline && weight == o.weight &&
 		       has_colour == o.has_colour && (!has_colour || colour == o.colour) && size == o.size &&
-		       script == o.script && family == o.family;
+		       script == o.script && family == o.family && has_tracking == o.has_tracking &&
+		       (!has_tracking || tracking == o.tracking);
 	}
 	bool plain() const
 	{
 		return bold < 0 && italic < 0 && underline < 0 && weight == 0 && !has_colour && size == 0 && script == 0 &&
-		       family.empty();
+		       family.empty() && !has_tracking;
 	}
 	bool operator==(const Span &o) const { return start == o.start && end == o.end && same_style(o); }
 };
@@ -48,7 +51,7 @@ using Spans = std::vector<Span>;
 
 // What a change sets on a range.
 struct StyleChange {
-	enum Field { Bold, Italic, Underline, Colour, Size, Clear, Weight, Script, Family } field = Bold;
+	enum Field { Bold, Italic, Underline, Colour, Size, Clear, Weight, Script, Family, Tracking } field = Bold;
 	// Bold, italic, underline: 1 on, 0 off, -1 as the base. Weight: 100 to
 	// 1000, or 0 for the base (a weight replaces bold, and bold a weight).
 	// Script: 0 on the line, 1 superscript, 2 subscript.
@@ -58,6 +61,7 @@ struct StyleChange {
 	uint32_t colour = 0;   // Colour
 	bool no_colour = false;
 	std::string family;    // Family: a typeface, or empty for the base's
+	bool to_base = false;  // Tracking: back to the base's (amount is the percent otherwise)
 };
 
 // Sorted, non-overlapping, merged, no plain runs, within the text, on UTF-8

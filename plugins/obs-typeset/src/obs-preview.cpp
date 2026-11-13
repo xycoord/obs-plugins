@@ -5,7 +5,9 @@
 
 #include <QAction>
 #include <QGuiApplication>
+#include <QImage>
 #include <QMenu>
+#include <QPushButton>
 #include <QWidget>
 
 #include <cstring>
@@ -112,6 +114,27 @@ obs_display_t *preview_display(QWidget *preview)
 	if (int(cx) != size.width() || int(cy) != size.height())
 		return nullptr;
 	return display;
+}
+
+QColor theme_accent(QWidget *main)
+{
+	static QColor accent;
+	if (accent.isValid() || !main)
+		return accent.isValid() ? accent : main ? main->palette().color(QPalette::Highlight) : QColor(40, 76, 184);
+	QPushButton probe(main);
+	probe.setCheckable(true);
+	probe.setChecked(true);
+	probe.setText(" ");
+	probe.resize(60, 30);
+	probe.ensurePolished();
+	const QImage on = probe.grab().toImage();
+	probe.setChecked(false);
+	const QImage off = probe.grab().toImage();
+	const QPoint middle(on.width() / 2, on.height() / 2);
+	// A theme that doesn't mark a checked button: its highlight instead.
+	accent = on.pixelColor(middle) != off.pixelColor(middle) ? on.pixelColor(middle)
+								  : main->palette().color(QPalette::Highlight);
+	return accent;
 }
 
 obs_source_t *preview_scene()

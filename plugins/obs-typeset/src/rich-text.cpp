@@ -74,6 +74,10 @@ void change(Span &s, const StyleChange &c)
 	case StyleChange::Family:
 		s.family = c.family;
 		break;
+	case StyleChange::Tracking:
+		s.has_tracking = !c.to_base;
+		s.tracking = c.to_base ? 0 : std::clamp(c.amount, -20.0, 100.0);
+		break;
 	case StyleChange::Italic:
 		s.italic = int8_t(std::clamp(c.value, -1, 1));
 		break;

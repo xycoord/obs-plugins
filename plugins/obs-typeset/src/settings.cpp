@@ -207,6 +207,8 @@ Spans read_spans(obs_data_t *settings)
 		sp.script = int8_t(std::clamp<long long>(obs_data_get_int(o, "script"), 0, 2));
 		const char *family = obs_data_get_string(o, "family");
 		sp.family = family ? family : "";
+		sp.has_tracking = obs_data_has_user_value(o, "tracking");
+		sp.tracking = sp.has_tracking ? std::clamp(obs_data_get_double(o, "tracking"), -20.0, 100.0) : 0;
 		spans.push_back(sp);
 		obs_data_release(o);
 	}
@@ -237,6 +239,8 @@ obs_data_array_t *spans_array(const Spans &spans)
 			obs_data_set_int(o, "script", sp.script);
 		if (!sp.family.empty())
 			obs_data_set_string(o, "family", sp.family.c_str());
+		if (sp.has_tracking)
+			obs_data_set_double(o, "tracking", sp.tracking);
 		obs_data_array_push_back(array, o);
 		obs_data_release(o);
 	}

@@ -13,6 +13,10 @@
 #include <QBitmap>
 #include <QAbstractItemView>
 #include <QFrame>
+#include <QGridLayout>
+#include <QLabel>
+#include <QRegularExpression>
+#include <QSlider>
 #include <QPainter>
 #include <QPainterPath>
 #include <QRegion>
@@ -126,28 +130,25 @@ QIcon script_icon(QWidget *w, bool super)
 	});
 }
 
-// The colour: an A over a chip of it, as slide tools show it. The chip is
-// framed, with a gap, so it reads as a colour (white included), not an
-// underline.
+// The colour: an A over a bar of it, as Word and Google Docs show it. The
+// bar is thick and wider than the letter (a swatch, not an underline), with
+// a faint edge so white still has one.
 QIcon colour_icon(QWidget *w, uint32_t abgr)
 {
 	return drawn_icon(w, [abgr](QPainter &p, QColor c) {
 		p.setPen(stroke(c, 1.6));
 		QPainterPath a;
-		a.moveTo(6, 12);
-		a.lineTo(10, 2.5);
-		a.lineTo(14, 12);
+		a.moveTo(6.5, 12);
+		a.lineTo(10, 3);
+		a.lineTo(13.5, 12);
 		p.drawPath(a);
-		p.drawLine(QPointF(7.6, 8.6), QPointF(12.4, 8.6));
-		// A frame, a gap of the button's own colour, then the colour: a chip
-		// for any colour, white on a light frame included.
+		p.drawLine(QPointF(7.8, 8.8), QPointF(12.2, 8.8));
 		const QColor fill(abgr & 0xFF, (abgr >> 8) & 0xFF, (abgr >> 16) & 0xFF);
-		p.setPen(QPen(c, 1));
-		p.setBrush(Qt::NoBrush);
-		p.drawRoundedRect(QRectF(3.5, 13.5, 13, 6), 2, 2);
-		p.setPen(Qt::NoPen);
+		QColor edge = c;
+		edge.setAlphaF(0.35);
+		p.setPen(QPen(edge, 1));
 		p.setBrush(fill);
-		p.drawRoundedRect(QRectF(5.5, 15.5, 9, 2), 0.8, 0.8);
+		p.drawRoundedRect(QRectF(2.5, 14.5, 15, 4.5), 1.5, 1.5);
 	});
 }
 
@@ -175,6 +176,39 @@ QIcon clear_icon(QWidget *w)
 		p.restore();
 		p.setPen(stroke(c, 1.5));
 		p.drawLine(QPointF(9.5, 17.5), QPointF(17, 17.5));
+	});
+}
+
+// Spacing: lines with an arrow between them, up and down.
+QIcon spacing_icon(QWidget *w)
+{
+	return drawn_icon(w, [](QPainter &p, QColor c) {
+		p.setPen(stroke(c, 1.5));
+		for (int i = 0; i < 3; i++)
+			p.drawLine(QPointF(9, 5 + i * 5), QPointF(17, 5 + i * 5));
+		p.drawLine(QPointF(4.5, 3.5), QPointF(4.5, 16.5));
+		p.drawLine(QPointF(2.5, 5.5), QPointF(4.5, 3.5));
+		p.drawLine(QPointF(6.5, 5.5), QPointF(4.5, 3.5));
+		p.drawLine(QPointF(2.5, 14.5), QPointF(4.5, 16.5));
+		p.drawLine(QPointF(6.5, 14.5), QPointF(4.5, 16.5));
+	});
+}
+
+// Letter spacing: a V and an A, an arrow apart.
+QIcon tracking_icon(QWidget *w)
+{
+	return drawn_icon(w, [](QPainter &p, QColor c) {
+		p.setPen(stroke(c, 1.5));
+		p.drawLine(QPointF(2.5, 3), QPointF(5.5, 11));
+		p.drawLine(QPointF(8.5, 3), QPointF(5.5, 11));
+		p.drawLine(QPointF(11.5, 11), QPointF(14.5, 3));
+		p.drawLine(QPointF(17.5, 11), QPointF(14.5, 3));
+		p.drawLine(QPointF(12.8, 8), QPointF(16.2, 8));
+		p.drawLine(QPointF(3, 16), QPointF(17, 16));
+		p.drawLine(QPointF(5, 14), QPointF(3, 16));
+		p.drawLine(QPointF(5, 18), QPointF(3, 16));
+		p.drawLine(QPointF(15, 14), QPointF(17, 16));
+		p.drawLine(QPointF(15, 18), QPointF(17, 16));
 	});
 }
 
@@ -333,6 +367,11 @@ FormatBar::FormatBar(QWidget *parent, Actions actions)
 		then_back();
 	});
 
+	spacing_ = button(tip("Bar.Spacing"), false);
+	spacing_->setIcon(spacing_icon(this));
+	QObject::connect(spacing_, &QToolButton::clicked, this, [this] { show_spacing(); });
+	make_spacing_popup();
+
 	// Everything before acts on the selection (or what's typed next);
 	// alignment, after a line, on the whole text.
 	auto *line = new QFrame(this);
@@ -360,14 +399,10 @@ FormatBar::FormatBar(QWidget *parent, Actions actions)
 		aligns_[i] = b;
 	}
 
-	// A style that's on shows in the theme's highlight, as plainly as a
-	// pressed button in OBS's own toolbars.
-	// (Only the colour: the shape is the theme's own, as on its buttons.)
-	// (The theme gives lists and number fields a margin inside their own
-	// size, which would draw them shorter than the buttons beside them and
-	// add to the gaps beside them only.)
-	setStyleSheet("QToolButton:checked { background: palette(highlight); color: palette(highlighted-text); }"
-		      "QComboBox, QToolButton { margin: 0px; }");
+	// A style that's on shows in the theme's accent, as plainly as a
+	// pressed button in OBS's own toolbars (the editor sets the theme's own:
+	// see theme_accent()).
+	set_accent(palette().color(QPalette::Highlight));
 
 	// Every control the same height (OBS's theme sizes each kind its own
 	// way), the buttons square at it, and the line a little shorter.
@@ -377,7 +412,7 @@ FormatBar::FormatBar(QWidget *parent, Actions actions)
 		h = std::max(h, w->sizeHint().height());
 	for (QWidget *w : std::initializer_list<QWidget *>{family_, weight_, size_})
 		w->setFixedHeight(h);
-	for (QToolButton *b : {italic_, underline_, super_, sub_, colour_, clear_, aligns_[0], aligns_[1], aligns_[2]})
+	for (QToolButton *b : {italic_, underline_, super_, sub_, colour_, clear_, spacing_, aligns_[0], aligns_[1], aligns_[2]})
 		b->setFixedSize(h, h);
 	line->setFixedHeight(h - 2 * gap);
 
@@ -481,12 +516,31 @@ void FormatBar::set_state(const State &s)
 	colour_->setIcon(colour_icon(this, s.colour));
 	for (int i = 0; i < 3; i++)
 		aligns_[i]->setChecked(s.align == i);
+	{
+		const QSignalBlocker b1(tracking_slider_), b2(leading_slider_);
+		tracking_slider_->setValue(int(std::lround(s.tracking)));
+		leading_slider_->setValue(int(std::lround(s.line_spacing * 100)));
+		if (!tracking_field_->hasFocus())
+			tracking_field_->setText(s.tracking_mixed ? QString() : QString("%1 %").arg(s.tracking, 0, 'g', 4));
+		if (!leading_field_->hasFocus())
+			leading_field_->setText(QString("%1\u00d7").arg(s.line_spacing, 0, 'f', 2));
+	}
 	updating_ = false;
 	adjustSize();
 }
 
 // The state's size in the field: the size, or for a mixed selection the
 // smallest and a plus (as PowerPoint shows it), the range in the tooltip.
+void FormatBar::set_accent(const QColor &accent)
+{
+	// (The theme gives lists and buttons a margin inside their own size,
+	// which would draw them shorter than one another and add to the gaps
+	// beside some of them only.)
+	setStyleSheet(QString("QToolButton:checked { background: %1; color: palette(highlighted-text); }"
+			      "QComboBox, QToolButton { margin: 0px; }")
+			      .arg(accent.name()));
+}
+
 void FormatBar::show_size()
 {
 	const State &s = state_;
@@ -505,6 +559,73 @@ void FormatBar::step_size_field(int dir)
 	if (actions_.step_size)
 		actions_.step_size(dir);
 	size_->lineEdit()->selectAll();
+}
+
+// Spacing's pop-up: letter spacing for the selection, leading for the
+// whole text, each a slider and a field (type a value, Enter).
+void FormatBar::make_spacing_popup()
+{
+	spacing_popup_ = new QFrame(this, Qt::Popup);
+	spacing_popup_->setFrameShape(QFrame::StyledPanel);
+	auto *grid = new QGridLayout(spacing_popup_);
+	grid->setContentsMargins(10, 8, 10, 8);
+	grid->setHorizontalSpacing(8);
+	auto row = [&](int r, const QIcon &icon, const char *tooltip, int min, int max, QSlider **slider,
+		       QLineEdit **field, std::function<void(double, bool)> FormatBar::Actions::*act, double scale) {
+		auto *label = new QLabel(spacing_popup_);
+		label->setPixmap(icon.pixmap(QSize(20, 20)));
+		label->setToolTip(tip(tooltip));
+		*slider = new QSlider(Qt::Horizontal, spacing_popup_);
+		(*slider)->setRange(min, max);
+		(*slider)->setMinimumWidth(160);
+		(*slider)->setToolTip(tip(tooltip));
+		*field = new QLineEdit(spacing_popup_);
+		(*field)->setFixedWidth(64);
+		(*field)->setAlignment(Qt::AlignRight);
+		(*field)->setToolTip(tip(tooltip));
+		grid->addWidget(label, r, 0);
+		grid->addWidget(*slider, r, 1);
+		grid->addWidget(*field, r, 2);
+		QSlider *sl = *slider;
+		QObject::connect(sl, &QSlider::sliderPressed, this, [this] { new_step_ = true; });
+		QObject::connect(sl, &QSlider::valueChanged, this, [this, sl, act, scale](int v) {
+			// A drag is one step; a click on the track or a key, each its own.
+			const bool step = new_step_ || !sl->isSliderDown();
+			new_step_ = false;
+			if (!updating_ && actions_.*act)
+				(actions_.*act)(v / scale, step);
+		});
+		QLineEdit *f = *field;
+		QObject::connect(f, &QLineEdit::returnPressed, this, [this, f, act, min, max, scale] {
+			QString t = f->text();
+			t.remove(QRegularExpression("[^0-9.,\\-]"));
+			bool ok = false;
+			const double v = t.replace(',', '.').toDouble(&ok);
+			if (ok && actions_.*act)
+				(actions_.*act)(std::clamp(v, min / scale, max / scale), true);
+		});
+		f->installEventFilter(this);
+	};
+	row(0, tracking_icon(this), "Bar.Tracking", -20, 100, &tracking_slider_, &tracking_field_,
+	    &FormatBar::Actions::tracking, 1.0);
+	row(1, spacing_icon(this), "Bar.Leading", 50, 300, &leading_slider_, &leading_field_,
+	    &FormatBar::Actions::line_spacing, 100.0);
+	spacing_popup_->installEventFilter(this);
+}
+
+void FormatBar::show_spacing()
+{
+	spacing_popup_->adjustSize();
+	spacing_popup_->move(spacing_->mapToGlobal(QPoint(0, spacing_->height() + 4)));
+	spacing_popup_->show();
+	if (getenv("TYPESET_DEBUG")) {
+		auto c = [](const QWidget *w) {
+			const QPoint g = w->mapToGlobal(w->rect().center());
+			return QString("%1,%2").arg(g.x()).arg(g.y());
+		};
+		blog(LOG_INFO, "[obs-typeset] bar spacing tracking=%s leading=%s",
+		     c(tracking_field_).toUtf8().constData(), c(leading_field_).toUtf8().constData());
+	}
 }
 
 void FormatBar::place(int x, int y, int below_y, const QRect &within)
@@ -532,10 +653,10 @@ void FormatBar::log_geometry() const
 		return QString("%1,%2").arg(g.x()).arg(g.y());
 	};
 	const QString line = QString("typeface=%1 weight=%2 size=%3 italic=%4 underline=%5 super=%6 sub=%7 "
-				     "colour=%8 align=%9 clear=%10 centre=%11")
+				     "colour=%8 align=%9 clear=%10 centre=%11 spacing=%12")
 				     .arg(c(family_), c(weight_), c(size_), c(italic_), c(underline_), c(super_), c(sub_),
 					  c(colour_), c(aligns_[0]), c(clear_))
-				     .arg(c(aligns_[1]));
+				     .arg(c(aligns_[1]), c(spacing_));
 	blog(LOG_INFO, "[obs-typeset] bar %s", line.toUtf8().constData());
 }
 
@@ -593,6 +714,11 @@ bool FormatBar::eventFilter(QObject *obj, QEvent *event)
 			if (!size_->hasFocus() && !size_->lineEdit()->hasFocus())
 				show_size();
 		});
+	if (obj == spacing_popup_ && event->type() == QEvent::Hide) {
+		if (actions_.back_to_text)
+			actions_.back_to_text();
+		return false;
+	}
 	if (event->type() == QEvent::ShortcutOverride) {
 		event->accept();
 		return false; // and the key goes to the field

@@ -393,6 +393,52 @@ bool EditModel::family(std::string *out) const
 	return uniform_family(spans_, sel_from(), sel_to(), out);
 }
 
+bool EditModel::set_tracking(double percent, bool new_step)
+{
+	StyleChange c;
+	c.field = StyleChange::Tracking;
+	c.amount = percent;
+	if (!has_selection())
+		return style(c, false, {});
+	if (new_step || last_edit_ != EditKind::Stepping)
+		push_undo();
+	apply(spans_, sel_from(), sel_to(), c, text_);
+	last_edit_ = EditKind::Stepping;
+	return true;
+}
+
+bool EditModel::set_line_spacing(double spacing, bool new_step)
+{
+	if (std::fabs(spacing - layout_.line_spacing) < 1e-9)
+		return false;
+	if (new_step || last_edit_ != EditKind::Stepping)
+		push_undo();
+	last_edit_ = EditKind::Stepping;
+	layout_.line_spacing = spacing;
+	return true;
+}
+
+namespace {
+
+double tracking_key(const Span &s)
+{
+	return s.has_tracking ? s.tracking : 1e9; // 1e9: the text's own
+}
+
+} // namespace
+
+bool EditModel::tracking(double *percent, bool *own) const
+{
+	double k = 0;
+	if (!has_selection())
+		k = tracking_key(typing_span());
+	else if (!uniform(spans_, sel_from(), sel_to(), tracking_key, &k))
+		return false;
+	*own = k > 1e8;
+	*percent = *own ? 0 : k;
+	return true;
+}
+
 bool EditModel::toggle_script(int which)
 {
 	StyleChange c;

@@ -18,6 +18,9 @@
 
 class QComboBox;
 class QFontComboBox;
+class QFrame;
+class QLineEdit;
+class QSlider;
 class QToolButton;
 
 namespace typeset {
@@ -36,6 +39,9 @@ public:
 		int base_px = 0;     // the text's own size
 		uint32_t colour = 0xFFFFFFFF; // 0xAABBGGRR
 		int align = 0;
+		bool tracking_mixed = false;
+		double tracking = 0;       // the selection's letter spacing, percent of the size
+		double line_spacing = 1.0; // the whole text's leading
 	};
 	enum class Toggle { Italic, Underline, Superscript, Subscript };
 	struct Actions {
@@ -48,11 +54,15 @@ public:
 		std::function<void()> colour;
 		std::function<void(int)> align;
 		std::function<void()> clear;
+		// A slider's drag is one undo step: new_step at its start.
+		std::function<void(double, bool)> tracking;
+		std::function<void(double, bool)> line_spacing;
 		std::function<void()> back_to_text; // the keyboard back to the preview
 	};
 
 	FormatBar(QWidget *parent, Actions actions);
 	void set_state(const State &state);
+	void set_accent(const QColor &accent); // a button that's on, in the theme's own colour
 	// Where it goes, on the screen: its bottom-left corner just above (x, y)
 	// (or its top just below below_y, if there's no room above), kept within
 	// the preview's rectangle.
@@ -74,6 +84,13 @@ private:
 	QComboBox *size_;
 	QToolButton *italic_, *underline_, *super_, *sub_, *colour_, *clear_;
 	QToolButton *aligns_[3]; // left, centre, right
+	QToolButton *spacing_;
+	QFrame *spacing_popup_;
+	QSlider *tracking_slider_, *leading_slider_;
+	QLineEdit *tracking_field_, *leading_field_;
+	bool new_step_ = true;
+	void make_spacing_popup();
+	void show_spacing();
 	State state_;
 	int listed_base_ = -1; // the base size the list was made with
 	bool select_on_release_ = false;

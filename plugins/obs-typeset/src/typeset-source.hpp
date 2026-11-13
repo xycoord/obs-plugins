@@ -72,7 +72,8 @@ public:
 	Document document() const;
 	void set_content(const std::string &text, const Spans &spans); // text and styled runs together
 	void set_box_width(int width); // the text box's width, while dragging its grip
-	void set_align(int align);     // the whole text's alignment (Align), at once
+	void set_align(int align);
+	void set_line_spacing(double spacing); // the whole text's leading (a multiple of the font's line height), at once     // the whole text's alignment (Align), at once
 	Frame frame() const;
 	Box box() const; // the source's own extent, as laid out now
 	size_t hit_test(double x, double y, bool nearest_edge = true) const;

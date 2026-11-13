@@ -223,6 +223,11 @@ PangoLayout *create_layout(PangoContext *context, const Document &doc)
 			add(pango_attr_size_new_absolute(int(std::lround(std::clamp(style.size, 1.0, 4096.0) * sp.size /
 									    100.0 * PANGO_SCALE))),
 			    sp);
+		if (sp.has_tracking) // a percent of the run's own size
+			add(pango_attr_letter_spacing_new(int(std::lround(std::clamp(style.size, 1.0, 4096.0) *
+									   (sp.size > 0 ? sp.size / 100.0 : 1.0) *
+									   sp.tracking / 100.0 * PANGO_SCALE))),
+			    sp);
 		// Raised or lowered, and made smaller, as the font itself says
 		// (its superscript metrics), so it sits right in any font.
 		if (sp.script == 1 || sp.script == 2) {

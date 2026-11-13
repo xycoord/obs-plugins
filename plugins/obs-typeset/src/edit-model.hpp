@@ -43,6 +43,7 @@ std::string clean_paste(std::string text, bool *cut = nullptr);
 struct StripLayout {
 	int align = 0;
 	int box_width = 0;
+	double line_spacing = 1.0; // the whole text's leading
 	bool operator==(const StripLayout &) const = default;
 };
 
@@ -90,6 +91,10 @@ public:
 	bool set_size_percent(double percent); // of the text's own size
 	bool set_weight(int weight);           // 100 to 1000 (an explicit weight, in place of bold)
 	bool set_family(const std::string &family); // a typeface for the selection; empty: the text's own
+	// Letter spacing for the selection (percent of the size), and the whole
+	// text's leading. A slider's drag is one undo step: new_step at its start.
+	bool set_tracking(double percent, bool new_step);
+	bool set_line_spacing(double spacing, bool new_step);
 	bool toggle_script(int which);         // 1 superscript, 2 subscript: on, or off if it has it
 	// The alignment (one undo step), and the box's width (one undo step per
 	// drag of its grip: begin_box_drag() marks the start).
@@ -106,6 +111,9 @@ public:
 	int weight(int base_weight) const;     // as drawn; 0 if mixed
 	int script() const;                    // 0 none, 1 super, 2 sub; -1 if mixed
 	bool family(std::string *out) const;   // the typeface ("": the text's own); false if mixed
+	// The selection's letter spacing: false if mixed; *own false if it's the
+	// text's own (whatever that is).
+	bool tracking(double *percent, bool *own) const;
 	uint32_t colour(uint32_t base) const;  // 0xAABBGGRR
 	Span style_here() const;               // the run at the selection's start, or before the caret
 

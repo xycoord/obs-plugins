@@ -191,6 +191,26 @@ int main()
 		check("three steps undo as one", m.spans().empty());
 	}
 	{
+		// Letter spacing for the selection, a slider's drag one undo step;
+		// leading for the whole text, in the same undo.
+		EditModel m;
+		m.start("tight", {}, {0, 0, 1.0});
+		m.select(0, 5);
+		m.set_tracking(5, true);
+		m.set_tracking(10, false);
+		m.set_tracking(15, false);
+		double t = 0;
+		bool own = true;
+		check("letter spacing for the selection", m.tracking(&t, &own) && !own && t == 15);
+		m.undo();
+		check("a drag undoes as one", m.tracking(&t, &own) && own);
+		m.set_line_spacing(1.2, true);
+		m.set_line_spacing(1.4, false);
+		check("leading for the whole text", m.layout().line_spacing == 1.4);
+		m.undo();
+		check("and its drag undoes as one", m.layout().line_spacing == 1.0);
+	}
+	{
 		// A size typed in pixels is kept to the fraction.
 		EditModel m;
 		m.start("ab", {});

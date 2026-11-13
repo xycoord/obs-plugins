@@ -102,6 +102,14 @@ def bar_button(obs, name):
     return int(x), int(y)
 
 
+def spacing_field(obs, name):
+    """Where a field in the format bar's Spacing pop-up is on the screen."""
+    lines = [line for line in obs.log().splitlines() if "[obs-typeset] bar spacing " in line]
+    fields = dict(f.split("=") for f in lines[-1].split("] bar spacing ", 1)[1].split())
+    x, y = fields[name].split(",")
+    return int(x), int(y)
+
+
 def drawing_times(obs):
     """How long each drawing of a text took, in order (TYPESET_DEBUG's log)."""
     return [float(m) for m in re.findall(r"\[obs-typeset\] drew .* in ([0-9.]+) ms", obs.log())]
@@ -516,6 +524,25 @@ def test_rich(out):
         sizes = [round(s.get("size", 0), 3) for s in obs.settings("Title").get("spans", [])]
         check(sizes == [125.0], "a size typed in the size list", repr(sizes))
         obs.key("ctrl+z")
+
+        # Spacing: letter spacing for the selection, leading for the text.
+        obs.click(*bar_button(obs, "spacing"))
+        time.sleep(0.3)
+        obs.click(*spacing_field(obs, "tracking"))
+        obs.key("ctrl+a")
+        obs.type("10")
+        obs.key("Return")
+        tracking = [s.get("tracking") for s in obs.settings("Title").get("spans", [])]
+        check(tracking == [10.0], "letter spacing for the selection, from the Spacing pop-up", repr(tracking))
+        obs.click(*spacing_field(obs, "leading"))
+        obs.key("ctrl+a")
+        obs.type("1.5")
+        obs.key("Return")
+        st = obs.settings("Title")
+        check(st.get("typography") and abs(st.get("line_spacing", 0) - 1.5) < 1e-6,
+              "leading for the whole text, from the Spacing pop-up", repr((st.get("typography"), st.get("line_spacing"))))
+        obs.key("Escape")  # the pop-up closed
+        obs.key("ctrl+z", "ctrl+z")
 
         # The typeface list: type a name, Return.
         obs.click(*bar_button(obs, "typeface"))
