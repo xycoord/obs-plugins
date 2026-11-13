@@ -49,6 +49,8 @@ public:
 	std::string text() const;
 	Document document() const;
 	void set_text(const std::string &text);
+	void set_box_width(int width); // the text box's width, while dragging its grip
+	Frame frame() const;
 	Box box() const; // the source's own extent
 	size_t hit_test(double x, double y, bool nearest_edge = true) const;
 	Caret caret(size_t index) const;
@@ -65,7 +67,7 @@ public:
 	// Drawing the current output raster again elsewhere (the editor draws
 	// selected text over its highlight), on OBS's graphics thread, with the
 	// world matrix set to map the source's units.
-	void draw_raster();
+	bool draw_raster(); // false if no raster shows the text as it is now
 
 private:
 	obs_source_t *source_;

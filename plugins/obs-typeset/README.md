@@ -19,14 +19,14 @@ Everything else is in groups that show their settings only when ticked:
 
 | Group | For |
 |---|---|
-| **Text box** | A fixed width, so the text stays put when the words change. Text that's too long wraps onto more lines, or shrinks to fit (for band names of any length: the font size itself isn't changed). An optional height, with vertical alignment. |
+| **Text box** | A fixed width, so the text stays put when the words change. Text that's too long wraps onto more lines, or shrinks to fit (for band names of any length: the font size itself isn't changed). An optional height, with vertical alignment. While editing in the preview, a blue grip on the frame's right edge drags its width. |
 | **Outline** | Colour and width. Drawn outside the letters, so it never thins them. |
-| **Shadow** | Colour, offset and blur. With no offset, it's a glow. On by default. |
-| **Background** | A plate behind the text: colour, padding, rounded corners. For lower thirds and messages over busy visuals. |
-| **Spacing and case** | Line and letter spacing; UPPERCASE, lowercase or Title Case (the text stays as you typed it); even-width numbers, so set times line up. |
+| **Shadow** | Colour, opacity, offset and blur. With no offset, it's a glow. On by default. |
+| **Background** | A plate behind the text: colour, opacity, padding, rounded corners. For lower thirds and messages over busy visuals. |
+| **Adjust spacing and case** | Line and letter spacing; UPPERCASE, lowercase or Title Case (the text stays as you typed it); even-width numbers, so set times line up. |
 
-**Copy style** and **Paste style** copy everything but the words from one Typeset Text to another;
-**Use this style for new text** makes new ones start with it.
+In the **Style** group, **Copy style** and **Paste style** copy everything but the words from one
+Typeset Text to another; **Use this style for new text** makes new ones start with it.
 
 Every size here (the font's, the box, outline, shadow, padding) is in the text's own pixels, before
 the scene scales it, so the whole design scales together. If a text's font isn't installed on the
@@ -62,8 +62,8 @@ crop cut them off at it.
 ## Editing in the preview
 
 Double-click the text in the preview: the word you double-clicked is selected. Or select the text
-and press **F2**: all of it is selected, so typing replaces it. The text gets a blue frame and an
-"Editing · Esc to finish" tag (in the preview only); then:
+and press **F2**: all of it is selected, so typing replaces it. The text gets a blue frame and a tag
+naming it ("Editing “Title” · Esc to finish"), in the preview only; then:
 
 | | |
 |---|---|

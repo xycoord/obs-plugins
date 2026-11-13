@@ -289,15 +289,18 @@ static void draw_text(cairo_t *cr, PangoLayout *layout, const Style &s, const Fr
 	cairo_restore(cr);
 }
 
-// Three box blurs make a close approximation of a Gaussian blur.
-static void box_blur(uint8_t *data, int w, int h, int stride, double sigma)
+// Three box blurs make a close approximation of a Gaussian blur; across and
+// down separately, as the text can be scaled differently each way.
+static void box_blur(uint8_t *data, int w, int h, int stride, double sigma_x, double sigma_y)
 {
-	if (sigma < 0.5 || w <= 0 || h <= 0)
+	if (w <= 0 || h <= 0)
 		return;
-	const int d = std::max(1, int(std::floor(sigma * 3 * std::sqrt(2 * M_PI) / 4 + 0.5)));
-	const int r = d / 2;
+	auto radius = [](double sigma) {
+		return sigma < 0.5 ? -1 : std::max(1, int(std::floor(sigma * 3 * std::sqrt(2 * M_PI) / 4 + 0.5))) / 2;
+	};
+	const int rx = radius(sigma_x), ry = radius(sigma_y);
 	std::vector<uint8_t> line(size_t(std::max(w, h)));
-	auto pass = [&](uint8_t *start, int n, int step) {
+	auto pass = [&](uint8_t *start, int n, int step, int r) {
 		for (int i = 0; i < n; i++)
 			line[size_t(i)] = start[size_t(i) * step];
 		int sum = 0;
@@ -311,10 +314,12 @@ static void box_blur(uint8_t *data, int w, int h, int stride, double sigma)
 		}
 	};
 	for (int k = 0; k < 3; k++) {
-		for (int y = 0; y < h; y++)
-			pass(data + size_t(y) * stride, w, 1);
-		for (int x = 0; x < w; x++)
-			pass(data + x, h, stride);
+		if (rx >= 0)
+			for (int y = 0; y < h; y++)
+				pass(data + size_t(y) * stride, w, 1, rx);
+		if (ry >= 0)
+			for (int x = 0; x < w; x++)
+				pass(data + x, h, stride, ry);
 	}
 }
 
@@ -382,9 +387,9 @@ Raster rasterise(PangoLayout *layout, const Document &doc, RasterParams params)
 			cairo_surface_flush(mask);
 			// The blur's size is in source units, like everything else;
 			// half of it is the Gaussian's standard deviation.
+			const double sigma = std::max(0.0, s.shadow_blur) * 0.5;
 			box_blur(cairo_image_surface_get_data(mask), out.width, out.height,
-				 cairo_image_surface_get_stride(mask),
-				 std::max(0.0, s.shadow_blur) * 0.5 * (params.sx + params.sy) / 2);
+				 cairo_image_surface_get_stride(mask), sigma * params.sx, sigma * params.sy);
 			cairo_surface_mark_dirty(mask);
 
 			cairo_save(cr);

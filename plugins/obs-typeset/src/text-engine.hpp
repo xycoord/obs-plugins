@@ -100,6 +100,7 @@ struct RasterParams {
 
 struct Raster {
 	RasterParams params;
+	uint64_t version = 0; // of the document drawn (set by whoever asked for it)
 	int x0 = 0, y0 = 0;
 	int width = 0, height = 0;
 	std::vector<uint8_t> pixels; // BGRA, premultiplied, width*4 per row

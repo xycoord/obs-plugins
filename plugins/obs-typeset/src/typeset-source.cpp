@@ -48,14 +48,21 @@ const Key style_keys[] = {
 	{"font", Kind::Object},          {"colour", Kind::Int},           {"align", Kind::Int},
 	{"box", Kind::Bool},             {"box_width", Kind::Int},        {"box_height", Kind::Int},
 	{"overflow", Kind::Int},         {"valign", Kind::Int},           {"typography", Kind::Bool},
-	{"line_spacing", Kind::Double},  {"letter_spacing", Kind::Double}, {"text_case", Kind::Int},
+	{"line_spacing", Kind::Double},  {"letter_spacing", Kind::Int},   {"text_case", Kind::Int},
 	{"tabular", Kind::Bool},         {"outline", Kind::Bool},         {"outline_colour", Kind::Int},
-	{"outline_width", Kind::Double}, {"shadow", Kind::Bool},          {"shadow_colour", Kind::Int},
-	{"shadow_x", Kind::Double},      {"shadow_y", Kind::Double},      {"shadow_blur", Kind::Double},
-	{"plate", Kind::Bool},           {"plate_colour", Kind::Int},     {"plate_padding", Kind::Double},
-	{"plate_radius", Kind::Double},
+	{"outline_width", Kind::Int},    {"shadow", Kind::Bool},          {"shadow_colour", Kind::Int},
+	{"shadow_opacity", Kind::Int},   {"shadow_x", Kind::Int},         {"shadow_y", Kind::Int},
+	{"shadow_blur", Kind::Int},      {"plate", Kind::Bool},           {"plate_colour", Kind::Int},
+	{"plate_opacity", Kind::Int},    {"plate_padding", Kind::Int},    {"plate_radius", Kind::Int},
 };
 constexpr const char *style_marker = "typeset_style";
+
+// A colour (its own alpha ignored) at an opacity in percent.
+uint32_t with_opacity(long long colour, long long percent)
+{
+	const uint32_t a = uint32_t(std::clamp<long long>(percent, 0, 100) * 255 / 100);
+	return (uint32_t(colour) & 0xFFFFFF) | (a << 24);
+}
 
 Style read_style(obs_data_t *settings)
 {
@@ -76,31 +83,35 @@ Style read_style(obs_data_t *settings)
 	s.colour = uint32_t(obs_data_get_int(settings, "colour"));
 	s.align = Align(std::clamp<long long>(obs_data_get_int(settings, "align"), 0, 2));
 
+	// Every value kept within what the dialog allows, whatever set it (a
+	// pasted style, a script).
 	s.box = obs_data_get_bool(settings, "box");
-	s.box_width = double(std::max<long long>(0, obs_data_get_int(settings, "box_width")));
-	s.box_height = double(std::max<long long>(0, obs_data_get_int(settings, "box_height")));
+	s.box_width = double(std::clamp<long long>(obs_data_get_int(settings, "box_width"), 0, 16384));
+	s.box_height = double(std::clamp<long long>(obs_data_get_int(settings, "box_height"), 0, 16384));
 	s.overflow = Overflow(std::clamp<long long>(obs_data_get_int(settings, "overflow"), 0, 1));
 	s.valign = VAlign(std::clamp<long long>(obs_data_get_int(settings, "valign"), 0, 2));
 
 	// Turned off, a group's settings don't apply, whatever they hold.
 	if (obs_data_get_bool(settings, "typography")) {
-		s.line_spacing = obs_data_get_double(settings, "line_spacing");
-		s.letter_spacing = obs_data_get_double(settings, "letter_spacing");
+		s.line_spacing = std::clamp(obs_data_get_double(settings, "line_spacing"), 0.5, 3.0);
+		s.letter_spacing = std::clamp(obs_data_get_double(settings, "letter_spacing"), -20.0, 100.0);
 		s.text_case = Case(std::clamp<long long>(obs_data_get_int(settings, "text_case"), 0, 3));
 		s.tabular = obs_data_get_bool(settings, "tabular");
 	}
 	s.outline = obs_data_get_bool(settings, "outline");
 	s.outline_colour = uint32_t(obs_data_get_int(settings, "outline_colour"));
-	s.outline_width = std::max(0.0, obs_data_get_double(settings, "outline_width"));
+	s.outline_width = std::clamp(obs_data_get_double(settings, "outline_width"), 0.0, 64.0);
 	s.shadow = obs_data_get_bool(settings, "shadow");
-	s.shadow_colour = uint32_t(obs_data_get_int(settings, "shadow_colour"));
-	s.shadow_x = obs_data_get_double(settings, "shadow_x");
-	s.shadow_y = obs_data_get_double(settings, "shadow_y");
-	s.shadow_blur = std::max(0.0, obs_data_get_double(settings, "shadow_blur"));
+	s.shadow_colour = with_opacity(obs_data_get_int(settings, "shadow_colour"),
+				       obs_data_get_int(settings, "shadow_opacity"));
+	s.shadow_x = std::clamp(obs_data_get_double(settings, "shadow_x"), -200.0, 200.0);
+	s.shadow_y = std::clamp(obs_data_get_double(settings, "shadow_y"), -200.0, 200.0);
+	s.shadow_blur = std::clamp(obs_data_get_double(settings, "shadow_blur"), 0.0, 200.0);
 	s.plate = obs_data_get_bool(settings, "plate");
-	s.plate_colour = uint32_t(obs_data_get_int(settings, "plate_colour"));
-	s.plate_padding = std::max(0.0, obs_data_get_double(settings, "plate_padding"));
-	s.plate_radius = std::max(0.0, obs_data_get_double(settings, "plate_radius"));
+	s.plate_colour = with_opacity(obs_data_get_int(settings, "plate_colour"),
+				      obs_data_get_int(settings, "plate_opacity"));
+	s.plate_padding = std::clamp(obs_data_get_double(settings, "plate_padding"), 0.0, 400.0);
+	s.plate_radius = std::clamp(obs_data_get_double(settings, "plate_radius"), 0.0, 400.0);
 	return s;
 }
 
@@ -139,7 +150,10 @@ obs_data_t *only_style(obs_data_t *data)
 		if (!obs_data_has_user_value(data, k.name))
 			continue;
 		obs_data_item_t *item = obs_data_item_byname(data, k.name);
-		const bool right_type = (k.kind == Kind::Object) == (obs_data_item_gettype(item) == OBS_DATA_OBJECT);
+		const obs_data_type type = obs_data_item_gettype(item);
+		const bool right_type = k.kind == Kind::Object ? type == OBS_DATA_OBJECT
+					: k.kind == Kind::Bool ? type == OBS_DATA_BOOLEAN
+							       : type == OBS_DATA_NUMBER;
 		obs_data_item_release(&item);
 		if (!right_type)
 			continue;
@@ -234,8 +248,9 @@ TextSource *TextSource::from(obs_source_t *source)
 	return static_cast<TextSource *>(obs_obj_get_data(source));
 }
 
-// The size field mirrors the font's size (which is what counts), so it shows
-// the right size whenever the dialog opens, whatever set the font.
+// The size field mirrors the font's size (which is what counts). Set when a
+// source is made and when its font is picked (never from OBS's graphics
+// thread, where updates run, as the dialog may be using the settings).
 void sync_size(obs_data_t *settings)
 {
 	obs_data_t *font = obs_data_get_obj(settings, "font");
@@ -247,10 +262,12 @@ void sync_size(obs_data_t *settings)
 
 void TextSource::update(obs_data_t *settings)
 {
-	sync_size(settings);
 	Document doc;
 	const char *text = obs_data_get_string(settings, "text");
-	doc.text = text ? text : "";
+	// Made valid UTF-8, which editing's index arithmetic relies on.
+	gchar *valid = g_utf8_make_valid(text ? text : "", -1);
+	doc.text = valid;
+	g_free(valid);
 	doc.style = read_style(settings);
 	apply(std::move(doc));
 }
@@ -286,6 +303,7 @@ void TextSource::request(View &view, const RasterParams &params)
 		std::lock_guard lock(doc_mutex_);
 		job.doc = pending_doc_;
 		view.requested_version = doc_version_;
+		job.version = doc_version_;
 	}
 	job.params = params;
 	job.seq = next_seq_++;
@@ -319,6 +337,11 @@ void TextSource::tick()
 			v.idle_ticks = 0;
 			if (!v.requested || version != v.requested_version || !v.wanted.close_to(v.requested_params))
 				request(v, v.wanted);
+		} else if (i == 0 && (!v.requested || version != v.requested_version)) {
+			// Not shown now, but it can be cut to at any moment: kept
+			// drawn for the output, at the scale it was last shown at
+			// (at first, its own size), so it's never blank on a cut.
+			request(v, v.requested ? v.requested_params : RasterParams());
 		} else if (i == 1 && v.texture && ++v.idle_ticks > 120) {
 			// No window has shown it for a while: free its raster.
 			obs_enter_graphics();
@@ -384,14 +407,21 @@ void TextSource::render()
 	want.sx = std::hypot(double(m.x.x), double(m.x.y));
 	want.sy = std::hypot(double(m.y.x), double(m.y.y));
 	const bool axis_aligned = std::fabs(m.x.y) < 1e-6f && std::fabs(m.y.x) < 1e-6f && m.x.x > 0 && m.y.y > 0;
-	if (window && axis_aligned && std::fabs(want.sx - 1) < 1e-4 && std::fabs(want.sy - 1) < 1e-4 &&
+	gs_rect viewport = {};
+	if (window)
+		gs_get_viewport(&viewport);
+	const bool same_aspect = viewport.cx > 0 && viewport.cy > 0 && width() > 0 && height() > 0 &&
+				 std::fabs(double(viewport.cx) / viewport.cy - double(width()) / height()) <
+					 0.02 * double(width()) / height();
+	if (window && axis_aligned && same_aspect && std::fabs(want.sx - 1) < 1e-4 && std::fabs(want.sy - 1) < 1e-4 &&
 	    std::fabs(m.t.x) < 1e-3f && std::fabs(m.t.y) < 1e-3f) {
 		// The source on its own, fitted to a window (the properties
 		// dialog's preview, a source projector): OBS projects its own
-		// size onto the viewport, so the viewport says how big it is.
-		gs_rect viewport;
-		gs_get_viewport(&viewport);
-		if (viewport.cx > 0 && viewport.cy > 0 && width() > 0 && height() > 0) {
+		// size onto a viewport of the same shape, so the viewport says
+		// how big it is. (A scene item at the origin, unscaled, in the
+		// Studio Mode preview has the same matrix, but the canvas's
+		// shape.)
+		{
 			want.sx = double(viewport.cx) / width();
 			want.sy = double(viewport.cy) / height();
 		}
@@ -442,9 +472,22 @@ void TextSource::draw(View &view)
 	gs_enable_framebuffer_srgb(previous_srgb);
 }
 
-void TextSource::draw_raster()
+bool TextSource::draw_raster()
 {
-	draw(views_[0]);
+	// The output's raster, or the window's (the Studio Mode preview) if
+	// that one shows the text as it is now and the output's doesn't.
+	uint64_t version;
+	{
+		std::lock_guard lock(doc_mutex_);
+		version = doc_version_;
+	}
+	for (View &v : views_) {
+		if (v.texture && v.drawn.version == version) {
+			draw(v);
+			return true;
+		}
+	}
+	return false;
 }
 
 // --- Editing --------------------------------------------------------------------------------
@@ -478,6 +521,28 @@ void TextSource::set_text(const std::string &text)
 	obs_data_set_string(settings, "text", text.c_str());
 	obs_source_update(source_, settings);
 	obs_data_release(settings);
+}
+
+void TextSource::set_box_width(int width)
+{
+	Document doc;
+	{
+		std::lock_guard lock(layout_lock());
+		doc = doc_;
+	}
+	doc.style.box_width = std::max(1, width);
+	apply(std::move(doc));
+
+	obs_data_t *settings = obs_data_create();
+	obs_data_set_int(settings, "box_width", std::max(1, width));
+	obs_source_update(source_, settings);
+	obs_data_release(settings);
+}
+
+Frame TextSource::frame() const
+{
+	std::lock_guard lock(layout_lock());
+	return frame_;
 }
 
 Box TextSource::box() const
@@ -545,7 +610,7 @@ std::vector<Box> TextSource::selection_boxes(size_t from, size_t to) const
 		}
 		g_free(ranges);
 		if (through_end)
-			add(line_x1, y, line_x1 + doc_.style.size * 0.25, h);
+			add(line_x1, y, line_x1 + doc_.style.size * 0.12, h);
 	} while (pango_layout_iter_next_line(iter));
 	pango_layout_iter_free(iter);
 	return boxes;
@@ -646,9 +711,10 @@ size_t TextSource::line_edge(size_t index, int direction) const
 		return size_t(l->start_index);
 	// The end of a line that wraps is before the space it wraps at, so the
 	// caret stays on that line.
+	// (A line's length leaves out the line break that ends it, if any.)
 	size_t end = size_t(l->start_index + l->length);
 	const bool wrapped = line + 1 < pango_layout_get_line_count(layout_) && end > 0 && end < doc_.text.size() &&
-			     doc_.text[end - 1] != '\n';
+			     doc_.text[end] != '\n';
 	if (wrapped && doc_.text[end - 1] == ' ')
 		end--;
 	return end;
@@ -707,13 +773,40 @@ void *create(obs_data_t *settings, obs_source_t *source)
 		const std::string path = default_style_path();
 		obs_data_t *saved = path.empty() ? nullptr : obs_data_create_from_json_file(path.c_str());
 		if (saved) {
+			// Only what the source wasn't given (by a script, say).
 			obs_data_t *style = only_style(saved);
-			obs_data_apply(settings, style);
+			for (obs_data_item_t *item = obs_data_first(style); item; obs_data_item_next(&item)) {
+				const char *name = obs_data_item_get_name(item);
+				if (obs_data_has_user_value(settings, name))
+					continue;
+				obs_data_item_t *copy = obs_data_item_byname(style, name);
+				switch (obs_data_item_gettype(copy)) {
+				case OBS_DATA_BOOLEAN:
+					obs_data_set_bool(settings, name, obs_data_item_get_bool(copy));
+					break;
+				case OBS_DATA_NUMBER:
+					if (obs_data_item_numtype(copy) == OBS_DATA_NUM_INT)
+						obs_data_set_int(settings, name, obs_data_item_get_int(copy));
+					else
+						obs_data_set_double(settings, name, obs_data_item_get_double(copy));
+					break;
+				case OBS_DATA_OBJECT: {
+					obs_data_t *o = obs_data_item_get_obj(copy);
+					obs_data_set_obj(settings, name, o);
+					obs_data_release(o);
+					break;
+				}
+				default:
+					break;
+				}
+				obs_data_item_release(&copy);
+			}
 			obs_data_release(style);
 			obs_data_release(saved);
 		}
 		obs_data_set_bool(settings, "styled", true);
 	}
+	sync_size(settings);
 	return new TextSource(settings, source);
 }
 
@@ -769,73 +862,194 @@ void get_defaults(obs_data_t *settings)
 
 	obs_data_set_default_bool(settings, "typography", false);
 	obs_data_set_default_double(settings, "line_spacing", 1.0);
-	obs_data_set_default_double(settings, "letter_spacing", 0.0);
+	obs_data_set_default_int(settings, "letter_spacing", 0);
 	obs_data_set_default_int(settings, "text_case", int(Case::AsTyped));
 	obs_data_set_default_bool(settings, "tabular", false);
 
 	// Over projector visuals and video, text needs something to stand out
-	// from them: a soft shadow is on from the start.
-	const Style d;
+	// from them: a shadow is on from the start, close and fairly dense, so
+	// it holds up thin and light text too.
 	obs_data_set_default_bool(settings, "outline", false);
-	obs_data_set_default_int(settings, "outline_colour", d.outline_colour);
-	obs_data_set_default_double(settings, "outline_width", d.outline_width);
+	obs_data_set_default_int(settings, "outline_colour", 0xFF000000);
+	obs_data_set_default_int(settings, "outline_width", 4);
 	obs_data_set_default_bool(settings, "shadow", true);
-	obs_data_set_default_int(settings, "shadow_colour", d.shadow_colour);
-	obs_data_set_default_double(settings, "shadow_x", d.shadow_x);
-	obs_data_set_default_double(settings, "shadow_y", d.shadow_y);
-	obs_data_set_default_double(settings, "shadow_blur", d.shadow_blur);
+	obs_data_set_default_int(settings, "shadow_colour", 0xFF000000);
+	obs_data_set_default_int(settings, "shadow_opacity", 75);
+	obs_data_set_default_int(settings, "shadow_x", 0);
+	obs_data_set_default_int(settings, "shadow_y", 3);
+	obs_data_set_default_int(settings, "shadow_blur", 6);
 	obs_data_set_default_bool(settings, "plate", false);
-	obs_data_set_default_int(settings, "plate_colour", d.plate_colour);
-	obs_data_set_default_double(settings, "plate_padding", d.plate_padding);
-	obs_data_set_default_double(settings, "plate_radius", d.plate_radius);
+	obs_data_set_default_int(settings, "plate_colour", 0xFF000000);
+	obs_data_set_default_int(settings, "plate_opacity", 75);
+	obs_data_set_default_int(settings, "plate_padding", 24);
+	obs_data_set_default_int(settings, "plate_radius", 8);
 }
 
-// A checkable group shows its settings only when it's on, so the dialog stays
-// one line per feature not in use.
-bool group_toggled(obs_properties_t *, obs_property_t *group, obs_data_t *settings)
+// A checkable group holds its settings only while it's ticked, so a feature
+// not in use takes one line in the dialog. OBS calls these when the dialog
+// opens (before it builds it) and when a group is ticked (then rebuilds it).
+void fill_box(obs_properties_t *g, obs_data_t *settings)
 {
-	const bool on = obs_data_get_bool(settings, obs_property_name(group));
+	obs_property_t *p = obs_properties_add_int(g, "box_width", obs_module_text("Box.Width"), 1, 16384, 1);
+	obs_property_int_set_suffix(p, " px");
+	p = obs_properties_add_int(g, "box_height", obs_module_text("Box.Height"), 0, 16384, 1);
+	obs_property_int_set_suffix(p, " px");
+	obs_property_set_long_description(p, obs_module_text("Box.Height.Help"));
+	obs_property_set_modified_callback(p, [](obs_properties_t *props, obs_property_t *, obs_data_t *s) {
+		obs_property_t *v = obs_properties_get(props, "valign");
+		const bool show = obs_data_get_int(s, "box_height") > 0;
+		if (!v || obs_property_visible(v) == show)
+			return false;
+		obs_property_set_visible(v, show);
+		return true;
+	});
+	p = obs_properties_add_list(g, "overflow", obs_module_text("Box.Overflow"), OBS_COMBO_TYPE_LIST,
+				    OBS_COMBO_FORMAT_INT);
+	obs_property_list_add_int(p, obs_module_text("Box.Overflow.Wrap"), int(Overflow::Wrap));
+	obs_property_list_add_int(p, obs_module_text("Box.Overflow.Shrink"), int(Overflow::Shrink));
+	p = obs_properties_add_list(g, "valign", obs_module_text("Box.VAlign"), OBS_COMBO_TYPE_LIST,
+				    OBS_COMBO_FORMAT_INT);
+	obs_property_list_add_int(p, obs_module_text("Box.VAlign.Top"), int(VAlign::Top));
+	obs_property_list_add_int(p, obs_module_text("Box.VAlign.Middle"), int(VAlign::Middle));
+	obs_property_list_add_int(p, obs_module_text("Box.VAlign.Bottom"), int(VAlign::Bottom));
+	obs_property_set_visible(p, obs_data_get_int(settings, "box_height") > 0);
+}
+
+obs_property_t *px_slider(obs_properties_t *g, const char *name, const char *label, int min, int max)
+{
+	obs_property_t *p = obs_properties_add_int_slider(g, name, obs_module_text(label), min, max, 1);
+	obs_property_int_set_suffix(p, " px");
+	return p;
+}
+
+obs_property_t *percent_slider(obs_properties_t *g, const char *name, const char *label, int min, int max)
+{
+	obs_property_t *p = obs_properties_add_int_slider(g, name, obs_module_text(label), min, max, 1);
+	obs_property_int_set_suffix(p, "%");
+	return p;
+}
+
+void fill_plate(obs_properties_t *g, obs_data_t *)
+{
+	obs_properties_add_color(g, "plate_colour", obs_module_text("Colour"));
+	percent_slider(g, "plate_opacity", "Opacity", 0, 100);
+	px_slider(g, "plate_padding", "Plate.Padding", 0, 400);
+	px_slider(g, "plate_radius", "Plate.Radius", 0, 400);
+}
+
+void fill_outline(obs_properties_t *g, obs_data_t *)
+{
+	obs_properties_add_color_alpha(g, "outline_colour", obs_module_text("Colour"));
+	px_slider(g, "outline_width", "Outline.Width", 1, 64);
+}
+
+void fill_shadow(obs_properties_t *g, obs_data_t *)
+{
+	obs_properties_add_color(g, "shadow_colour", obs_module_text("Colour"));
+	percent_slider(g, "shadow_opacity", "Opacity", 0, 100);
+	px_slider(g, "shadow_x", "Shadow.X", -200, 200);
+	px_slider(g, "shadow_y", "Shadow.Y", -200, 200);
+	px_slider(g, "shadow_blur", "Shadow.Blur", 0, 200);
+}
+
+void fill_typography(obs_properties_t *g, obs_data_t *)
+{
+	obs_property_t *p =
+		obs_properties_add_float_slider(g, "line_spacing", obs_module_text("LineSpacing"), 0.5, 3.0, 0.05);
+	obs_property_float_set_suffix(p, "×");
+	p = percent_slider(g, "letter_spacing", "LetterSpacing", -20, 100);
+	obs_property_set_long_description(p, obs_module_text("LetterSpacing.Help"));
+	p = obs_properties_add_list(g, "text_case", obs_module_text("Case"), OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+	obs_property_list_add_int(p, obs_module_text("Case.AsTyped"), int(Case::AsTyped));
+	obs_property_list_add_int(p, obs_module_text("Case.Upper"), int(Case::Upper));
+	obs_property_list_add_int(p, obs_module_text("Case.Lower"), int(Case::Lower));
+	obs_property_list_add_int(p, obs_module_text("Case.Title"), int(Case::Title));
+	p = obs_properties_add_bool(g, "tabular", obs_module_text("Tabular"));
+	obs_property_set_long_description(p, obs_module_text("Tabular.Help"));
+}
+
+struct Group {
+	const char *name, *label, *help;
+	void (*fill)(obs_properties_t *, obs_data_t *);
+};
+// In the order the jobs use them most.
+const Group groups[] = {
+	{"plate", "Plate", nullptr, fill_plate},
+	{"outline", "Outline", nullptr, fill_outline},
+	{"shadow", "Shadow", "Shadow.Help", fill_shadow},
+	{"box", "Box", "Box.Help", fill_box},
+	{"typography", "Typography", nullptr, fill_typography},
+};
+
+bool group_toggled(obs_properties_t *props, obs_property_t *group, obs_data_t *settings)
+{
+	const char *name = obs_property_name(group);
+	const bool on = obs_data_get_bool(settings, name);
 	obs_properties_t *content = obs_property_group_content(group);
-	for (obs_property_t *p = obs_properties_first(content); p; obs_property_next(&p))
-		obs_property_set_visible(p, on);
-	if (strcmp(obs_property_name(group), "box") == 0) {
-		obs_property_set_visible(obs_properties_get(content, "valign"),
-					 on && obs_data_get_int(settings, "box_height") > 0);
+	const bool filled = obs_properties_first(content) != nullptr;
+	if (on == filled)
+		return false;
+	if (on) {
+		// A box starts as wide as the text is now, so ticking it changes
+		// nothing until its width is changed.
+		if (strcmp(name, "box") == 0 && obs_data_get_int(settings, "box_width") <= 0) {
+			auto *text = static_cast<TextSource *>(obs_properties_get_param(props));
+			if (text) {
+				const Document doc = text->document();
+				const double pad = doc.style.plate ? doc.style.plate_padding : 0;
+				obs_data_set_int(settings, "box_width",
+						 std::max(1LL, (long long)std::lround(text->width() - 2 * pad)));
+			}
+		}
+		for (const Group &g : groups)
+			if (strcmp(g.name, name) == 0)
+				g.fill(content, settings);
+	} else {
+		std::vector<std::string> names;
+		for (obs_property_t *p = obs_properties_first(content); p; obs_property_next(&p))
+			names.push_back(obs_property_name(p));
+		for (const std::string &n : names)
+			obs_properties_remove_by_name(content, n.c_str());
 	}
-	return true;
-}
-
-bool box_toggled(obs_properties_t *props, obs_property_t *group, obs_data_t *settings)
-{
-	// A box starts as wide as the text is now, so turning it on changes
-	// nothing until its width is changed.
-	if (obs_data_get_bool(settings, "box") && obs_data_get_int(settings, "box_width") <= 0) {
-		auto *text = static_cast<TextSource *>(obs_properties_get_param(props));
-		if (text)
-			obs_data_set_int(settings, "box_width", text->width());
-	}
-	return group_toggled(props, group, settings);
-}
-
-bool box_height_changed(obs_properties_t *props, obs_property_t *, obs_data_t *settings)
-{
-	obs_property_set_visible(obs_properties_get(props, "valign"),
-				 obs_data_get_bool(settings, "box") && obs_data_get_int(settings, "box_height") > 0);
 	return true;
 }
 
 // The font picker holds the size, but the size is what's changed most, so it
 // has a field of its own too; the two are kept the same.
-bool font_changed(obs_properties_t *, obs_property_t *, obs_data_t *settings)
+bool font_changed(obs_properties_t *props, obs_property_t *, obs_data_t *settings)
 {
+	bool refresh = false;
 	obs_data_t *font = obs_data_get_obj(settings, "font");
 	const long long size = font ? obs_data_get_int(font, "size") : 0;
+	const char *face = font ? obs_data_get_string(font, "face") : "";
+	const std::string family = face && *face ? face : "Sans";
 	obs_data_release(font);
 	if (size > 0 && size != obs_data_get_int(settings, "size")) {
 		obs_data_set_int(settings, "size", size);
-		return true;
+		refresh = true;
 	}
-	return false;
+
+	// Warn when the font isn't installed (a scene collection from
+	// another computer), and say what's shown instead.
+	if (obs_property_t *warning = obs_properties_get(props, "font_missing")) {
+		std::string used;
+		bool installed;
+		{
+			std::lock_guard lock(layout_lock());
+			installed = font_installed(layout_context(), family, &used);
+		}
+		const std::string message = installed ? std::string()
+						      : std::string(obs_module_text("FontMissing.1")) + " \u201c" +
+								family + "\u201d " + obs_module_text("FontMissing.2") +
+								" \u201c" + used + "\u201d.";
+		if (obs_property_visible(warning) != !installed ||
+		    message != (obs_property_description(warning) ? obs_property_description(warning) : "")) {
+			obs_property_set_description(warning, message.c_str());
+			obs_property_set_visible(warning, !installed);
+			refresh = true;
+		}
+	}
+	return refresh;
 }
 
 bool size_changed(obs_properties_t *, obs_property_t *, obs_data_t *settings)
@@ -856,6 +1070,8 @@ bool size_changed(obs_properties_t *, obs_property_t *, obs_data_t *settings)
 bool copy_style(obs_properties_t *, obs_property_t *, void *data)
 {
 	auto *text = static_cast<TextSource *>(data);
+	if (!text)
+		return false;
 	obs_data_t *settings = obs_source_get_settings(text->source());
 	obs_data_t *style = style_of(settings);
 	QGuiApplication::clipboard()->setText(QString::fromUtf8(obs_data_get_json_pretty(style)));
@@ -867,6 +1083,8 @@ bool copy_style(obs_properties_t *, obs_property_t *, void *data)
 bool paste_style(obs_properties_t *, obs_property_t *, void *data)
 {
 	auto *text = static_cast<TextSource *>(data);
+	if (!text)
+		return false;
 	const QByteArray json = QGuiApplication::clipboard()->text().toUtf8();
 	obs_data_t *pasted = json.isEmpty() ? nullptr : obs_data_create_from_json(json.constData());
 	if (!pasted || !obs_data_get_bool(pasted, style_marker)) {
@@ -883,6 +1101,8 @@ bool paste_style(obs_properties_t *, obs_property_t *, void *data)
 bool save_default_style(obs_properties_t *, obs_property_t *, void *data)
 {
 	auto *text = static_cast<TextSource *>(data);
+	if (!text)
+		return false;
 	const std::string path = default_style_path();
 	if (path.empty())
 		return false;
@@ -899,14 +1119,6 @@ bool save_default_style(obs_properties_t *, obs_property_t *, void *data)
 	return false;
 }
 
-obs_property_t *add_group(obs_properties_t *props, const char *name, const char *label, obs_properties_t *content,
-			  obs_property_modified_t toggled = group_toggled)
-{
-	obs_property_t *g = obs_properties_add_group(props, name, obs_module_text(label), OBS_GROUP_CHECKABLE, content);
-	obs_property_set_modified_callback(g, toggled);
-	return g;
-}
-
 obs_properties_t *get_properties(void *data)
 {
 	auto *text = static_cast<TextSource *>(data);
@@ -917,8 +1129,9 @@ obs_properties_t *get_properties(void *data)
 	obs_properties_add_text(props, "text", obs_module_text("Text"), OBS_TEXT_MULTILINE);
 	p = obs_properties_add_font(props, "font", obs_module_text("Font"));
 	obs_property_set_modified_callback(p, font_changed);
-	p = obs_properties_add_int(props, "size", obs_module_text("Size"), 4, 1024, 1);
+	p = obs_properties_add_int_slider(props, "size", obs_module_text("Size"), 4, 1024, 1);
 	obs_property_int_set_suffix(p, " px");
+	obs_property_set_long_description(p, obs_module_text("Size.Help"));
 	obs_property_set_modified_callback(p, size_changed);
 	obs_properties_add_color_alpha(props, "colour", obs_module_text("Colour"));
 	p = obs_properties_add_list(props, "align", obs_module_text("Align"), OBS_COMBO_TYPE_LIST,
@@ -927,90 +1140,26 @@ obs_properties_t *get_properties(void *data)
 	obs_property_list_add_int(p, obs_module_text("Align.Centre"), int(Align::Centre));
 	obs_property_list_add_int(p, obs_module_text("Align.Right"), int(Align::Right));
 
-	// Only when the font isn't on this computer.
-	if (text) {
-		const Document doc = text->document();
-		std::string used;
-		bool installed;
-		{
-			std::lock_guard lock(layout_lock());
-			installed = font_installed(layout_context(), doc.style.family, &used);
-		}
-		if (!installed) {
-			const std::string message = std::string(obs_module_text("FontMissing.1")) + " \"" +
-						    doc.style.family + "\" " + obs_module_text("FontMissing.2") +
-						    " \"" + used + "\".";
-			p = obs_properties_add_text(props, "font_missing", message.c_str(), OBS_TEXT_INFO);
-			obs_property_text_set_info_type(p, OBS_TEXT_INFO_WARNING);
-			obs_property_text_set_info_word_wrap(p, true);
-		}
+	// Shown only when the font isn't on this computer (see font_changed).
+	p = obs_properties_add_text(props, "font_missing", "", OBS_TEXT_INFO);
+	obs_property_text_set_info_type(p, OBS_TEXT_INFO_WARNING);
+	obs_property_text_set_info_word_wrap(p, true);
+	obs_property_set_visible(p, false);
+
+	for (const Group &g : groups) {
+		p = obs_properties_add_group(props, g.name, obs_module_text(g.label), OBS_GROUP_CHECKABLE,
+					     obs_properties_create());
+		if (g.help)
+			obs_property_set_long_description(p, obs_module_text(g.help));
+		obs_property_set_modified_callback(p, group_toggled);
 	}
 
-	obs_properties_t *box = obs_properties_create();
-	p = obs_properties_add_int(box, "box_width", obs_module_text("Box.Width"), 1, 16384, 1);
-	obs_property_int_set_suffix(p, " px");
-	p = obs_properties_add_int(box, "box_height", obs_module_text("Box.Height"), 0, 16384, 1);
-	obs_property_int_set_suffix(p, " px");
-	obs_property_set_long_description(p, obs_module_text("Box.Height.Help"));
-	obs_property_set_modified_callback(p, box_height_changed);
-	p = obs_properties_add_list(box, "overflow", obs_module_text("Box.Overflow"), OBS_COMBO_TYPE_LIST,
-				    OBS_COMBO_FORMAT_INT);
-	obs_property_list_add_int(p, obs_module_text("Box.Overflow.Wrap"), int(Overflow::Wrap));
-	obs_property_list_add_int(p, obs_module_text("Box.Overflow.Shrink"), int(Overflow::Shrink));
-	p = obs_properties_add_list(box, "valign", obs_module_text("Box.VAlign"), OBS_COMBO_TYPE_LIST,
-				    OBS_COMBO_FORMAT_INT);
-	obs_property_list_add_int(p, obs_module_text("Box.VAlign.Top"), int(VAlign::Top));
-	obs_property_list_add_int(p, obs_module_text("Box.VAlign.Middle"), int(VAlign::Middle));
-	obs_property_list_add_int(p, obs_module_text("Box.VAlign.Bottom"), int(VAlign::Bottom));
-	p = add_group(props, "box", "Box", box, box_toggled);
-	obs_property_set_long_description(p, obs_module_text("Box.Help"));
-
-	obs_properties_t *outline = obs_properties_create();
-	obs_properties_add_color_alpha(outline, "outline_colour", obs_module_text("Colour"));
-	p = obs_properties_add_float_slider(outline, "outline_width", obs_module_text("Outline.Width"), 0.5, 64, 0.5);
-	obs_property_float_set_suffix(p, " px");
-	add_group(props, "outline", "Outline", outline);
-
-	obs_properties_t *shadow = obs_properties_create();
-	obs_properties_add_color_alpha(shadow, "shadow_colour", obs_module_text("Colour"));
-	p = obs_properties_add_float_slider(shadow, "shadow_x", obs_module_text("Shadow.X"), -200, 200, 1);
-	obs_property_float_set_suffix(p, " px");
-	p = obs_properties_add_float_slider(shadow, "shadow_y", obs_module_text("Shadow.Y"), -200, 200, 1);
-	obs_property_float_set_suffix(p, " px");
-	p = obs_properties_add_float_slider(shadow, "shadow_blur", obs_module_text("Shadow.Blur"), 0, 200, 1);
-	obs_property_float_set_suffix(p, " px");
-	p = add_group(props, "shadow", "Shadow", shadow);
-	obs_property_set_long_description(p, obs_module_text("Shadow.Help"));
-
-	obs_properties_t *plate = obs_properties_create();
-	obs_properties_add_color_alpha(plate, "plate_colour", obs_module_text("Colour"));
-	p = obs_properties_add_float_slider(plate, "plate_padding", obs_module_text("Plate.Padding"), 0, 400, 1);
-	obs_property_float_set_suffix(p, " px");
-	p = obs_properties_add_float_slider(plate, "plate_radius", obs_module_text("Plate.Radius"), 0, 400, 1);
-	obs_property_float_set_suffix(p, " px");
-	add_group(props, "plate", "Plate", plate);
-
-	obs_properties_t *type = obs_properties_create();
-	p = obs_properties_add_float_slider(type, "line_spacing", obs_module_text("LineSpacing"), 0.5, 3.0, 0.05);
-	obs_property_float_set_suffix(p, "×");
-	p = obs_properties_add_float_slider(type, "letter_spacing", obs_module_text("LetterSpacing"), -20, 100, 0.5);
-	obs_property_float_set_suffix(p, "%");
-	obs_property_set_long_description(p, obs_module_text("LetterSpacing.Help"));
-	p = obs_properties_add_list(type, "text_case", obs_module_text("Case"), OBS_COMBO_TYPE_LIST,
-				    OBS_COMBO_FORMAT_INT);
-	obs_property_list_add_int(p, obs_module_text("Case.AsTyped"), int(Case::AsTyped));
-	obs_property_list_add_int(p, obs_module_text("Case.Upper"), int(Case::Upper));
-	obs_property_list_add_int(p, obs_module_text("Case.Lower"), int(Case::Lower));
-	obs_property_list_add_int(p, obs_module_text("Case.Title"), int(Case::Title));
-	p = obs_properties_add_bool(type, "tabular", obs_module_text("Tabular"));
-	obs_property_set_long_description(p, obs_module_text("Tabular.Help"));
-	add_group(props, "typography", "Typography", type);
-
-	obs_properties_add_button2(props, "copy_style", obs_module_text("CopyStyle"), copy_style, text);
-	obs_properties_add_button2(props, "paste_style", obs_module_text("PasteStyle"), paste_style, text);
-	p = obs_properties_add_button2(props, "default_style", obs_module_text("DefaultStyle"), save_default_style,
-				       text);
-	obs_property_set_long_description(p, obs_module_text("DefaultStyle.Help"));
+	obs_properties_t *style = obs_properties_create();
+	obs_properties_add_button2(style, "copy_style", obs_module_text("CopyStyle"), copy_style, text);
+	obs_properties_add_button2(style, "paste_style", obs_module_text("PasteStyle"), paste_style, text);
+	obs_properties_add_button2(style, "default_style", obs_module_text("DefaultStyle"), save_default_style, text);
+	p = obs_properties_add_group(props, "style", obs_module_text("Style"), OBS_GROUP_NORMAL, style);
+	obs_property_set_long_description(p, obs_module_text("Style.Help"));
 
 	p = obs_properties_add_text(props, "edit_hint", obs_module_text("EditHint"), OBS_TEXT_INFO);
 	obs_property_text_set_info_word_wrap(p, true);

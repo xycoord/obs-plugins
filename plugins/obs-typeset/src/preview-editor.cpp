@@ -24,6 +24,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <dlfcn.h>
 #include <strings.h>
@@ -39,6 +40,9 @@ namespace {
 // Colours of the editing marks, 0xRRGGBBAA. The accent is a clear blue that
 // isn't OBS's red selection box, so editing reads as a different state.
 constexpr uint32_t accent = 0x2F8FFFFF;
+constexpr uint32_t accent_edge = 0x0A1830D0; // dark edge round the accent, so it shows on blue too
+constexpr uint32_t selection_keyline = 0xFFFFFFC0;
+constexpr uint32_t tag_fill = 0x10141CE8;
 constexpr uint32_t selection_fill = 0x2F6FE0E6; // nearly opaque: the selected glyphs are drawn again on it
 constexpr uint32_t selection_wash = 0x2F8FFF70; // when they can't be (a rotated source)
 constexpr uint32_t placeholder_line = 0xFFFFFFB0;
@@ -118,13 +122,13 @@ bool scaled_to_window(QWidget *preview)
 // The preview's obs_display_t, to draw on. OBS doesn't offer it to plugins;
 // the preview widget is an OBSQTDisplay, whose first member is an OBSDisplay
 // (one obs_display_t pointer) straight after its QWidget base. That holds in
-// OBS 27 to 33, the versions it's read in; in any other, nothing is drawn (no
+// OBS 28 to 33 (the Qt 6 ones, which this is built for), the versions it's read in; in any other, nothing is drawn (no
 // caret) rather than risk reading the wrong thing. Within those versions it's
 // still checked against the display's size before use.
 obs_display_t *preview_display(QWidget *preview)
 {
 	const uint32_t major = obs_get_version() >> 24;
-	if (major < 27 || major > 33)
+	if (major < 28 || major > 33)
 		return nullptr;
 	bool is_display = false;
 	for (const QMetaObject *mo = preview->metaObject(); mo; mo = mo->superClass()) {
@@ -187,7 +191,14 @@ void restore_hotkeys()
 // through the group it's in, if any (OBS doesn't nest groups).
 void item_to_canvas(obs_sceneitem_t *item, obs_sceneitem_t *group, matrix4 *out)
 {
-	obs_sceneitem_get_draw_transform(item, out);
+	// A cropped item's draw transform maps what's left after the crop.
+	obs_sceneitem_crop crop;
+	obs_sceneitem_get_crop(item, &crop);
+	matrix4 draw;
+	obs_sceneitem_get_draw_transform(item, &draw);
+	matrix4_identity(out);
+	matrix4_translate3f(out, out, -float(crop.left), -float(crop.top), 0.0f);
+	matrix4_mul(out, out, &draw);
 	if (group) {
 		matrix4 g;
 		obs_sceneitem_get_draw_transform(group, &g);
@@ -215,7 +226,10 @@ bool point_in_item(obs_sceneitem_t *item, obs_sceneitem_t *group, const vec2 &po
 	vec3_transform(&p, &p, &inv);
 	if (local)
 		*local = p;
-	return p.x >= 0.0f && p.y >= 0.0f && p.x <= float(cx) && p.y <= float(cy);
+	obs_sceneitem_crop crop;
+	obs_sceneitem_get_crop(item, &crop);
+	return p.x >= float(crop.left) && p.y >= float(crop.top) && p.x <= float(int(cx) - crop.right) &&
+	       p.y <= float(int(cy) - crop.bottom);
 }
 
 // Every visible item in a scene, groups opened, bottom to top.
@@ -347,7 +361,12 @@ public:
 
 	bool eventFilter(QObject *obj, QEvent *event) override;
 	void end_edit();
-	void scene_changed() { end_edit(); }
+	void scene_changed()
+	{
+		end_edit();
+		clear_placeholders();
+	}
+	void clear_placeholders();
 
 private:
 	QPointer<QWidget> preview_;
@@ -390,10 +409,18 @@ private:
 		bool show_caret = true;
 		std::vector<Box> selection;
 		Box box;
+		bool grip = false;       // the text box's width grip
+		bool plate = false;      // a background plate behind the text
+		std::string tag;         // what the tag says
 		uint64_t blink_from = 0;
 		std::vector<Target> placeholders; // empty texts
 	} overlay_;
 	Label editing_label_, placeholder_label_; // graphics thread only
+	std::string editing_label_text_;
+	// Dragging the text box's width grip.
+	bool resizing_ = false;
+	double resize_from_x_ = 0, resize_from_width_ = 0;
+	bool on_grip(QPointF widget_pos);
 
 	bool editing() const { return item_ != nullptr; }
 	bool begin_edit(const Hit &hit);
@@ -424,6 +451,7 @@ private:
 
 	void attach_display();
 	void detach_display();
+	void forget_display();
 	void watch_window();
 	void refresh_overlay();
 	void refresh_placeholders();
@@ -447,9 +475,13 @@ PreviewEditor::PreviewEditor(QWidget *preview) : preview_(preview)
 	// OBS turns hotkeys' background reading back on when the application
 	// becomes active; while editing, it's turned off again (this runs after
 	// OBS's own handler, connected first).
-	QObject::connect(qApp, &QGuiApplication::applicationStateChanged, this, [this](Qt::ApplicationState) {
-		if (editing())
+	QObject::connect(qApp, &QGuiApplication::applicationStateChanged, this, [this](Qt::ApplicationState state) {
+		if (!editing())
+			return;
+		if (state == Qt::ApplicationActive)
 			obs_hotkey_enable_background_press(false);
+		else
+			restore_hotkeys(); // in the background, hotkeys work as OBS has them
 	});
 	timer_.setInterval(500);
 	QObject::connect(&timer_, &QTimer::timeout, this, [this] { on_timer(); });
@@ -461,6 +493,7 @@ PreviewEditor::~PreviewEditor()
 {
 	end_edit();
 	detach_display();
+	clear_placeholders();
 	obs_enter_graphics();
 	editing_label_.destroy();
 	placeholder_label_.destroy();
@@ -490,8 +523,13 @@ void PreviewEditor::on_timer()
 	if (!preview_)
 		return;
 	watch_window();
-	if (!display_)
+	// The display can be replaced (OBS makes a new one when the preview is
+	// shown again): a different pointer means the old one has gone.
+	if (obs_display_t *now = preview_ && preview_->isVisible() ? preview_display(preview_) : nullptr;
+	    now && now != display_) {
+		forget_display();
 		attach_display();
+	}
 	if (editing()) {
 		if (!still_editable()) {
 			end_edit();
@@ -530,6 +568,17 @@ void PreviewEditor::refresh_placeholders()
 		overlay_.placeholders = std::move(found);
 		if (!overlay_.editing)
 			overlay_.mapping = mapping;
+	}
+	for (Target &t : old)
+		release(t);
+}
+
+void PreviewEditor::clear_placeholders()
+{
+	std::vector<Target> old;
+	{
+		std::lock_guard lock(overlay_mutex_);
+		old.swap(overlay_.placeholders);
 	}
 	for (Target &t : old)
 		release(t);
@@ -752,7 +801,11 @@ bool PreviewEditor::key_press(QKeyEvent *event)
 	} else if (event->matches(QKeySequence::Paste)) {
 		// Always as plain text.
 		std::string s = QGuiApplication::clipboard()->text().toStdString();
-		s.erase(std::remove(s.begin(), s.end(), '\r'), s.end());
+		// Control characters other than line breaks and tabs would be
+		// cut off or shown as boxes.
+		s.erase(std::remove_if(s.begin(), s.end(),
+				       [](char c) { return (unsigned char)c < 0x20 && c != '\n' && c != '\t'; }),
+			s.end());
 		if (!s.empty())
 			replace(sel_from(), sel_to(), s, EditKind::Other);
 	} else if (event->matches(QKeySequence::Undo)) {
@@ -842,14 +895,47 @@ bool PreviewEditor::edit_selected()
 				count++;
 			}
 		});
+		if (count == 1) // referenced while the scene still is
+			obs_sceneitem_addref(hit.item);
 	}
 	obs_source_release(scene_source);
-	if (count != 1 || obs_sceneitem_locked(hit.item) || !begin_edit(hit))
+	if (count != 1)
+		return false;
+	struct Release {
+		obs_sceneitem_t *i;
+		~Release() { obs_sceneitem_release(i); }
+	} release_hit{hit.item};
+	if (obs_sceneitem_locked(hit.item) || (hit.group && obs_sceneitem_locked(hit.group)))
+		return false;
+	if (!scaled_to_window(preview_)) {
+		blog(LOG_INFO, "[obs-typeset] the preview isn't set to Scale to Window, so text isn't edited "
+			       "in it (right-click the preview: Preview Scaling, Scale to Window)");
+		return false;
+	}
+	if (!begin_edit(hit))
 		return false;
 	anchor_ = 0;
 	caret_ = doc_.size();
 	refresh_overlay();
 	return true;
+}
+
+// Whether a point is on the text box's width grip (a little generous: it's
+// small).
+bool PreviewEditor::on_grip(QPointF pos)
+{
+	const Document doc = text_->document();
+	if (!doc.style.box || doc.style.box_width <= 0)
+		return false;
+	const Mapping map = preview_mapping(preview_);
+	matrix4 m;
+	item_to_canvas(item_, group_, &m);
+	const Box b = text_->box();
+	vec3 p;
+	vec3_set(&p, float(b.w), float(b.h * 0.5), 0.0f);
+	vec3_transform(&p, &p, &m);
+	const double gx = (map.x + p.x * map.scale) / map.dpr + 7, gy = (map.y + p.y * map.scale) / map.dpr;
+	return std::fabs(pos.x() - gx) <= 8 && std::fabs(pos.y() - gy) <= 18;
 }
 
 // The topmost unlocked item under a point in the preview, referenced.
@@ -860,12 +946,14 @@ Hit PreviewEditor::item_at(QPointF pos)
 	Hit hit;
 	if (obs_scene_t *scene = obs_scene_from_source(scene_source)) {
 		each_item(scene, [&](obs_sceneitem_t *item, obs_sceneitem_t *group) {
-			if (!obs_sceneitem_locked(item) && point_in_item(item, group, canvas))
+			if (!obs_sceneitem_locked(item) && !(group && obs_sceneitem_locked(group)) &&
+			    point_in_item(item, group, canvas))
 				hit = {item, group};
 		});
+		// Referenced while the scene still is.
+		if (hit.item)
+			obs_sceneitem_addref(hit.item);
 	}
-	if (hit.item)
-		obs_sceneitem_addref(hit.item);
 	obs_source_release(scene_source);
 	return hit;
 }
@@ -963,6 +1051,29 @@ bool PreviewEditor::mouse_event(QMouseEvent *event)
 	bool inside = false;
 	const vec3 local = to_source(pos, &inside);
 
+	// The text box's width grip.
+	if (resizing_) {
+		if (type == QEvent::MouseMove) {
+			text_->set_box_width(int(std::lround(resize_from_width_ + (local.x - resize_from_x_))));
+			refresh_overlay();
+			return true;
+		}
+		if (type == QEvent::MouseButtonRelease && event->button() == Qt::LeftButton) {
+			resizing_ = false;
+			return true;
+		}
+	}
+	if (type == QEvent::MouseButtonPress && event->button() == Qt::LeftButton && on_grip(pos)) {
+		resizing_ = true;
+		resize_from_x_ = local.x;
+		resize_from_width_ = text_->document().style.box_width;
+		return true;
+	}
+	if (type == QEvent::MouseMove && !dragging_ && on_grip(pos)) {
+		preview_->setCursor(Qt::SizeHorCursor);
+		return true;
+	}
+
 	switch (type) {
 	case QEvent::MouseButtonPress:
 	case QEvent::MouseButtonDblClick: {
@@ -1053,7 +1164,9 @@ void PreviewEditor::input_method(QInputMethodEvent *event)
 		anchor_ = size_t(all.left(from).toUtf8().size());
 		caret_ = size_t(all.left(to).toUtf8().size());
 	}
-	if (!commit.empty() || has_selection())
+	// Only a commit (or a replacement the input method asked for) changes
+	// the text; a composition starting over a selection leaves it alone.
+	if (!commit.empty() || event->replacementLength() > 0)
 		replace_selection(commit, EditKind::Typing);
 	refresh_overlay();
 }
@@ -1097,6 +1210,14 @@ bool PreviewEditor::eventFilter(QObject *obj, QEvent *event)
 	    static_cast<QPlatformSurfaceEvent *>(event)->surfaceEventType() ==
 		    QPlatformSurfaceEvent::SurfaceAboutToBeDestroyed) {
 		detach_display();
+		return false;
+	}
+	// Hidden (minimised, or the preview turned off), OBS destroys the
+	// display on Linux in its own handler, which may run before or after
+	// this: it's forgotten without being touched, and found again when
+	// the preview is back (on_timer).
+	if (obj == window_ && event->type() == QEvent::Hide) {
+		forget_display();
 		return false;
 	}
 	if (obj != preview_)
@@ -1198,6 +1319,12 @@ void PreviewEditor::attach_display()
 	}
 }
 
+void PreviewEditor::forget_display()
+{
+	std::lock_guard lock(overlay_mutex_);
+	display_ = nullptr;
+}
+
 void PreviewEditor::detach_display()
 {
 	obs_display_t *display;
@@ -1223,6 +1350,18 @@ void PreviewEditor::refresh_overlay()
 	o.show_caret = !has_selection();
 	o.selection = text_->selection_boxes(sel_from(), sel_to());
 	o.box = text_->box();
+	const Document doc = text_->document();
+	o.grip = doc.style.box && doc.style.box_width > 0;
+	o.plate = doc.style.plate;
+	o.tag = std::string(obs_module_text("Editing")) + " \u201c" + obs_source_get_name(source_) + "\u201d";
+	const Frame frame = text_->frame();
+	if (frame.text_scale < 0.995) {
+		char shrunk[64];
+		snprintf(shrunk, sizeof(shrunk), " \u00b7 %s %d%%", obs_module_text("ShrunkTo"),
+			 int(std::lround(frame.text_scale * 100)));
+		o.tag += shrunk;
+	}
+	o.tag += std::string(" \u00b7 ") + obs_module_text("EscToFinish");
 	o.blink_from = os_gettime_ns();
 	shown_ = text_->document();
 
@@ -1379,32 +1518,57 @@ void PreviewEditor::draw_overlay(uint32_t cx, uint32_t cy)
 				     to_display(b.x, b.y + b.h)}};
 		};
 
-		// A frame of its own, a little outside OBS's red box, and a tag
-		// saying what's going on.
-		const Quad frame = grown(box_quad(o.box), 4 * px);
-		std::vector<Quad> edges;
-		outline(edges, frame, 2 * px);
-		fill(edges, accent);
-		if (!editing_label_.texture)
-			editing_label_.make(obs_module_text("EditingTag"), 12 * px, 0xFFFFFFFF, accent);
-		float top = frame.p[0].y, left = frame.p[0].x;
+		// A frame of its own, clear of OBS's red box, blue edged in dark so
+		// it shows on any background, and a tag saying what's going on.
+		const Quad frame = grown(box_quad(o.box), 7 * px);
+		std::vector<Quad> edges, inner;
+		outline(edges, frame, 4 * px);
+		outline(inner, frame, 2 * px);
+		fill(edges, accent_edge);
+		fill(inner, accent);
+		if (!editing_label_.texture || editing_label_text_ != o.tag) {
+			editing_label_.destroy();
+			editing_label_.make(o.tag.c_str(), 13 * px, 0xFFFFFFFF, tag_fill);
+			editing_label_text_ = o.tag;
+		}
+		float top = frame.p[0].y, left = frame.p[0].x, bottom = frame.p[0].y;
 		for (const vec2 &p : frame.p) {
 			top = std::min(top, p.y);
+			bottom = std::max(bottom, p.y);
 			left = std::min(left, p.x);
 		}
-		const float tag_y = top - editing_label_.height - 2 * px;
-		editing_label_.draw(left, tag_y >= 0 ? tag_y : top + 2 * px);
+		// Above the frame, or below it when there's no room above.
+		const float above = top - editing_label_.height - 3 * px;
+		editing_label_.draw(std::max(left, 2.0f), above >= 2 ? above : bottom + 3 * px);
+
+		// The text box's width grip, on the frame's right edge.
+		if (o.grip) {
+			const vec2 a = to_display(o.box.w, o.box.h * 0.5);
+			vec2 g0, g1;
+			vec2_set(&g0, a.x + 7 * px, a.y - 12 * px);
+			vec2_set(&g1, a.x + 7 * px, a.y + 12 * px);
+			fill({line_quad(g0, g1, 9 * px)}, accent_edge);
+			fill({line_quad(g0, g1, 6 * px)}, 0xFFFFFFFF);
+			fill({line_quad(g0, g1, 3 * px)}, accent);
+		}
 
 		// The selection: a solid highlight with the selected text drawn
 		// again on top, clipped to it, so it keeps its own colours. A
-		// rotated source can't be clipped to a box, so it gets a wash.
+		// rotated source can't be clipped to a box, and on a background
+		// plate the plate would be drawn again over the highlight: those
+		// get a wash instead.
 		matrix4 m;
 		item_to_canvas(o.target.item, o.target.group, &m);
-		const bool upright = std::fabs(m.x.y) < 1e-4f && std::fabs(m.y.x) < 1e-4f && m.x.x > 0 && m.y.y > 0;
+		const bool upright = !o.plate && std::fabs(m.x.y) < 1e-4f && std::fabs(m.y.x) < 1e-4f && m.x.x > 0 &&
+				     m.y.y > 0;
 		std::vector<Quad> selection;
 		for (const Box &b : o.selection)
 			selection.push_back(box_quad(b));
 		fill(selection, upright ? selection_fill : selection_wash);
+		std::vector<Quad> keylines;
+		for (const Quad &q : selection)
+			outline(keylines, q, 1 * px);
+		fill(keylines, selection_keyline);
 		if (upright && !selection.empty()) {
 			TextSource *text = TextSource::from(obs_sceneitem_get_source(o.target.item));
 			matrix4 to_display_m;
@@ -1426,22 +1590,26 @@ void PreviewEditor::draw_overlay(uint32_t cx, uint32_t cy)
 				gs_set_scissor_rect(&r);
 				gs_matrix_push();
 				gs_matrix_set(&to_display_m);
-				if (text)
-					text->draw_raster();
+				const bool drawn = text && text->draw_raster();
 				gs_matrix_pop();
+				if (!drawn) { // no raster of the text as it is: a wash over it instead
+					gs_set_scissor_rect(nullptr);
+					fill({q}, selection_wash);
+				}
 			}
 			gs_set_scissor_rect(nullptr);
 		}
 		(void)cx;
 
-		// The caret blinks, and stays solid for a moment after each key:
-		// 3 pixels of white edged in black, so it shows on anything.
+		// The caret blinks, and stays solid for a moment after each key.
 		const uint64_t since = (os_gettime_ns() - o.blink_from) / 1000000ULL;
 		if (o.show_caret && (since < caret_hold_ms || (since / caret_blink_ms) % 2 == 0)) {
 			const vec2 a = to_display(o.caret.x, o.caret.y);
 			const vec2 b = to_display(o.caret.x, o.caret.y + o.caret.height);
-			fill({line_quad(a, b, 5.0f * px)}, 0x000000C0);
-			fill({line_quad(a, b, 3.0f * px)}, 0xFFFFFFFF);
+			// Blue in white in dark: never mistaken for a letter's stem.
+			fill({line_quad(a, b, 7.0f * px)}, 0x000000B0);
+			fill({line_quad(a, b, 5.0f * px)}, 0xFFFFFFFF);
+			fill({line_quad(a, b, 3.0f * px)}, accent);
 		}
 	}
 

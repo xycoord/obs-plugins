@@ -17,6 +17,7 @@ packages numpy, pillow and websocket-client).
 
 import argparse
 import os
+import re
 import sys
 import time
 
@@ -90,6 +91,15 @@ def steepest_edge(a):
     return np.abs(np.diff(a, axis=1)).max()
 
 
+def drawing_times(obs):
+    """How long each drawing of a text took, in order (TYPESET_DEBUG's log)."""
+    return [float(m) for m in re.findall(r"\[obs-typeset\] drew .* in ([0-9.]+) ms", obs.log())]
+
+
+def drawings(obs):
+    return len(drawing_times(obs))
+
+
 def difference(a, b):
     """Mean absolute difference, in levels of 255, and the largest."""
     d = np.abs(a - b)
@@ -137,6 +147,12 @@ def test_scaling(out):
         ratio = sharpness(off) / sharpness(ref)
         check(ratio > 0.97, "text placed part-way across a pixel is as sharp as text on the pixel grid",
               "edge contrast %.1f%% of the reference" % (100 * ratio))
+
+        # Nothing is drawn again while nothing changes.
+        drawn = drawings(obs)
+        time.sleep(3)
+        check(drawings(obs) == drawn, "no text is drawn again while nothing changes",
+              "%d drawings, then %d after 3 s" % (drawn, drawings(obs)))
 
         obs_text = region(frame, 960, 440, w, h)
         mean_obs, _ = difference(obs_text, ref)
@@ -198,6 +214,15 @@ def test_editing(out):
         obs.type("there")
         check(obs.settings("Title")["text"] == "Hello there", "double-click selects the word, typing replaces it",
               repr(obs.settings("Title")["text"]))
+
+        # One key: the text is drawn once more, in a few milliseconds.
+        drawn = drawings(obs)
+        obs.type("!")
+        time.sleep(0.5)
+        times = drawing_times(obs)[drawn:]
+        check(len(times) == 1 and times[0] < 30, "a key costs one drawing of the text, in a few milliseconds",
+              "%s ms" % ", ".join("%.1f" % t for t in times))
+        obs.key("BackSpace")
 
         # Keys: Home, then Shift+Ctrl+Right selects the first word; type over it.
         obs.key("Home", "shift+ctrl+Right")
@@ -298,7 +323,7 @@ def test_editing(out):
         obs.type("q")
         check("q" not in obs.settings("Title")["text"], "a click outside the text finishes editing")
 
-        warnings = [line for line in obs.log().splitlines() if "[obs-typeset]" in line and "editing" not in line]
+        warnings = [line for line in obs.log().splitlines() if "[obs-typeset]" in line and "editing" not in line and "] drew " not in line]
         check(not warnings, "no warnings from obs-typeset", "; ".join(warnings))
 
 
@@ -341,6 +366,21 @@ def test_features(out):
 
         x0, y0, sx, sy = canvas_on_screen(obs.screen())
         to_screen = lambda cx, cy: (x0 + cx * sx, y0 + cy * sy)  # noqa: E731
+
+        # While editing a text box, its width grip (on the editing frame's
+        # right edge) sets the box's width: dragged right by 50 preview
+        # pixels, it's that much wider in the text's own pixels.
+        bw, bh = size("Boxed")
+        obs.click(*to_screen(210, 700 + bh / 2), repeat=2)
+        grip = to_screen(200 + bw, 700 + bh / 2)
+        obs.drag(grip[0] + 7, grip[1], grip[0] + 57, grip[1])
+        save(out, "features-grip.png", obs.screen())
+        obs.key("Escape")
+        new_width = obs.settings("Boxed").get("box_width")
+        expected = 400 + 50 / sx
+        check(new_width is not None and abs(new_width - expected) < 4 / sx,
+              "dragging the text box's grip sets its width", "%s (about %.0f expected)" % (new_width, expected))
+
         tw, th = size("Title")
         title = to_screen(200 + tw * 0.7, 200 + th / 2)
 
@@ -392,7 +432,7 @@ def test_features(out):
         save(out, "features-studio.png", obs.screen())
         obs.key("Escape")
 
-        warnings = [line for line in obs.log().splitlines() if "[obs-typeset]" in line and "editing" not in line]
+        warnings = [line for line in obs.log().splitlines() if "[obs-typeset]" in line and "editing" not in line and "] drew " not in line]
         check(not warnings, "no warnings from obs-typeset", "; ".join(warnings))
 
 

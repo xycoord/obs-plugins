@@ -38,7 +38,7 @@ TITLE = {"text": "The Grove\nLive tonight", "font": {"face": "Inter", "style": "
 LOWER_THIRD = {"text": "Ada Lovelace\nAnalytical Engines",
                "font": {"face": "Inter", "style": "SemiBold", "size": 64, "flags": 0}, "colour": 0xFFFFFFFF,
                "typography": True, "line_spacing": 1.1,
-               "plate": True, "plate_colour": 0xD8281410, "plate_padding": 28, "plate_radius": 6}
+               "plate": True, "plate_colour": 0x281410, "plate_opacity": 85, "plate_padding": 28, "plate_radius": 6}
 SET_TIMES = {"text": "19:30  Doors\n20:15  Support\n21:30  Headliner",
              "font": {"face": "Inter", "style": "Medium", "size": 48, "flags": 0}, "colour": 0xFFE0F0FF,
              "typography": True, "tabular": True}

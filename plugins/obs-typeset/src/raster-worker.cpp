@@ -1,6 +1,10 @@
 #include "raster-worker.hpp"
 
 #include <obs.h>
+#include <util/platform.h>
+
+#include <cstdlib>
+#include <exception>
 
 #include <condition_variable>
 #include <deque>
@@ -50,14 +54,31 @@ void run(Worker *w)
 		if (!job)
 			continue;
 
-		if (!cached || !(cached_doc == job->doc)) {
-			if (cached)
-				g_object_unref(cached);
-			cached = create_layout(context, job->doc);
-			cached_doc = job->doc;
+		const uint64_t started = os_gettime_ns();
+		Raster raster;
+		try {
+			if (!cached || !(cached_doc == job->doc)) {
+				if (cached)
+					g_object_unref(cached);
+				cached = nullptr;
+				cached = create_layout(context, job->doc);
+				cached_doc = job->doc;
+			}
+			raster = rasterise(cached, job->doc, job->params);
+		} catch (const std::exception &e) {
+			// Out of memory, most likely: the text isn't shown, and OBS
+			// carries on.
+			blog(LOG_WARNING, "[obs-typeset] couldn't draw text: %s", e.what());
+			continue;
 		}
-		Raster raster = rasterise(cached, job->doc, job->params);
+		// TYPESET_DEBUG=1 in OBS's environment logs every drawing (for the
+		// tests, which check that nothing is drawn when nothing changes).
+		static const bool debug = getenv("TYPESET_DEBUG") != nullptr;
+		if (debug)
+			blog(LOG_INFO, "[obs-typeset] drew %dx%d at %.4fx%.4f in %.2f ms", raster.width, raster.height,
+			     job->params.sx, job->params.sy, double(os_gettime_ns() - started) / 1e6);
 
+		raster.version = job->version;
 		std::lock_guard lock(slot->mutex);
 		if (job->seq > slot->result_seq) {
 			slot->result = std::move(raster);

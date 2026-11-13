@@ -80,6 +80,7 @@ class ObsSession:
                    XDG_CONFIG_HOME=os.path.join(self.dir, ".config"))
         env.pop("WAYLAND_DISPLAY", None)
         env["QT_QPA_PLATFORM"] = "xcb"
+        env["TYPESET_DEBUG"] = "1"  # Typeset Text logs each drawing, for the performance checks
         return env
 
     def start(self):

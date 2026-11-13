@@ -20,6 +20,10 @@ static void frontend_event(enum obs_frontend_event event, void *)
 		typeset::editor_install();
 		break;
 	case OBS_FRONTEND_EVENT_SCENE_CHANGED:
+		// In Studio Mode that's the program: editing is in the preview.
+		if (!obs_frontend_preview_program_mode_active())
+			typeset::editor_scene_changed();
+		break;
 	case OBS_FRONTEND_EVENT_PREVIEW_SCENE_CHANGED:
 	case OBS_FRONTEND_EVENT_STUDIO_MODE_ENABLED:
 	case OBS_FRONTEND_EVENT_STUDIO_MODE_DISABLED:

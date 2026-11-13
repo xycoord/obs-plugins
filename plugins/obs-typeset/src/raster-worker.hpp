@@ -17,6 +17,7 @@ struct RasterJob {
 	Document doc;
 	RasterParams params;
 	uint64_t seq = 0;
+	uint64_t version = 0; // of the document
 };
 
 // Shared by a source, the worker and OBS's graphics thread.
