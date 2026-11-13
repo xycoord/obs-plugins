@@ -65,6 +65,10 @@ void run(Worker *w)
 				cached_doc = job->doc;
 			}
 			raster = rasterise(cached, job->doc, job->params);
+			if (raster.failed)
+				blog(LOG_WARNING, "[obs-typeset] couldn't draw text at %.2fx%.2f: out of memory; "
+						  "trying again shortly",
+				     job->params.sx, job->params.sy);
 		} catch (const std::exception &e) {
 			// Out of memory, most likely: the text isn't shown, and OBS
 			// carries on.

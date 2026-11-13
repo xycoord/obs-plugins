@@ -38,7 +38,7 @@ jobs:
         run: xvfb-run -a tests/smoke.sh
 
       - name: Typeset Text's unit tests
-        run: tests/typeset/unit/run.sh
+        run: STRICT=1 tests/typeset/unit/run.sh
 
       - name: Typeset Text in OBS (scaling, editing in the preview)
         run: tests/typeset/test_typeset.py --out typeset-test-output

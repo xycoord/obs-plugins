@@ -15,6 +15,7 @@
 
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -24,6 +25,12 @@ namespace typeset {
 extern const char *const source_id;
 
 void register_source();
+
+// Text is laid out for its size and for editing on OBS's threads (its
+// window's, its graphics thread's), all with this one font map and this one
+// lock, as Pango's font maps aren't thread-safe.
+std::mutex &layout_lock();
+PangoContext *layout_context();
 
 struct Caret {
 	double x = 0, y = 0, height = 0; // source units
@@ -60,6 +67,7 @@ public:
 	size_t move_by_line(size_t index, int direction, double x) const; // x: the column to keep to
 	size_t line_edge(size_t index, int direction) const;
 	size_t next_cursor(size_t index, int direction) const;
+	size_t backspace_from(size_t index) const; // where Backspace at index deletes back to
 	size_t cursor_at_or_before(size_t index) const; // the nearest cursor position not after index
 	std::pair<size_t, size_t> word_at(size_t index) const;
 	std::pair<size_t, size_t> paragraph_at(size_t index) const;
@@ -86,6 +94,10 @@ private:
 	// lays out at once; OBS's update (on its graphics thread, a frame later)
 	// reads the settings and lays out. One at a time, or an update that
 	// read the text just before an edit would lay out the old text after it.
+	// The edit calls obs_source_update with this held, on purpose (released
+	// first, an update could read the settings between the layout and the
+	// write): that relies on libobs deferring a video source's update to its
+	// graphics thread, so update() is never called from inside it, here.
 	std::mutex content_mutex_;
 	Spans superseded_; // runs the settings may still hold, moved since (being written back)
 	Document pending_doc_;

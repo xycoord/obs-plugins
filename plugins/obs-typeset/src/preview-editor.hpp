@@ -14,6 +14,7 @@ namespace typeset {
 
 void editor_install(); // once OBS's window is up
 void editor_remove();  // before it goes
-void editor_scene_changed(); // the scene shown, or the scene collection, is changing
+void editor_scene_changed(); // the scene shown is changing
+void editor_scene_collection(bool changing); // the scene collection is going (true), or has been replaced
 
 } // namespace typeset

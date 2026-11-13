@@ -51,6 +51,7 @@ struct Style {
 	bool shadow = false;
 	uint32_t shadow_colour = 0x99000000;
 	double shadow_x = 0.0, shadow_y = 4.0, shadow_blur = 8.0;
+	double shadow_spread = 0.0; // the shadow grown round the letters before it's blurred: a denser halo
 	bool plate = false;
 	uint32_t plate_colour = 0xC0000000;
 	double plate_padding = 24.0, plate_radius = 8.0;
@@ -116,8 +117,8 @@ struct Raster {
 constexpr int max_raster_side = 8192;
 constexpr double max_raster_pixels = 32.0 * 1024 * 1024;
 
-// Draws the document at the given scale. A raster can come out empty: no ink,
-// or memory couldn't be had for it.
+// Draws the document at the given scale. A raster comes out empty when
+// there's no ink, and failed when memory couldn't be had for it.
 Raster rasterise(PangoLayout *layout, const Document &doc, RasterParams params);
 
 // Whether a font family is installed, and the family Pango will use for it.

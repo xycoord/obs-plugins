@@ -27,8 +27,17 @@ static void frontend_event(enum obs_frontend_event event, void *)
 	case OBS_FRONTEND_EVENT_PREVIEW_SCENE_CHANGED:
 	case OBS_FRONTEND_EVENT_STUDIO_MODE_ENABLED:
 	case OBS_FRONTEND_EVENT_STUDIO_MODE_DISABLED:
-	case OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGING:
 		typeset::editor_scene_changed();
+		break;
+	// The scenes are torn down between these: the editor holds no scene
+	// items over it, and takes none (OBS reports any left as leaked).
+	case OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGING:
+	case OBS_FRONTEND_EVENT_SCENE_COLLECTION_CLEANUP:
+		typeset::editor_scene_collection(true);
+		break;
+	case OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGED:
+	case OBS_FRONTEND_EVENT_SCENE_COLLECTION_LIST_CHANGED:
+		typeset::editor_scene_collection(false);
 		break;
 	case OBS_FRONTEND_EVENT_EXIT:
 	case OBS_FRONTEND_EVENT_SCRIPTING_SHUTDOWN:

@@ -157,10 +157,16 @@ PangoLayout *create_layout(PangoContext *context, const Document &doc)
 			continue;
 		if (sp.bold > 0)
 			add(pango_attr_weight_new(bold), sp);
+		else if (sp.bold == 0) // bold turned off on a bold base
+			add(pango_attr_weight_new(PANGO_WEIGHT_NORMAL), sp);
 		if (sp.italic > 0)
 			add(pango_attr_style_new(PANGO_STYLE_ITALIC), sp);
+		else if (sp.italic == 0)
+			add(pango_attr_style_new(PANGO_STYLE_NORMAL), sp);
 		if (sp.underline > 0)
 			add(pango_attr_underline_new(PANGO_UNDERLINE_SINGLE), sp);
+		else if (sp.underline == 0)
+			add(pango_attr_underline_new(PANGO_UNDERLINE_NONE), sp);
 		if (sp.has_colour) {
 			const uint32_t c = sp.colour;
 			add(pango_attr_foreground_new(guint16((c & 0xFF) * 257), guint16(((c >> 8) & 0xFF) * 257),
@@ -266,7 +272,7 @@ Box drawn_box(PangoLayout *layout, const Document &doc, const Frame &f)
 
 	Box out = unite(text, f.plate);
 	if (s.shadow) {
-		Box shadow = grow(text, std::max(0.0, s.shadow_blur) * 1.5);
+		Box shadow = grow(text, std::max(0.0, s.shadow_blur) * 1.5 + std::max(0.0, s.shadow_spread));
 		shadow.x += s.shadow_x;
 		shadow.y += s.shadow_y;
 		out = unite(out, shadow);
@@ -320,6 +326,16 @@ static void draw_text(cairo_t *cr, PangoLayout *layout, const Style &s, const Fr
 		cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
 		if (!silhouette)
 			set_colour(cr, s.outline_colour);
+		cairo_stroke(cr);
+	}
+	if (silhouette && s.shadow_spread > 0) {
+		// The shadow's spread: its shape grown all round, so it holds up
+		// thin letters over bright backgrounds.
+		pango_cairo_layout_path(cr, layout);
+		const double grow_by = s.shadow_spread + (s.outline ? s.outline_width : 0.0);
+		cairo_set_line_width(cr, 2 * grow_by / f.text_scale);
+		cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+		cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
 		cairo_stroke(cr);
 	}
 	if (!silhouette)
@@ -397,11 +413,30 @@ Raster rasterise(PangoLayout *layout, const Document &doc, RasterParams params)
 		return out;
 	}
 
-	cairo_surface_t *surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, out.width, out.height);
+	// Drawn straight into the raster's own pixels when Cairo can use rows
+	// packed edge to edge (it always can for ARGB32), so there's no second
+	// full-size copy; otherwise into a surface of its own and copied.
+	// Cairo's ARGB32 is premultiplied BGRA in memory on little-endian
+	// machines: what OBS's GS_BGRA textures take.
+	auto fail = [&out] {
+		out.width = out.height = 0;
+		out.pixels = std::vector<uint8_t>();
+		out.failed = true; // out of memory: try again later
+		return out;
+	};
+	const int packed = out.width * 4;
+	const bool direct = cairo_format_stride_for_width(CAIRO_FORMAT_ARGB32, out.width) == packed;
+	try {
+		out.pixels.assign(size_t(packed) * size_t(out.height), 0);
+	} catch (const std::bad_alloc &) {
+		return fail();
+	}
+	cairo_surface_t *surface = direct ? cairo_image_surface_create_for_data(out.pixels.data(), CAIRO_FORMAT_ARGB32,
+										out.width, out.height, packed)
+					  : cairo_image_surface_create(CAIRO_FORMAT_ARGB32, out.width, out.height);
 	if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
 		cairo_surface_destroy(surface);
-		out.width = out.height = 0;
-		return out;
+		return fail();
 	}
 	cairo_t *cr = cairo_create(surface);
 	cairo_translate(cr, params.ox - out.x0, params.oy - out.y0);
@@ -415,48 +450,50 @@ Raster rasterise(PangoLayout *layout, const Document &doc, RasterParams params)
 
 	if (s.shadow) {
 		cairo_surface_t *mask = cairo_image_surface_create(CAIRO_FORMAT_A8, out.width, out.height);
-		if (cairo_surface_status(mask) == CAIRO_STATUS_SUCCESS) {
-			cairo_t *mcr = cairo_create(mask);
-			cairo_translate(mcr, params.ox - out.x0, params.oy - out.y0);
-			cairo_scale(mcr, params.sx, params.sy);
-			cairo_translate(mcr, s.shadow_x, s.shadow_y);
-			cairo_set_source_rgba(mcr, 0, 0, 0, 1);
-			draw_text(mcr, layout, s, f, true);
-			cairo_destroy(mcr);
-			cairo_surface_flush(mask);
-			// The blur's size is in source units, like everything else;
-			// half of it is the Gaussian's standard deviation.
-			const double sigma = std::max(0.0, s.shadow_blur) * 0.5;
-			box_blur(cairo_image_surface_get_data(mask), out.width, out.height,
-				 cairo_image_surface_get_stride(mask), sigma * params.sx, sigma * params.sy);
-			cairo_surface_mark_dirty(mask);
-
-			cairo_save(cr);
-			cairo_identity_matrix(cr);
-			set_colour(cr, s.shadow_colour);
-			cairo_mask_surface(cr, mask, 0, 0);
-			cairo_restore(cr);
+		if (cairo_surface_status(mask) != CAIRO_STATUS_SUCCESS) {
+			// No shadow is a wrong drawing, not a lesser one: not kept.
+			cairo_surface_destroy(mask);
+			cairo_destroy(cr);
+			cairo_surface_destroy(surface);
+			return fail();
 		}
+		cairo_t *mcr = cairo_create(mask);
+		cairo_translate(mcr, params.ox - out.x0, params.oy - out.y0);
+		cairo_scale(mcr, params.sx, params.sy);
+		cairo_translate(mcr, s.shadow_x, s.shadow_y);
+		cairo_set_source_rgba(mcr, 0, 0, 0, 1);
+		draw_text(mcr, layout, s, f, true);
+		cairo_destroy(mcr);
+		cairo_surface_flush(mask);
+		// The blur's size is in source units, like everything else;
+		// half of it is the Gaussian's standard deviation.
+		const double sigma = std::max(0.0, s.shadow_blur) * 0.5;
+		box_blur(cairo_image_surface_get_data(mask), out.width, out.height, cairo_image_surface_get_stride(mask),
+			 sigma * params.sx, sigma * params.sy);
+		cairo_surface_mark_dirty(mask);
+
+		cairo_save(cr);
+		cairo_identity_matrix(cr);
+		set_colour(cr, s.shadow_colour);
+		cairo_mask_surface(cr, mask, 0, 0);
+		cairo_restore(cr);
 		cairo_surface_destroy(mask);
 	}
 
 	draw_text(cr, layout, s, f, false);
+	const bool drawn = cairo_status(cr) == CAIRO_STATUS_SUCCESS;
 	cairo_destroy(cr);
-
-	// Cairo's ARGB32 is premultiplied BGRA in memory on little-endian
-	// machines: what OBS's GS_BGRA textures take.
 	cairo_surface_flush(surface);
-	const int stride = cairo_image_surface_get_stride(surface);
-	const uint8_t *data = cairo_image_surface_get_data(surface);
-	try {
-		out.pixels.resize(size_t(out.width) * out.height * 4);
-	} catch (const std::bad_alloc &) {
+	if (!drawn) {
 		cairo_surface_destroy(surface);
-		out.width = out.height = 0;
-		return out;
+		return fail();
 	}
-	for (int y = 0; y < out.height; y++)
-		memcpy(&out.pixels[size_t(y) * out.width * 4], data + size_t(y) * stride, size_t(out.width) * 4);
+	if (!direct) {
+		const int stride = cairo_image_surface_get_stride(surface);
+		const uint8_t *data = cairo_image_surface_get_data(surface);
+		for (int y = 0; y < out.height; y++)
+			memcpy(&out.pixels[size_t(y) * size_t(packed)], data + size_t(y) * stride, size_t(packed));
+	}
 	cairo_surface_destroy(surface);
 	return out;
 }

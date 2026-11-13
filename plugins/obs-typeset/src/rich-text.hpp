@@ -19,7 +19,7 @@ namespace typeset {
 
 struct Span {
 	size_t start = 0, end = 0;
-	int8_t bold = -1, italic = -1, underline = -1; // -1: as the base; 1: on (0 isn't used)
+	int8_t bold = -1, italic = -1, underline = -1; // -1: as the base; 1: on; 0: off (on a bold or italic base)
 	bool has_colour = false;
 	uint32_t colour = 0; // 0xAABBGGRR, as OBS stores colours
 	int size = 0;        // percent of the base size; 0: as the base
@@ -38,7 +38,8 @@ using Spans = std::vector<Span>;
 // What a change sets on a range.
 struct StyleChange {
 	enum Field { Bold, Italic, Underline, Colour, Size, Clear } field = Bold;
-	int value = 0;       // bold/italic/underline: 1 on, -1 off; size: percent (0: as the base)
+	int value = 0;       // bold/italic/underline: 1 on, 0 off, -1 as the base; size: percent (0: as the base)
+	bool relative = false; // size: value is a step added to each part's own size
 	uint32_t colour = 0; // Colour
 	bool no_colour = false;
 };
@@ -58,8 +59,9 @@ void apply(Spans &spans, size_t from, size_t to, const StyleChange &change, cons
 // The style at a byte (a span covering just it, plain if none).
 Span style_at(const Spans &spans, size_t index);
 
-// Whether every byte in [from, to) has bold (or italic, underline) on.
-bool all_on(const Spans &spans, size_t from, size_t to, StyleChange::Field field);
+// Whether every byte in [from, to) has bold (or italic, underline) on: by a
+// run, or (with base_on) from the base where no run turns it off.
+bool all_on(const Spans &spans, size_t from, size_t to, StyleChange::Field field, bool base_on = false);
 
 // The runs moved to fit a text changed from outside (its properties): the
 // common start and end of the old and new texts keep their runs.

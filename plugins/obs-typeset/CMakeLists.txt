@@ -12,8 +12,13 @@ add_library(obs-typeset MODULE
 	src/text-engine.cpp
 	src/rich-text.cpp
 	src/typeset-source.cpp
+	src/settings.cpp
+	src/properties.cpp
 	src/raster-worker.cpp
-	src/preview-editor.cpp)
+	src/preview-editor.cpp
+	src/obs-preview.cpp
+	src/edit-model.cpp
+	src/overlay.cpp)
 target_link_libraries(obs-typeset PRIVATE OBS::libobs OBS::obs-frontend-api Qt6::Core Qt6::Gui Qt6::Widgets
 	PkgConfig::PANGOCAIRO)
 target_compile_options(obs-typeset PRIVATE -Wall -Wextra)

@@ -22,7 +22,7 @@ Everything else is in groups you tick to turn on; a group's settings show only w
 |---|---|
 | **Text box** | A fixed width, so the text stays put when the words change. Text that's too long wraps onto more lines, or shrinks to fit (for band names of any length: the font size itself isn't changed). An optional height, with vertical alignment. While editing in the preview, a blue grip on the frame's right edge drags its width. |
 | **Outline** | Colour and width. Drawn outside the letters, so it never thins them. |
-| **Shadow** | Colour, opacity, offset and blur. With no offset, it's a glow. On by default. |
+| **Shadow** | Colour, opacity, offset, blur and spread (how far it reaches past the letters before it softens, so it holds behind thin type). With no offset, it's a glow. On by default. |
 | **Background** | A plate behind the text: colour, opacity, padding, rounded corners. For lower thirds and messages over busy visuals. |
 | **Spacing and case** | Line and letter spacing; UPPERCASE, lowercase or capitals at the start of each word (the text stays as you typed it); even-width numbers, so set times line up. |
 
@@ -47,7 +47,10 @@ editing in the preview, select the words, then:
 
 or use the format bar above the text while editing: B, I, U, smaller and bigger (with the size in
 pixels between them), colour, the whole text's alignment, and Clear. The buttons light up for what the
-selection has. With nothing selected, a style goes on what you type next. Bold is always bolder than the text around it (a SemiBold text's bold is Black).
+selection has, the font's own weight and slant included. With nothing selected, a style goes on what you
+type next. Bold is always bolder than the text around it (a SemiBold text's bold is Black); in a text
+whose font is bold already, B makes the selection regular. With a selection of mixed sizes, bigger and
+smaller step each part from its own size.
 
 The properties are the style of the rest of the text: change the font there and the bold words stay
 bold, in the new font. A note in the properties says when some words have a style of their own, with
@@ -74,6 +77,11 @@ freed again a few seconds after they close. While you drag a handle you may see 
 stretched for a frame or two before the sharp one arrives. Nothing is done for a text that hasn't
 changed.
 
+Each text has one drawing for the output and one for windows. A text shown twice in the same frame
+at different sizes (the same source in two places in a scene) is drawn for the larger and scaled down
+for the smaller, which is then a little soft. A text that isn't on screen keeps its drawing on the
+graphics card, so it's ready the moment it's cut to.
+
 A few things in OBS draw a source into a texture of the source's own size first and scale *that*,
 and then the text is as sharp as its font size, no sharper: filters on the source; crop, or Scale
 Filtering other than Disable, on the scene item; and a scene used inside another scene, when the
@@ -94,7 +102,7 @@ naming it ("Editing “Title” · Esc to finish"), in the preview only; then:
 | Arrows, Home, End | move; Ctrl moves by word (or to the very start or end); Shift selects |
 | Backspace, Delete | delete; Ctrl deletes a word |
 | Return | a new line |
-| Ctrl+A, Ctrl+C, Ctrl+X, Ctrl+V | select all, copy, cut, paste (always as plain text) |
+| Ctrl+A, Ctrl+C, Ctrl+X, Ctrl+V | select all, copy, cut, paste (always as plain text, up to 20,000 characters) |
 | Ctrl+Z, Ctrl+Shift+Z | undo, redo (a word at a time) |
 | Escape, Ctrl+Return, or a click outside the text | finish |
 
@@ -129,8 +137,13 @@ OBS doesn't give plugins a way to take part in its preview, so the editor works 
   and their setting is put back as OBS has it when editing finishes.
 - It draws the caret, selection and placeholders with a draw callback on the preview's display,
   which it finds inside OBS's preview widget (the display's pointer is that widget's first
-  member). That's read only in the OBS versions it's known to hold in (27 to 33), and checked
-  against the display's size; otherwise editing still works, without the caret.
+  member). That's read only in the OBS versions it's known to hold in, and checked against the
+  display's size; otherwise editing still works, without the caret.
+
+All of this is in `src/obs-preview.cpp`, and is known to hold in OBS 28 to 33 (`known_obs_first` and
+`known_obs_last` there); in any other version the editor stays out of the way and OBS's log says why.
+The editing itself (`src/edit-model.cpp`: the text, its styled runs, caret, selection and undo) has
+no OBS or Qt in it, and what's drawn on the preview is in `src/overlay.cpp`.
 
 ## Tests
 
@@ -139,7 +152,8 @@ text scaled in a scene comes out identical to text at the matching font size; an
 and keyboard on OBS's window, that editing in the preview works, never shows in the output, isn't
 interrupted by OBS's shortcuts or hotkeys, and works in Studio Mode; and the text box's sizes.
 `capture.py` there takes a fixed set of screenshots for reviewing the design. `unit/run.sh` tests the
-styled runs and the reading of font style names on their own, without OBS.
+styled runs, the editing model (typing, undo, bold on and off, size steps, pasting), where the canvas
+sits in the preview, and the reading of font style names, on their own, without OBS.
 
 ## Building
 

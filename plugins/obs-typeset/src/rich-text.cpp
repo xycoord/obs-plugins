@@ -47,20 +47,27 @@ void change(Span &s, const StyleChange &c)
 {
 	switch (c.field) {
 	case StyleChange::Bold:
-		s.bold = c.value > 0 ? 1 : -1;
+		s.bold = int8_t(std::clamp(c.value, -1, 1));
 		break;
 	case StyleChange::Italic:
-		s.italic = c.value > 0 ? 1 : -1;
+		s.italic = int8_t(std::clamp(c.value, -1, 1));
 		break;
 	case StyleChange::Underline:
-		s.underline = c.value > 0 ? 1 : -1;
+		s.underline = int8_t(std::clamp(c.value, -1, 1));
 		break;
 	case StyleChange::Colour:
 		s.has_colour = !c.no_colour;
 		s.colour = c.colour;
 		break;
 	case StyleChange::Size:
-		s.size = std::clamp(c.value, 0, 1000);
+		if (c.relative) {
+			const int now = s.size ? s.size : 100;
+			s.size = std::clamp(now + c.value, 10, 1000);
+			if (s.size == 100)
+				s.size = 0;
+		} else {
+			s.size = std::clamp(c.value, 0, 1000);
+		}
 		break;
 	case StyleChange::Clear:
 		s = Span{s.start, s.end};
@@ -160,7 +167,7 @@ Span style_at(const Spans &spans, size_t index)
 	return Span{index, index + 1};
 }
 
-bool all_on(const Spans &spans, size_t from, size_t to, StyleChange::Field field)
+bool all_on(const Spans &spans, size_t from, size_t to, StyleChange::Field field, bool base_on)
 {
 	if (from >= to)
 		return false;
@@ -168,18 +175,18 @@ bool all_on(const Spans &spans, size_t from, size_t to, StyleChange::Field field
 	for (const Span &s : spans) {
 		if (s.end <= at || s.start >= to)
 			continue;
-		if (s.start > at)
-			return false; // a gap: plain text
+		if (s.start > at && !base_on)
+			return false; // a gap: as the base
 		const int8_t v = field == StyleChange::Bold     ? s.bold
 				 : field == StyleChange::Italic ? s.italic
 								: s.underline;
-		if (v <= 0)
+		if (v == 0 || (v < 0 && !base_on))
 			return false;
 		at = s.end;
 		if (at >= to)
 			return true;
 	}
-	return at >= to;
+	return at >= to || base_on;
 }
 
 void follow_text(Spans &spans, const std::string &old_text, const std::string &new_text)
