@@ -34,8 +34,13 @@ COLOURS = {
 PAPER = (0.98, 0.95, 0.88)
 
 
+from oklab import ok_invert
+
+
 def keephue(c):
-    return c + (1 - c.max(-1, keepdims=True) - c.min(-1, keepdims=True))
+    """The inversion the ideal uses: OKLab lightness flipped, hue and chroma kept
+    (chroma reduced at the same lightness where the result is outside sRGB)."""
+    return ok_invert(np.asarray(c, float))
 
 
 class Logo:

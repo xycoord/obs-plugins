@@ -9,7 +9,8 @@ transparent background, and the scripts that score the real shader on them.
   text, outlined text, black drop shadows at 30–75% opacity and occasional coloured glows. Each logo
   comes in 7 renderings: crisp PNG, JPEG q75, JPEG q50, soft (σ 1.0) + JPEG, blurred (σ 1.8) + JPEG,
   cream paper + JPEG, and PNG with its own transparency. The ideal is the layer stack with each
-  layer's colour inverted, over transparency. Takes about 30 s.
+  layer's colour inverted (perceptually, by `oklab.py`, as the filter does), over transparency.
+  Takes about 4 minutes.
 - **`measure.py --plugin obs-invert.so --data DATA --out OUT`** runs the real shader through OBS's
   renderer (the headless harness from obs-shaderfilter's tests) on every image, transparent
   background on. It composites the result over black, a colourful backdrop and white, and reports the
@@ -74,6 +75,28 @@ Then two faults that were plain to see on one logo (Paper Wolves):
 - A pale grey hairline taken as solid turned into an opaque near-black line over the visuals. A thin
   feature that is dark once inverted now has to be crisper to count as solid, since being wrongly
   faint costs far less than being wrongly solid.
+
+### Perceptual inversion
+
+Inverting HSL lightness doesn't keep contrast: it leaves vivid colours where they are and moves pale
+and dark ones, so of the 87 pairs of the suite's colours (with paper) that differ clearly in perceived
+lightness (OKLab ΔL > 0.25), 14 lose more than half of it (orange on navy: 0.46 to 0.07). Flipping
+OKLab L keeps every difference exactly. The filter now does that, and the suite's ideals use it, so
+the scores below aren't comparable with those above.
+
+The inversion is no longer linear for blends with paper, so the colour can't be right over black
+regardless of alpha any more: each part's full-strength colour is inverted at the alpha estimated for
+it, and alpha errors show over black too. The ceiling (ideal alpha) is about the same as before.
+
+| Version | Tuning | Held out | Notes |
+|---|---|---|---|
+| HSL inversion (0f9003b) against these ideals | 36.16 | 48.36 | the colours differ |
+| OKLab inversion | **14.71** | **13.16** | |
+| Ceiling for it | 5.59 | | best possible alpha for its colours |
+
+Tried and not kept: treating a band three or more pixels wide beside a sharp edge as a plateau, so a
+pale outline in a tint of its neighbour's hue isn't read as that neighbour at partial coverage. Seams
+improve, thin features and shadows get worse; no net gain.
 
 What the review (Opus, Fable, GPT) thinks would take it further. All of it needs evidence from beyond
 a pixel's neighbourhood, and they estimate a headline of about 9–11:

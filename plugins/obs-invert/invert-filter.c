@@ -31,6 +31,7 @@ struct invert_filter {
 	gs_effect_t *effect;
 	gs_eparam_t *image_param;
 	gs_eparam_t *paper_param;
+	gs_eparam_t *source_param;
 	gs_eparam_t *keep_hue_param;
 	gs_eparam_t *black_point_param;
 	gs_eparam_t *fade_param;
@@ -100,6 +101,7 @@ static void *invert_create(obs_data_t *settings, obs_source_t *context)
 	if (filter->effect) {
 		filter->image_param = gs_effect_get_param_by_name(filter->effect, "image");
 		filter->paper_param = gs_effect_get_param_by_name(filter->effect, "paper_tex");
+		filter->source_param = gs_effect_get_param_by_name(filter->effect, "source_tex");
 		filter->keep_hue_param = gs_effect_get_param_by_name(filter->effect, "keep_hue");
 		filter->black_point_param = gs_effect_get_param_by_name(filter->effect, "black_point");
 		filter->fade_param = gs_effect_get_param_by_name(filter->effect, "fade");
@@ -303,20 +305,25 @@ static void invert_render(void *data, gs_effect_t *unused)
 	}
 	gs_texture_t *paper = gs_texrender_get_texture(filter->paper);
 
-	/* 3. Processed (and, for transparency, marked) image. */
+	/* 3. Processed and marked image. Needed for transparency, and when keeping
+	 * hue (the colour of each part is inverted at its full strength, which
+	 * needs the alpha pass's estimate of it). */
 	gs_texture_t *processed = NULL;
-	if (filter->transparent && begin_target(filter->processed, w, h)) {
+	bool alpha_pass = filter->transparent || filter->keep_hue;
+	if (alpha_pass && begin_target(filter->processed, w, h)) {
 		draw_pass(filter, source, "Process", w, h, &texel, paper);
 		gs_texrender_end(filter->processed);
 		processed = gs_texrender_get_texture(filter->processed);
 	}
 	gs_blend_state_pop();
 
-	/* 4. Out: the alpha pass, or (opaque) the processing itself. Premultiplied. */
+	/* 4. Out: the alpha pass (opaque: with the source's alpha), or for plain
+	 * inversion without transparency the processing itself. Premultiplied. */
 	gs_blend_state_push();
 	gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
+	gs_effect_set_texture(filter->source_param, source);
 	if (processed)
-		draw_pass(filter, processed, "Alpha", w, h, &texel, paper);
+		draw_pass(filter, processed, filter->transparent ? "Alpha" : "AlphaOpaque", w, h, &texel, paper);
 	else
 		draw_pass(filter, source, "ProcessOpaque", w, h, &texel, paper);
 	gs_blend_state_pop();
