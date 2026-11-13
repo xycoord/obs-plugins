@@ -216,9 +216,8 @@ def test_scaling(out):
 def test_coverage(out):
     """Text in one colour is drawn from its coverage (a quarter or half the
     data) through the plugin's own effect, with the same picture as in colour
-    form (here forced by a run in the same colour). Cairo puts letters into
-    the two forms' surfaces by slightly different routes, so a part-covered
-    row at a letter's top or bottom edge can differ: the rest is the same."""
+    form (here forced by a run in the same colour), to within rounding: every
+    pixel, the part-covered ones at letters' edges too."""
     print("-- drawn from coverage")
     text = "Typeset 19:30"
     look = {"colour": 0xFF40C0F0, "shadow": True, "shadow_colour": 0xFF302010, "shadow_opacity": 75}
@@ -237,11 +236,9 @@ def test_coverage(out):
             a, b = frame[y:y + h, 0:920, :3], frame[y:y + h, 920:1840, :3]
             d = np.abs(a - b)
             inked = (np.abs(a - np.array(BG)).sum(axis=2) > 30).sum()
-            differing = (d.max(axis=2) > 8).sum()
-            check(d.mean() < 0.05 and differing < inked * 0.005 and inked > 2000,
+            check(d.max() <= 3 and d.mean() < 0.02 and inked > 2000,
                   "one-colour text drawn from coverage matches colour form, %s" % name,
-                  "mean difference %.3f; %d of %d inked pixels differ by more than 8 of 255" % (
-                      d.mean(), differing, inked))
+                  "largest difference %d of 255, mean %.3f, %d inked pixels" % (d.max(), d.mean(), inked))
 
 
 # --- 2. Editing in the preview -----------------------------------------------------------------

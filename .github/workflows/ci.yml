@@ -27,7 +27,7 @@ jobs:
           fi
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq obs-studio cmake build-essential libsimde-dev \
-            qt6-base-dev libpango1.0-dev xvfb xdotool imagemagick fonts-dejavu-core \
+            qt6-base-dev libpango1.0-dev xvfb xdotool imagemagick fonts-dejavu-core fonts-noto-color-emoji fonts-ipafont-gothic \
             python3-numpy python3-pil python3-websocket
           obs --version
 
