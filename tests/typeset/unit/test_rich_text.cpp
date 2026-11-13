@@ -22,8 +22,15 @@ static std::string show(const Spans &spans)
 			out += "u";
 		if (s.has_colour)
 			out += "c";
-		if (s.size)
-			out += "s" + std::to_string(s.size);
+		if (s.weight)
+			out += "w" + std::to_string(s.weight);
+		if (s.size > 0) {
+			char size[32];
+			snprintf(size, sizeof(size), "s%g", s.size);
+			out += size;
+		}
+		if (s.script)
+			out += s.script == 1 ? "^" : "_";
 		out += " ";
 	}
 	return out.empty() ? "(none)" : out.substr(0, out.size() - 1);
@@ -140,6 +147,73 @@ int main()
 		o = {a, b, c};
 		edit(o, 11, 11, 1); // through edit too
 		expect("edit untangles overlaps as well", o, "[0,10)b");
+	}
+
+	// Weights: one of its own replaces bold, and bold replaces it.
+	{
+		const std::string w = "Light and Black";
+		StyleChange weight;
+		weight.field = StyleChange::Weight;
+		weight.value = 900;
+		Spans r;
+		apply(r, 0, 5, bold(), w);
+		apply(r, 0, 5, weight, w);
+		expect("a weight replaces bold", r, "[0,5)w900");
+		apply(r, 0, 5, bold(), w);
+		expect("and bold replaces a weight", r, "[0,5)b");
+		weight.value = 0;
+		apply(r, 0, 5, weight, w);
+		expect("weight 0 is the base's", r, "(none)");
+	}
+	// Superscript, sizes in fractions of a percent, and Clear.
+	{
+		const std::string w = "E = mc2";
+		StyleChange sup;
+		sup.field = StyleChange::Script;
+		sup.value = 1;
+		StyleChange size;
+		size.field = StyleChange::Size;
+		size.amount = 112.5;
+		StyleChange weight;
+		weight.field = StyleChange::Weight;
+		weight.value = 300;
+		Spans r;
+		apply(r, 6, 7, sup, w);
+		expect("superscript", r, "[6,7)^");
+		apply(r, 4, 7, size, w);
+		apply(r, 4, 7, weight, w);
+		expect("a size of 112.5% and a weight over it", r, "[4,6)w300s112.5 [6,7)w300s112.5^");
+		StyleChange step;
+		step.field = StyleChange::Size;
+		step.relative = true;
+		step.amount = -12.5;
+		apply(r, 4, 6, step, w);
+		expect("a step back to 100% is no size of its own", r, "[4,6)w300 [6,7)w300s112.5^");
+		StyleChange clear;
+		clear.field = StyleChange::Clear;
+		apply(r, 0, 7, clear, w);
+		expect("Clear takes off weight, size and script too", r, "(none)");
+	}
+	// uniform(): one value over a range, gaps counting as plain text.
+	{
+		const std::string w = "abcdef";
+		StyleChange weight;
+		weight.field = StyleChange::Weight;
+		weight.value = 600;
+		Spans r;
+		apply(r, 1, 3, weight, w);
+		auto get = [](const Span &s) { return double(s.weight); };
+		double v = -1;
+		const bool same = uniform(r, 1, 3, get, &v) && v == 600;
+		const bool mixed = !uniform(r, 0, 3, get, &v);
+		const bool caret = uniform(r, 3, 3, get, &v) && v == 600; // what's typed after it
+		const bool plain = uniform(r, 4, 6, get, &v) && v == 0;
+		if (same && mixed && caret && plain) {
+			printf("ok    uniform\n");
+		} else {
+			printf("FAIL  uniform: %d %d %d %d\n", same, mixed, caret, plain);
+			failed++;
+		}
 	}
 
 	printf("%s\n", failed ? "FAILED" : "all passed");

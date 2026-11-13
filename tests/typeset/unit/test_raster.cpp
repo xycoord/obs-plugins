@@ -79,6 +79,25 @@ int main()
 	check("and the drawing grows to hold it", spread.width >= tight.width + 18,
 	      std::to_string(tight.width) + " -> " + std::to_string(spread.width));
 
+	// Superscript: the run is raised (its ink reaches higher on the canvas).
+	{
+		Document line = text_doc("xx");
+		const Raster flat = draw(context, line, 1);
+		Span up{1, 2};
+		up.script = 1;
+		line.spans = {up};
+		const Raster raised = draw(context, line, 1);
+		auto ink_top = [](const Raster &r) {
+			for (int y = 0; y < r.height; y++)
+				for (int x = 0; x < r.width; x++)
+					if (r.pixels[(size_t(y) * size_t(r.width) + size_t(x)) * 4 + 3] > 0)
+						return r.y0 + y;
+			return r.y0 + r.height;
+		};
+		check("a superscript is drawn higher", ink_top(raised) < ink_top(flat) - 5,
+		      std::to_string(ink_top(flat)) + " -> " + std::to_string(ink_top(raised)));
+	}
+
 	// Backspace, as Pango 1.52 divides text: whole graphemes, except where
 	// it says one character goes (Indic scripts).
 	check("Backspace after an accented letter (e + U+0301) takes the whole letter",

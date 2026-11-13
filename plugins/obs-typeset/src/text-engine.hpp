@@ -72,6 +72,14 @@ struct Document {
 PangoContext *create_context(PangoFontMap *map);
 PangoLayout *create_layout(PangoContext *context, const Document &doc);
 PangoFontDescription *font_description(const Style &style); // the base font, for a style
+int base_weight(const Style &style);                         // its weight (400 regular, 700 bold)
+
+// The weights a family has faces for, upright (or italic), lowest first: for
+// a variable font, its named instances. Empty if it isn't installed.
+std::vector<int> family_weights(PangoContext *context, const std::string &family, bool italic);
+
+// A weight's usual name ("Thin" to "Black"), for the nearest hundred.
+const char *weight_name(int weight);
 
 struct Box {
 	double x = 0, y = 0, w = 0, h = 0;

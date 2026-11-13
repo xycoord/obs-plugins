@@ -12,15 +12,17 @@ namespace typeset {
 
 namespace {
 
-// Colours of the editing marks, 0xRRGGBBAA. The accent is a clear blue that
-// isn't OBS's red selection box, so editing reads as a different state.
-constexpr uint32_t accent = 0x2F8FFFFF;
-constexpr uint32_t accent_edge = 0x0A1830D0; // dark edge round the accent, so it shows on blue too
+// Colours of the editing marks, 0xRRGGBBAA, besides the theme's highlight
+// (the accent): a dark edge round it, so it shows on any background.
+constexpr uint32_t accent_edge = 0x0A1830D0;
 constexpr uint32_t selection_keyline = 0xFFFFFFC0;
-constexpr uint32_t tag_fill = 0x10141CE8;
 constexpr uint32_t veil = 0x00000040; // over the rest of the canvas while editing
-constexpr uint32_t selection_fill = 0x2F6FE0E6; // nearly opaque: the selected glyphs are drawn again on it
-constexpr uint32_t selection_wash = 0x2F8FFF70; // when they can't be (a rotated source)
+// The selection: the accent nearly opaque (the selected glyphs are drawn
+// again on it), or a wash of it where they can't be (a rotated source).
+uint32_t with_alpha(uint32_t rgba, uint32_t a)
+{
+	return (rgba & 0xFFFFFF00u) | a;
+}
 constexpr uint32_t placeholder_line = 0xFFFFFFB0;
 
 // How long the caret stays solid after a key or click, and its blink.
@@ -144,30 +146,6 @@ struct Projector {
 
 // --- Labels -----------------------------------------------------------------------------------
 
-static const char *bar_glyph(BarAction a)
-{
-	switch (a) {
-	case BarAction::Bold:
-		return "B";
-	case BarAction::Italic:
-		return "I";
-	case BarAction::Underline:
-		return "U";
-	case BarAction::Smaller:
-		return "A−";
-	case BarAction::Bigger:
-		return "A+";
-	case BarAction::Colour:
-		return "A";
-	case BarAction::Clear:
-		return obs_module_text("Bar.Clear");
-	default: // drawn otherwise
-		return "";
-	}
-}
-
-
-
 // Made with a font map of the UI thread's own; kept while in use, so the
 // same label (a glyph, the tag between keys) isn't laid out again.
 Label make_label(const std::string &text, double px, uint32_t fg, uint32_t bg)
@@ -239,17 +217,9 @@ float pixel_size(const Mapping &m)
 	return float(std::max(1.0, std::round(m.dpr)));
 }
 
-void make_labels(Overlay &o, const std::string &tag, const std::string &preedit)
+void make_labels(Overlay &o, const std::string &preedit)
 {
-	const float px = pixel_size(o.mapping);
-	o.tag = make_label(tag, 14 * px, 0xFFFFFFFF, tag_fill);
-	o.size = make_label(std::to_string(o.bar.size_px) + " px", 12 * px, 0xFFFFFFFF, 0);
-	o.preedit = preedit.empty() ? nullptr : make_label(preedit, 16 * px, 0xFFFFFFFF, accent);
-	for (int i = 0; i < int(BarAction::Count); i++) {
-		const auto a = BarAction(i);
-		if (*bar_glyph(a))
-			o.glyphs[size_t(i)] = make_label(bar_glyph(a), a == BarAction::Clear ? 12 * px : 15 * px, 0xFFFFFFFF, 0);
-	}
+	o.preedit = preedit.empty() ? nullptr : make_label(preedit, 16 * pixel_size(o.mapping), 0xFFFFFFFF, o.accent);
 }
 
 Label placeholder_label(const Mapping &mapping)
@@ -305,87 +275,15 @@ void OverlayPainter::Texture::destroy()
 
 void OverlayPainter::destroy()
 {
-	for (Texture *t : {&tag_, &placeholder_, &preedit_, &size_})
+	for (Texture *t : {&placeholder_, &preedit_})
 		t->destroy();
-	for (Texture &t : glyphs_)
-		t.destroy();
-}
-
-// --- The format bar -----------------------------------------------------------------------------
-
-// Its buttons from (x, y), each the size of the strip, with gaps between
-// the kinds (style, size, colour and alignment, clear).
-void OverlayPainter::paint_bar(const Overlay &o, float x, float y, float px, std::vector<BarButton> *bar)
-{
-	const float size = 28 * px, gap = 2 * px;
-	std::vector<BarButton> buttons;
-	for (int i = 0; i < int(BarAction::Count); i++) {
-		const auto a = BarAction(i);
-		const float w = a == BarAction::SizeReadout || a == BarAction::Clear ? size * 1.9f : size;
-		buttons.push_back({a, x, y, w, size});
-		x += w + gap + (a == BarAction::Underline || a == BarAction::Bigger || a == BarAction::Align ? 3 * gap : 0);
-	}
-
-	const BarState &st = o.bar;
-	auto active = [&](BarAction a) {
-		return (a == BarAction::Bold && st.bold) || (a == BarAction::Italic && st.italic) ||
-		       (a == BarAction::Underline && st.underline);
-	};
-	std::vector<Quad> fills, actives;
-	for (const BarButton &b : buttons)
-		(active(b.action) ? actives : fills).push_back(rect(b.x, b.y, b.x + b.w, b.y + b.h));
-	fill(fills, tag_fill);
-	fill(actives, accent);
-
-	for (const BarButton &b : buttons) {
-		switch (b.action) {
-		case BarAction::SizeReadout:
-			if (size_.upload(o.size))
-				size_.draw(b.x + (b.w - size_.width) / 2, b.y + (b.h - size_.height) / 2);
-			continue;
-		case BarAction::Align: {
-			// Three lines, aligned as the text is.
-			const float widths[] = {16 * px, 10 * px, 13 * px};
-			std::vector<Quad> lines;
-			for (int i = 0; i < 3; i++) {
-				const float lw = widths[i], ly = b.y + 9 * px + i * 5 * px;
-				const float lx = st.align == int(Align::Centre)  ? b.x + (b.w - lw) / 2
-						 : st.align == int(Align::Right) ? b.x + b.w - 6 * px - lw
-										 : b.x + 6 * px;
-				vec2 a0, a1;
-				vec2_set(&a0, lx, ly);
-				vec2_set(&a1, lx + lw, ly);
-				lines.push_back(line_quad(a0, a1, 2 * px));
-			}
-			fill(lines, 0xFFFFFFFF);
-			continue;
-		}
-		case BarAction::Colour: {
-			// An "A" over a bar of the colour, as in the slide tools.
-			const Quad swatch = rect(b.x + 6 * px, b.y + b.h - 8 * px, b.x + b.w - 6 * px, b.y + b.h - 4 * px);
-			fill({grown(swatch, 1 * px)}, 0xFFFFFF90);
-			const uint32_t c = st.colour;
-			fill({swatch}, (c & 0xFF) << 24 | ((c >> 8) & 0xFF) << 16 | ((c >> 16) & 0xFF) << 8 | 0xFF);
-			break;
-		}
-		default:
-			break;
-		}
-		Texture &t = glyphs_[int(b.action)];
-		const float lift = b.action == BarAction::Colour ? 3 * px : 0;
-		if (t.upload(o.glyphs[size_t(b.action)]))
-			t.draw(b.x + (b.w - t.width) / 2, b.y + (b.h - t.height) / 2 - lift);
-	}
-	if (bar)
-		*bar = std::move(buttons);
 }
 
 // --- Painting ---------------------------------------------------------------------------------
 
-void OverlayPainter::paint(const Overlay &o, uint32_t, uint32_t cy, std::vector<BarButton> *bar)
+void OverlayPainter::paint(const Overlay &o, uint32_t, uint32_t cy)
 {
-	if (bar)
-		bar->clear();
+	const uint32_t accent = o.accent;
 	if (!o.editing && o.placeholders.empty())
 		return;
 	const Mapping map = o.mapping;
@@ -446,28 +344,6 @@ void OverlayPainter::paint(const Overlay &o, uint32_t, uint32_t cy, std::vector<
 		fill(edges, accent_edge);
 		fill(inner, accent);
 
-		// One strip above the frame's left end (below it when there's no
-		// room above, else at the preview's top): the format bar, then the
-		// tag saying what's going on. Clear of OBS's distance labels, which
-		// sit over the middle of the box's edges.
-		{
-			const float size = 28 * px, margin = 6 * px;
-			const float strip_w = size * 8.6f + 300 * px; // the buttons and room for the tag
-			float y = top - margin - size;
-			if (y < 2)
-				y = bottom + margin;
-			if (y + size > o.view_h - 2)
-				y = 2;
-			const float x = std::clamp(left, 2.0f, std::max(2.0f, o.view_w - strip_w));
-			std::vector<BarButton> buttons;
-			paint_bar(o, x, y, px, &buttons);
-			const float tag_x = buttons.empty() ? x : buttons.back().x + buttons.back().w + 10 * px;
-			if (tag_.upload(o.tag))
-				tag_.draw(tag_x, y + (size - tag_.height) / 2);
-			if (bar)
-				*bar = std::move(buttons);
-		}
-
 		// The text box's width grip, on the frame's right edge.
 		if (o.grip) {
 			const vec2 a = to_display(o.box.w, o.box.h * 0.5);
@@ -490,7 +366,7 @@ void OverlayPainter::paint(const Overlay &o, uint32_t, uint32_t cy, std::vector<
 		std::vector<Quad> selection;
 		for (const Box &b : o.selection)
 			selection.push_back(to_display.box(b));
-		fill(selection, upright ? selection_fill : selection_wash);
+		fill(selection, with_alpha(accent, upright ? 0xE6 : 0x70));
 		// A keyline round the selection as one shape: the sides of each
 		// line's piece, the top of the first line and the bottom of the last.
 		std::vector<Quad> keylines;
@@ -537,7 +413,7 @@ void OverlayPainter::paint(const Overlay &o, uint32_t, uint32_t cy, std::vector<
 				gs_matrix_pop();
 				if (!drawn) { // no raster of the text as it is: a wash over it instead
 					gs_set_scissor_rect(nullptr);
-					fill({q}, selection_wash);
+					fill({q}, with_alpha(accent, 0x70));
 				}
 			}
 			gs_set_scissor_rect(nullptr);

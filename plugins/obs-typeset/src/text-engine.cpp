@@ -87,6 +87,52 @@ PangoFontDescription *font_description(const Style &style)
 	return desc;
 }
 
+int base_weight(const Style &style)
+{
+	PangoFontDescription *desc = font_description(style);
+	const int w = pango_font_description_get_weight(desc);
+	pango_font_description_free(desc);
+	return w;
+}
+
+std::vector<int> family_weights(PangoContext *context, const std::string &family, bool italic)
+{
+	std::vector<int> out;
+	PangoFontMap *map = pango_context_get_font_map(context);
+	PangoFontFamily **families = nullptr;
+	int n = 0;
+	pango_font_map_list_families(map, &families, &n);
+	for (int i = 0; i < n; i++) {
+		if (g_ascii_strcasecmp(pango_font_family_get_name(families[i]), family.c_str()) != 0)
+			continue;
+		PangoFontFace **faces = nullptr;
+		int m = 0;
+		pango_font_family_list_faces(families[i], &faces, &m);
+		for (int j = 0; j < m; j++) {
+			PangoFontDescription *d = pango_font_face_describe(faces[j]);
+			const bool slanted = pango_font_description_get_style(d) != PANGO_STYLE_NORMAL;
+			// Condensed and other widths are other designs, not weights of this one.
+			if (slanted == italic && pango_font_description_get_stretch(d) == PANGO_STRETCH_NORMAL)
+				out.push_back(pango_font_description_get_weight(d));
+			pango_font_description_free(d);
+		}
+		g_free(faces);
+		break;
+	}
+	g_free(families);
+	std::sort(out.begin(), out.end());
+	out.erase(std::unique(out.begin(), out.end()), out.end());
+	return out;
+}
+
+const char *weight_name(int weight)
+{
+	static const char *const names[] = {"Thin",     "ExtraLight", "Light",     "Regular", "Medium",
+					    "SemiBold", "Bold",       "ExtraBold", "Black"};
+	const int i = std::clamp(int(std::lround(weight / 100.0)) - 1, 0, 8);
+	return names[i];
+}
+
 static bool wraps(const Style &s)
 {
 	return s.box && s.box_width > 0 && s.overflow == Overflow::Wrap;
@@ -99,9 +145,7 @@ PangoLayout *create_layout(PangoContext *context, const Document &doc)
 
 	PangoFontDescription *desc = font_description(style);
 	pango_layout_set_font_description(layout, desc);
-	// Bold in a run is bolder than the base, whatever the base is.
-	const int base_weight = pango_font_description_get_weight(desc);
-	const PangoWeight bold = PangoWeight(base_weight < 600 ? PANGO_WEIGHT_BOLD : std::min(base_weight + 300, 1000));
+	const int base = pango_font_description_get_weight(desc);
 	pango_font_description_free(desc);
 
 	switch (style.align) {
@@ -156,10 +200,10 @@ PangoLayout *create_layout(PangoContext *context, const Document &doc)
 	for (const Span &sp : doc.spans) {
 		if (sp.start >= sp.end || sp.end > doc.text.size())
 			continue;
-		if (sp.bold > 0)
-			add(pango_attr_weight_new(bold), sp);
-		else if (sp.bold == 0) // bold turned off on a bold base
-			add(pango_attr_weight_new(PANGO_WEIGHT_NORMAL), sp);
+		if (!sp.family.empty())
+			add(pango_attr_family_new(sp.family.c_str()), sp);
+		if (const int w = effective_weight(sp, base); w != base)
+			add(pango_attr_weight_new(PangoWeight(w)), sp);
 		if (sp.italic > 0)
 			add(pango_attr_style_new(PANGO_STYLE_ITALIC), sp);
 		else if (sp.italic == 0)
@@ -179,6 +223,15 @@ PangoLayout *create_layout(PangoContext *context, const Document &doc)
 			add(pango_attr_size_new_absolute(int(std::lround(std::clamp(style.size, 1.0, 4096.0) * sp.size /
 									    100.0 * PANGO_SCALE))),
 			    sp);
+		// Raised or lowered, and made smaller, as the font itself says
+		// (its superscript metrics), so it sits right in any font.
+		if (sp.script == 1 || sp.script == 2) {
+			const bool super = sp.script == 1;
+			add(pango_attr_baseline_shift_new(super ? PANGO_BASELINE_SHIFT_SUPERSCRIPT
+								: PANGO_BASELINE_SHIFT_SUBSCRIPT),
+			    sp);
+			add(pango_attr_font_scale_new(super ? PANGO_FONT_SCALE_SUPERSCRIPT : PANGO_FONT_SCALE_SUBSCRIPT), sp);
+		}
 	}
 	pango_layout_set_attributes(layout, attrs);
 	pango_attr_list_unref(attrs);

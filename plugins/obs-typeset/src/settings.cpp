@@ -199,7 +199,14 @@ Spans read_spans(obs_data_t *settings)
 		sp.underline = tri("underline");
 		sp.has_colour = obs_data_has_user_value(o, "colour");
 		sp.colour = uint32_t(obs_data_get_int(o, "colour"));
-		sp.size = int(std::clamp<long long>(obs_data_get_int(o, "size"), 0, 1000));
+		// (Sizes were whole percents once: read as numbers either way.)
+		const double size = obs_data_get_double(o, "size");
+		sp.size = size > 0 ? std::clamp(size, 10.0, 1000.0) : 0;
+		const long long weight = obs_data_get_int(o, "weight");
+		sp.weight = weight > 0 ? int(std::clamp<long long>(weight, 100, 1000)) : 0;
+		sp.script = int8_t(std::clamp<long long>(obs_data_get_int(o, "script"), 0, 2));
+		const char *family = obs_data_get_string(o, "family");
+		sp.family = family ? family : "";
 		spans.push_back(sp);
 		obs_data_release(o);
 	}
@@ -222,8 +229,14 @@ obs_data_array_t *spans_array(const Spans &spans)
 			obs_data_set_bool(o, "underline", sp.underline > 0);
 		if (sp.has_colour)
 			obs_data_set_int(o, "colour", sp.colour);
-		if (sp.size)
-			obs_data_set_int(o, "size", sp.size);
+		if (sp.size > 0)
+			obs_data_set_double(o, "size", sp.size);
+		if (sp.weight > 0)
+			obs_data_set_int(o, "weight", sp.weight);
+		if (sp.script > 0)
+			obs_data_set_int(o, "script", sp.script);
+		if (!sp.family.empty())
+			obs_data_set_string(o, "family", sp.family.c_str());
 		obs_data_array_push_back(array, o);
 		obs_data_release(o);
 	}

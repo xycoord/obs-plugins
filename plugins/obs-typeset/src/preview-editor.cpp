@@ -1,6 +1,7 @@
 #include "preview-editor.hpp"
 
 #include "edit-model.hpp"
+#include "format-bar.hpp"
 #include "obs-preview.hpp"
 #include "overlay.hpp"
 #include "settings.hpp"
@@ -180,7 +181,6 @@ private:
 	std::mutex overlay_mutex_;
 	obs_display_t *display_ = nullptr;
 	Overlay overlay_;
-	std::vector<BarButton> drawn_bar_;
 	OverlayPainter painter_; // graphics thread only
 
 	bool editing() const { return text_ != nullptr; }
@@ -224,7 +224,13 @@ private:
 	bool key_press(QKeyEvent *event);
 	bool mouse_event(QMouseEvent *event);
 	bool edit_selected();
-	void bar_action(BarAction action);
+	FormatBar *bar_ = nullptr;  // over the preview while editing
+	QTimer follow_;             // while editing: the bar kept with the text if it's moved from elsewhere
+	QRect bar_for_;             // the frame (widget pixels) the bar was placed for
+	void make_bar();
+	void bar_state();
+	void place_bar();
+	QRect frame_rect();
 	void pick_colour();
 	bool on_grip(QPointF widget_pos);
 	void input_method(QInputMethodEvent *event);
@@ -281,6 +287,8 @@ PreviewEditor::PreviewEditor(QWidget *preview) : preview_(preview)
 	// new display. It only looks at the preview's scene; nothing is drawn
 	// or laid out.
 	scaled_to_window_ = known_obs() && preview_scaling(preview) == Scaling::Window;
+	follow_.setInterval(100);
+	QObject::connect(&follow_, &QTimer::timeout, this, [this] { place_bar(); });
 	timer_.setInterval(500);
 	QObject::connect(&timer_, &QTimer::timeout, this, [this] { on_timer(); });
 	timer_.start();
@@ -297,6 +305,8 @@ PreviewEditor::~PreviewEditor()
 		draw_hook()->editor = nullptr;
 	}
 	clear_placeholders();
+	delete bar_;
+	bar_ = nullptr;
 	obs_enter_graphics();
 	painter_.destroy();
 	obs_leave_graphics();
@@ -407,25 +417,15 @@ void PreviewEditor::refresh_overlay()
 	const Document doc = text_->document();
 	o.grip = doc.style.box && doc.style.box_width > 0;
 	o.plate = doc.style.plate;
-	std::string tag = std::string(obs_module_text("Editing")) + " “" + obs_source_get_name(source_) + "”";
-	if (const Frame frame = text_->frame(); frame.text_scale < 0.995)
-		tag += std::string(" · ") + obs_module_text("ShrunkTo") + " " +
-		       std::to_string(int(std::lround(frame.text_scale * 100))) + "%";
-	tag += std::string(" · ") + obs_module_text("EscToFinish");
-
-	// The format bar lights up for what the text has, its own font's weight
-	// and slant included (a Bold font's text shows B lit).
-	const BaseStyle b = base();
-	o.bar.bold = model_.has(StyleChange::Bold, b);
-	o.bar.italic = model_.has(StyleChange::Italic, b);
-	o.bar.underline = model_.has(StyleChange::Underline, b);
-	o.bar.size_px = int(std::lround(doc.style.size * model_.size_percent() / 100.0)); // the dialog's units
-	o.bar.colour = model_.colour(doc.style.colour);
-	o.bar.align = int(doc.style.align);
-	make_labels(o, tag, preedit_); // laid out here, on the UI thread, not while drawing
+	// The marks in OBS's theme's own highlight colour.
+	const QColor h = preview_->palette().color(QPalette::Highlight);
+	o.accent = uint32_t(h.red()) << 24 | uint32_t(h.green()) << 16 | uint32_t(h.blue()) << 8 | 0xFF;
+	make_labels(o, preedit_); // laid out here, on the UI thread, not while drawing
 	o.placeholder = placeholder_label(o.mapping);
 	o.blink_from = os_gettime_ns();
 	shown_ = doc;
+	bar_state();
+	place_bar();
 	// The input method follows the caret and selection.
 	QGuiApplication::inputMethod()->update(Qt::ImCursorRectangle | Qt::ImSurroundingText | Qt::ImCursorPosition |
 					       Qt::ImAnchorPosition | Qt::ImCurrentSelection);
@@ -498,6 +498,7 @@ bool PreviewEditor::begin_edit(const ItemRef &hit)
 	QGuiApplication::inputMethod()->update(Qt::ImEnabled);
 	preview_->setCursor(Qt::IBeamCursor);
 
+	follow_.start();
 	suspend_hotkeys();
 	// Changes from the dialog (font, box) redraw the caret and frame at
 	// once; OBS signals them on its graphics thread, so they're passed on.
@@ -533,8 +534,10 @@ void PreviewEditor::end_edit()
 		std::lock_guard lock(overlay_mutex_);
 		old.placeholders.swap(overlay_.placeholders);
 		std::swap(overlay_, old);
-		drawn_bar_.clear();
 	}
+	follow_.stop();
+	if (bar_)
+		bar_->hide();
 	if (preview_) {
 		preview_->setAttribute(Qt::WA_InputMethodEnabled, saved_input_method_);
 		preview_->setFocusPolicy(saved_focus_policy_);
@@ -692,6 +695,10 @@ bool PreviewEditor::key_press(QKeyEvent *event)
 		// Bigger or smaller: the selection (or what's typed next), a tenth
 		// of the text's size at a time.
 		step_size(event->key() == Qt::Key_Greater || event->key() == Qt::Key_BracketRight ? 1 : -1);
+	} else if (word && (event->key() == Qt::Key_Plus || event->key() == Qt::Key_Equal)) {
+		// Superscript (Ctrl+Shift+=) and subscript (Ctrl+=), as in Word.
+		const bool super = event->key() == Qt::Key_Plus || shift;
+		changed = model_.toggle_script(super ? 1 : 2);
 	} else if (word && event->key() == Qt::Key_Space) {
 		// Back to the text's own style (the selection, or what's typed next).
 		StyleChange c;
@@ -773,44 +780,132 @@ bool PreviewEditor::key_press(QKeyEvent *event)
 	return true;
 }
 
-void PreviewEditor::bar_action(BarAction action)
+// --- The format bar ---------------------------------------------------------------------------
+
+void PreviewEditor::make_bar()
 {
-	sync_text();
-	StyleChange c;
-	switch (action) {
-	case BarAction::Bold:
-	case BarAction::Italic:
-	case BarAction::Underline:
-		c.field = action == BarAction::Bold     ? StyleChange::Bold
-			  : action == BarAction::Italic ? StyleChange::Italic
-							: StyleChange::Underline;
-		style(c, true);
-		break;
-	case BarAction::Smaller:
-	case BarAction::Bigger:
-		step_size(action == BarAction::Bigger ? 1 : -1);
-		break;
-	case BarAction::Colour:
-		// The colour dialog runs an event loop of its own: opened after
-		// this click has been handled, not from inside it.
-		QTimer::singleShot(0, this, [this] { pick_colour(); });
-		break;
-	case BarAction::Align: {
-		// The whole text's alignment, round left, centre, right; at once,
-		// and in the edit's undo.
-		const int next = (model_.layout().align + 1) % 3;
-		if (model_.set_align(next))
-			text_->set_align(next);
-		break;
-	}
-	case BarAction::Clear:
+	QWidget *parent = preview_->window();
+	FormatBar::Actions a;
+	// Each acts on the selection (or what's typed next), as the shortcuts do.
+	auto then = [this](auto f) {
+		return [this, f](auto... args) {
+			if (!editing())
+				return;
+			sync_text();
+			f(args...);
+			refresh_overlay();
+		};
+	};
+	a.family = then([this](const std::string &family) {
+		// The text's own typeface chosen: back to it, not one of its own.
+		const bool own = family == text_->document().style.family;
+		if (model_.set_family(own ? std::string() : family))
+			commit();
+	});
+	a.weight = then([this](int w) {
+		if (model_.set_weight(w))
+			commit();
+	});
+	a.size_px = then([this](int px) {
+		const double base = text_->document().style.size;
+		if (base > 0 && model_.set_size_percent(px * 100.0 / base))
+			commit();
+	});
+	a.step_size = then([this](int dir) { step_size(dir); });
+	a.toggle = then([this](FormatBar::Toggle t) {
+		StyleChange c;
+		switch (t) {
+		case FormatBar::Toggle::Italic:
+		case FormatBar::Toggle::Underline:
+			c.field = t == FormatBar::Toggle::Italic ? StyleChange::Italic : StyleChange::Underline;
+			style(c, true);
+			break;
+		case FormatBar::Toggle::Superscript:
+		case FormatBar::Toggle::Subscript:
+			if (model_.toggle_script(t == FormatBar::Toggle::Superscript ? 1 : 2))
+				commit();
+			break;
+		}
+	});
+	// The colour dialog runs an event loop of its own: opened after this
+	// click has been handled, not from inside it.
+	a.colour = [this] { QTimer::singleShot(0, this, [this] { pick_colour(); }); };
+	a.align = then([this](int align) {
+		if (model_.set_align(align))
+			text_->set_align(align);
+	});
+	a.clear = then([this] {
+		StyleChange c;
 		c.field = StyleChange::Clear;
 		style(c, false);
-		break;
-	default: // the size readout isn't a button
-		break;
+	});
+	a.back_to_text = [this] {
+		if (editing() && preview_) {
+			preview_->window()->activateWindow();
+			preview_->setFocus(Qt::OtherFocusReason);
+		}
+	};
+	bar_ = new FormatBar(parent, std::move(a));
+}
+
+// What the bar shows: what the selection (or what's typed next) has, the
+// font's own weight and slant included (a Bold font's text shows B lit).
+void PreviewEditor::bar_state()
+{
+	if (!bar_)
+		make_bar();
+	const Document doc = text_->document();
+	const BaseStyle b = base();
+	FormatBar::State st;
+	std::string family;
+	if (model_.family(&family))
+		st.family = family.empty() ? doc.style.family : family;
+	st.weights = text_->family_weights(family, b.italic);
+	st.weight = model_.weight(base_weight(doc.style));
+	st.italic = model_.has(StyleChange::Italic, b);
+	st.underline = model_.has(StyleChange::Underline, b);
+	st.script = model_.script();
+	st.size_px = int(std::lround(doc.style.size * model_.size_percent() / 100.0)); // the dialog's units
+	st.colour = model_.colour(doc.style.colour);
+	st.align = model_.layout().align;
+	bar_->set_state(st);
+}
+
+// The frame round the text, in the preview widget's pixels.
+QRect PreviewEditor::frame_rect()
+{
+	matrix4 m;
+	item_to_canvas(item_.item(), item_.group(), &m);
+	const Mapping map = preview_mapping(preview_);
+	const Box b = text_->box();
+	double x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+	for (int i = 0; i < 4; i++) {
+		vec3 p;
+		vec3_set(&p, float(i == 1 || i == 2 ? b.w : 0), float(i >= 2 ? b.h : 0), 0.0f);
+		vec3_transform(&p, &p, &m);
+		const QPointF w = canvas_to_widget(map, p);
+		x0 = std::min(x0, w.x());
+		y0 = std::min(y0, w.y());
+		x1 = std::max(x1, w.x());
+		y1 = std::max(y1, w.y());
 	}
-	refresh_overlay();
+	const double grow = 8 / map.dpr; // the frame is drawn 8 display pixels out
+	return QRectF(QPointF(x0 - grow, y0 - grow), QPointF(x1 + grow, y1 + grow)).toAlignedRect();
+}
+
+// Above the frame's left end, or below it when there's no room above.
+void PreviewEditor::place_bar()
+{
+	if (!bar_ || !editing())
+		return;
+	const QRect f = frame_rect().translated(preview_->mapToGlobal(QPoint(0, 0)));
+	if (bar_->isVisible() && f == bar_for_)
+		return;
+	bar_for_ = f;
+	const QPoint tl = f.topLeft(), br = f.bottomRight();
+	const QRect within(preview_->mapToGlobal(QPoint(0, 0)), preview_->size());
+	bar_->place(tl.x(), tl.y(), br.y(), within);
+	bar_->log_geometry();
 }
 
 void PreviewEditor::pick_colour()
@@ -907,24 +1002,6 @@ bool PreviewEditor::mouse_event(QMouseEvent *event)
 
 	if (!editing())
 		return false;
-
-	// The format bar, where it was last drawn. (A quick second click on a
-	// button is a double-click: it's a click.)
-	if ((type == QEvent::MouseButtonPress || type == QEvent::MouseButtonDblClick) && left) {
-		const QPointF d = pos * preview_mapping(preview_).dpr;
-		BarAction hit = BarAction::Count;
-		{
-			std::lock_guard lock(overlay_mutex_);
-			for (const BarButton &b : drawn_bar_)
-				if (b.action != BarAction::SizeReadout && b.contains(float(d.x()), float(d.y())))
-					hit = b.action;
-		}
-		if (hit != BarAction::Count) {
-			swallow_release_ = true;
-			bar_action(hit);
-			return true;
-		}
-	}
 
 	// The text box's width grip.
 	if (resizing_) {
@@ -1165,10 +1242,18 @@ bool PreviewEditor::eventFilter(QObject *obj, QEvent *event)
 		// Switching windows or opening a menu keeps the edit going; while
 		// another of OBS's windows has the keyboard, its hotkeys work.
 		const Qt::FocusReason reason = static_cast<QFocusEvent *>(event)->reason();
+		QWidget *to = QApplication::focusWidget();
+		if (bar_ && to && bar_->isAncestorOf(to))
+			return false; // into the bar's size field or weight list: still editing
 		if (reason != Qt::ActiveWindowFocusReason && reason != Qt::PopupFocusReason)
 			end_edit();
 		else if (reason == Qt::ActiveWindowFocusReason)
-			restore_hotkeys();
+			// Another of OBS's windows has the keyboard, and its hotkeys
+			// work; unless it's the bar's (typing a size).
+			QTimer::singleShot(0, this, [this] {
+				if (editing() && !(bar_ && QApplication::activeWindow() == bar_))
+					restore_hotkeys();
+			});
 		return false;
 	}
 	case QEvent::FocusIn:
@@ -1250,7 +1335,7 @@ void PreviewEditor::draw(void *param, uint32_t cx, uint32_t cy)
 void PreviewEditor::paint(uint32_t cx, uint32_t cy)
 {
 	std::lock_guard lock(overlay_mutex_);
-	painter_.paint(overlay_, cx, cy, &drawn_bar_);
+	painter_.paint(overlay_, cx, cy);
 }
 
 // The scenes the text being edited is in (and its group's, if it's in one):

@@ -36,21 +36,29 @@ is shown instead.
 
 ## Styling words
 
-Part of the text can have a style of its own: a band's name in bold, a time in another colour. While
-editing in the preview, select the words, then:
+Part of the text can have a style of its own: a band's name in another typeface or weight, a time in
+another colour, the "st" of "21st" raised. While editing in the preview, a format bar sits above the
+text, made of OBS's own controls in OBS's theme:
+
+- **Typeface** and **Weight**: any font, and any of its weights (Thin to Black, as the font has them).
+- **Size**, in the text's own pixels: type a size, or step it with its arrows (a tenth of the size a
+  step).
+- **Italic**, **Underline**, **Superscript** and **Subscript** (the font's own superscript size and
+  height), lit for what the selection has.
+- **Colour**, the whole text's **Alignment**, and **Clear formatting**, which puts the selection back
+  to the text's own style.
+
+Each has a tooltip naming its shortcut:
 
 | | |
 |---|---|
-| Ctrl+B, Ctrl+I, Ctrl+U | bold, italic, underline (on and off) |
-| Ctrl+Shift+> and < (or Ctrl+] and [) | bigger, smaller, a tenth of the text's size at a time |
-| Ctrl+Space | back to the text's own style |
+| Ctrl+B | bold on and off (a weight: bold is always bolder than the text round it, and in a text whose font is bold already, it makes the selection regular) |
+| Ctrl+I, Ctrl+U | italic, underline |
+| Ctrl+Shift+=, Ctrl+= | superscript, subscript |
+| Ctrl+Shift+> and < (or Ctrl+] and [) | bigger, smaller, a tenth of the size at a time (each part of a mixed selection from its own size) |
+| Ctrl+Space | clear formatting |
 
-or use the format bar above the text while editing: B, I, U, smaller and bigger (with the size in
-pixels between them), colour, the whole text's alignment, and Clear. The buttons light up for what the
-selection has, the font's own weight and slant included. With nothing selected, a style goes on what you
-type next. Bold is always bolder than the text around it (a SemiBold text's bold is Black); in a text
-whose font is bold already, B makes the selection regular. With a selection of mixed sizes, bigger and
-smaller step each part from its own size.
+With nothing selected, a style goes on what you type next.
 
 The properties are the style of the rest of the text: change the font there and the bold words stay
 bold, in the new font. A note in the properties says when some words have a style of their own, with
@@ -101,8 +109,8 @@ crop cut them off at it.
 ## Editing in the preview
 
 Double-click the text in the preview: the word you double-clicked is selected. Or select the text
-and press **F2**: all of it is selected, so typing replaces it. The text gets a blue frame and a tag
-naming it ("Editing “Title” · Esc to finish"), in the preview only; then:
+and press **F2**: all of it is selected, so typing replaces it. The text gets a frame in OBS's
+highlight colour and the format bar above it, in the preview only; then:
 
 | | |
 |---|---|

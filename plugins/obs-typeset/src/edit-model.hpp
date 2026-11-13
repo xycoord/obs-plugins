@@ -87,6 +87,10 @@ public:
 	// A tenth of the text's size bigger or smaller: each part of a
 	// selection from its own size, or what's typed next.
 	bool step_size(int direction);
+	bool set_size_percent(double percent); // of the text's own size
+	bool set_weight(int weight);           // 100 to 1000 (an explicit weight, in place of bold)
+	bool set_family(const std::string &family); // a typeface for the selection; empty: the text's own
+	bool toggle_script(int which);         // 1 superscript, 2 subscript: on, or off if it has it
 	// The alignment (one undo step), and the box's width (one undo step per
 	// drag of its grip: begin_box_drag() marks the start).
 	bool set_align(int align);
@@ -97,7 +101,10 @@ public:
 
 	// What the selection (or what's typed next) has, for the format bar.
 	bool has(StyleChange::Field f, const BaseStyle &base) const;
-	int size_percent() const;              // of the text's own size
+	double size_percent() const;           // of the text's own size
+	int weight(int base_weight) const;     // as drawn; 0 if mixed
+	int script() const;                    // 0 none, 1 super, 2 sub; -1 if mixed
+	bool family(std::string *out) const;   // the typeface ("": the text's own); false if mixed
 	uint32_t colour(uint32_t base) const;  // 0xAABBGGRR
 	Span style_here() const;               // the run at the selection's start, or before the caret
 
@@ -122,6 +129,7 @@ private:
 	void restore(Snapshot s);
 	void push_undo();
 	bool typing_has(StyleChange::Field f, const BaseStyle &base) const;
+	Span typing_span() const;
 };
 
 } // namespace typeset

@@ -128,6 +128,62 @@ int main()
 		check("undo doesn't go back past it", !m.undo());
 	}
 	{
+		// Weights: an explicit one for the selection, shown as drawn; B
+		// over it goes back to bold.
+		EditModel m;
+		m.start("light heavy", {});
+		m.select(0, 5);
+		m.set_weight(300);
+		check("a weight for the selection", m.weight(400) == 300 && m.spans().size() == 1 && m.spans()[0].weight == 300);
+		m.select(0, 11);
+		check("mixed weights show as mixed", m.weight(400) == 0);
+		m.select(6, 11);
+		m.style(field(StyleChange::Bold), true, regular);
+		check("bold on regular is drawn Bold", m.weight(400) == 700);
+		m.set_caret(5, false);
+		check("typing after a Light word is Light", m.weight(400) == 300);
+	}
+	{
+		// Superscript and subscript: on, off, and one in place of the other.
+		EditModel m;
+		m.start("21st", {});
+		m.select(2, 4);
+		m.toggle_script(1);
+		check("superscript on", m.script() == 1 && m.spans().size() == 1 && m.spans()[0].script == 1);
+		m.toggle_script(2);
+		check("subscript in its place", m.script() == 2);
+		m.toggle_script(2);
+		check("and off", m.script() == 0 && m.spans().empty());
+		m.set_caret(4, false);
+		m.toggle_script(1);
+		check("superscript for what's typed next", m.script() == 1);
+		type(m, "!");
+		check("what's typed is raised", m.spans().size() == 1 && m.spans()[0].start == 4 && m.spans()[0].script == 1);
+	}
+	{
+		// A typeface of its own for the selection; mixed shows as mixed;
+		// Clear goes back to the text's own.
+		EditModel m;
+		m.start("band name", {});
+		m.select(0, 4);
+		m.set_family("DejaVu Serif");
+		std::string f;
+		check("a typeface for the selection", m.family(&f) && f == "DejaVu Serif");
+		m.select(0, 9);
+		check("mixed typefaces show as mixed", !m.family(&f));
+		m.select(0, 4);
+		m.style(field(StyleChange::Clear), false, regular);
+		check("Clear goes back to the text's own", m.family(&f) && f.empty() && m.spans().empty());
+	}
+	{
+		// A size typed in pixels is kept to the fraction.
+		EditModel m;
+		m.start("ab", {});
+		m.select(0, 1);
+		m.set_size_percent(100.0 * 100 / 96);
+		check("100 px on 96 px text", m.spans().size() == 1 && std::fabs(m.spans()[0].size * 96 / 100 - 100) < 1e-6);
+	}
+	{
 		// The strip's alignment and box width undo with the words.
 		EditModel m;
 		m.start("ab", {}, {0, 300});

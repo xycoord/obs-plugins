@@ -1,6 +1,7 @@
 #include "edit-model.hpp"
 
 #include <algorithm>
+#include <cmath>
 
 namespace typeset {
 
@@ -210,26 +211,69 @@ bool EditModel::has(StyleChange::Field f, const BaseStyle &base) const
 	return has_selection() ? all_on(spans_, sel_from(), sel_to(), f, base.has(f)) : typing_has(f, base);
 }
 
-int EditModel::size_percent() const
+// What's typed next has: the run before the caret (or the base, at the
+// start or after a Clear), with the styles chosen for it applied, exactly as
+// typing will apply them.
+Span EditModel::typing_span() const
 {
-	if (!has_selection()) {
-		bool cleared = false;
-		int chosen = -1;
-		for (const StyleChange &c : pending_) {
-			if (c.field == StyleChange::Clear) {
-				cleared = true;
-				chosen = -1;
-			} else if (c.field == StyleChange::Size) {
-				chosen = c.value;
-			}
-		}
-		if (chosen >= 0)
-			return chosen ? chosen : 100;
-		if (cleared)
-			return 100;
+	const std::string one = "x";
+	Spans tmp;
+	if (caret_ > 0) {
+		Span here = style_at(spans_, caret_ - 1);
+		here.start = 0;
+		here.end = 1;
+		tmp.push_back(here);
 	}
-	const Span at = style_here();
-	return at.size ? at.size : 100;
+	for (const StyleChange &c : pending_)
+		apply(tmp, 0, 1, c, one);
+	return style_at(tmp, 0);
+}
+
+namespace {
+
+// A run's weight and bold as one number, for uniform(): an explicit weight,
+// or bold's state below zero.
+double weight_key(const Span &s)
+{
+	return s.weight > 0 ? double(s.weight) : -10.0 - s.bold;
+}
+
+Span from_weight_key(double k)
+{
+	Span s;
+	if (k > 0)
+		s.weight = int(k);
+	else
+		s.bold = int8_t(-10 - int(std::lround(k)));
+	return s;
+}
+
+} // namespace
+
+int EditModel::weight(int base_weight) const
+{
+	if (!has_selection())
+		return effective_weight(typing_span(), base_weight);
+	double k = 0;
+	if (!uniform(spans_, sel_from(), sel_to(), weight_key, &k))
+		return 0;
+	return effective_weight(from_weight_key(k), base_weight);
+}
+
+int EditModel::script() const
+{
+	if (!has_selection())
+		return typing_span().script;
+	double v = 0;
+	if (!uniform(spans_, sel_from(), sel_to(), [](const Span &s) { return double(s.script); }, &v))
+		return -1;
+	return int(v);
+}
+
+double EditModel::size_percent() const
+{
+	const Span at = has_selection() ? style_here() : typing_span();
+	return at.size > 0 ? at.size : 100.0;
 }
 
 uint32_t EditModel::colour(uint32_t base) const
@@ -274,12 +318,55 @@ bool EditModel::step_size(int direction)
 	c.field = StyleChange::Size;
 	if (has_selection()) {
 		c.relative = true;
-		c.value = 10 * direction;
+		c.amount = 10.0 * direction;
 	} else {
-		c.value = std::clamp(size_percent() + 10 * direction, 10, 1000);
-		if (c.value == 100)
-			c.value = 0;
+		c.amount = std::clamp(size_percent() + 10.0 * direction, 10.0, 1000.0);
+		if (std::fabs(c.amount - 100.0) < 1e-9)
+			c.amount = 0;
 	}
+	return style(c, false, {});
+}
+
+bool EditModel::set_size_percent(double percent)
+{
+	StyleChange c;
+	c.field = StyleChange::Size;
+	c.amount = std::clamp(percent, 10.0, 1000.0);
+	if (std::fabs(c.amount - 100.0) < 0.05)
+		c.amount = 0;
+	return style(c, false, {});
+}
+
+bool EditModel::set_weight(int weight)
+{
+	StyleChange c;
+	c.field = StyleChange::Weight;
+	c.value = weight;
+	return style(c, false, {});
+}
+
+bool EditModel::set_family(const std::string &family)
+{
+	StyleChange c;
+	c.field = StyleChange::Family;
+	c.family = family;
+	return style(c, false, {});
+}
+
+bool EditModel::family(std::string *out) const
+{
+	if (!has_selection()) {
+		*out = typing_span().family;
+		return true;
+	}
+	return uniform_family(spans_, sel_from(), sel_to(), out);
+}
+
+bool EditModel::toggle_script(int which)
+{
+	StyleChange c;
+	c.field = StyleChange::Script;
+	c.value = script() == which ? 0 : which;
 	return style(c, false, {});
 }
 

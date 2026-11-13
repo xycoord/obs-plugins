@@ -84,6 +84,8 @@ public:
 	size_t line_edge(size_t index, int direction) const;
 	size_t next_cursor(size_t index, int direction) const;
 	size_t backspace_from(size_t index) const; // where Backspace at index deletes back to
+	// The weights a typeface has (empty: the text's own), UI thread only.
+	std::vector<int> family_weights(const std::string &family, bool italic) const;
 	size_t cursor_at_or_before(size_t index) const; // the nearest cursor position not after index
 	std::pair<size_t, size_t> word_at(size_t index) const;
 	std::pair<size_t, size_t> paragraph_at(size_t index) const;

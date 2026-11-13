@@ -18,18 +18,29 @@
 namespace typeset {
 
 struct Span {
+	Span() = default;
+	Span(size_t start, size_t end) : start(start), end(end) {}
+
 	size_t start = 0, end = 0;
 	int8_t bold = -1, italic = -1, underline = -1; // -1: as the base; 1: on; 0: off (on a bold or italic base)
+	int weight = 0; // 100 to 1000: a weight of its own, which wins over bold; 0: as the base (or bold says)
 	bool has_colour = false;
 	uint32_t colour = 0; // 0xAABBGGRR, as OBS stores colours
-	int size = 0;        // percent of the base size; 0: as the base
+	double size = 0;     // percent of the base size; 0: as the base
+	int8_t script = 0;   // 0: on the line; 1: superscript; 2: subscript
+	std::string family;  // a typeface of its own; empty: the base's
 
 	bool same_style(const Span &o) const
 	{
-		return bold == o.bold && italic == o.italic && underline == o.underline && has_colour == o.has_colour &&
-		       (!has_colour || colour == o.colour) && size == o.size;
+		return bold == o.bold && italic == o.italic && underline == o.underline && weight == o.weight &&
+		       has_colour == o.has_colour && (!has_colour || colour == o.colour) && size == o.size &&
+		       script == o.script && family == o.family;
 	}
-	bool plain() const { return bold < 0 && italic < 0 && underline < 0 && !has_colour && size == 0; }
+	bool plain() const
+	{
+		return bold < 0 && italic < 0 && underline < 0 && weight == 0 && !has_colour && size == 0 && script == 0 &&
+		       family.empty();
+	}
 	bool operator==(const Span &o) const { return start == o.start && end == o.end && same_style(o); }
 };
 
@@ -37,11 +48,16 @@ using Spans = std::vector<Span>;
 
 // What a change sets on a range.
 struct StyleChange {
-	enum Field { Bold, Italic, Underline, Colour, Size, Clear } field = Bold;
-	int value = 0;       // bold/italic/underline: 1 on, 0 off, -1 as the base; size: percent (0: as the base)
-	bool relative = false; // size: value is a step added to each part's own size
-	uint32_t colour = 0; // Colour
+	enum Field { Bold, Italic, Underline, Colour, Size, Clear, Weight, Script, Family } field = Bold;
+	// Bold, italic, underline: 1 on, 0 off, -1 as the base. Weight: 100 to
+	// 1000, or 0 for the base (a weight replaces bold, and bold a weight).
+	// Script: 0 on the line, 1 superscript, 2 subscript.
+	int value = 0;
+	double amount = 0;     // Size: percent of the base (0: as the base), or with relative a step in percent
+	bool relative = false; // Size: amount is added to each part's own size
+	uint32_t colour = 0;   // Colour
 	bool no_colour = false;
+	std::string family;    // Family: a typeface, or empty for the base's
 };
 
 // Sorted, non-overlapping, merged, no plain runs, within the text, on UTF-8
@@ -62,6 +78,21 @@ Span style_at(const Spans &spans, size_t index);
 // Whether every byte in [from, to) has bold (or italic, underline) on: by a
 // run, or (with base_on) from the base where no run turns it off.
 bool all_on(const Spans &spans, size_t from, size_t to, StyleChange::Field field, bool base_on = false);
+
+// The weight a run is drawn at, over a base of base_weight (400 regular,
+// 700 bold): its own weight if it has one; bold always bolder than the base
+// (a SemiBold text's bold is Black); bold turned off, regular; otherwise the
+// base's.
+int effective_weight(const Span &span, int base_weight);
+
+// Whether every byte in [from, to) has the same value of something (gaps
+// count as plain text, Span{}); *out is that value. For an empty range, the
+// style before it (what's typed there next) is asked.
+bool uniform(const Spans &spans, size_t from, size_t to, double (*get)(const Span &), double *out);
+
+// The same for the typeface: *out is the family every byte has ("" for the
+// base's).
+bool uniform_family(const Spans &spans, size_t from, size_t to, std::string *out);
 
 // The runs moved to fit a text changed from outside (its properties): the
 // common start and end of the old and new texts keep their runs.

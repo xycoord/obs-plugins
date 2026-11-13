@@ -91,6 +91,17 @@ def steepest_edge(a):
     return np.abs(np.diff(a, axis=1)).max()
 
 
+def bar_button(obs, name):
+    """Where the format bar's button is on the screen, as Typeset Text last
+    logged it (TYPESET_DEBUG)."""
+    lines = [line for line in obs.log().splitlines() if "[obs-typeset] bar typeface=" in line]
+    if not lines:
+        raise AssertionError("the format bar's position wasn't logged")
+    fields = dict(f.split("=") for f in lines[-1].split("] bar ", 1)[1].split())
+    x, y = fields[name].split(",")
+    return int(x), int(y)
+
+
 def drawing_times(obs):
     """How long each drawing of a text took, in order (TYPESET_DEBUG's log)."""
     return [float(m) for m in re.findall(r"\[obs-typeset\] drew .* in ([0-9.]+) ms", obs.log())]
@@ -323,7 +334,7 @@ def test_editing(out):
         obs.type("q")
         check("q" not in obs.settings("Title")["text"], "a click outside the text finishes editing")
 
-        warnings = [line for line in obs.log().splitlines() if "[obs-typeset]" in line and "editing" not in line and "] drew " not in line]
+        warnings = [line for line in obs.log().splitlines() if "[obs-typeset]" in line and "editing" not in line and "] drew " not in line and "] bar " not in line]
         check(not warnings, "no warnings from obs-typeset", "; ".join(warnings))
 
 
@@ -433,7 +444,7 @@ def test_features(out):
         save(out, "features-studio.png", obs.screen())
         obs.key("Escape")
 
-        warnings = [line for line in obs.log().splitlines() if "[obs-typeset]" in line and "editing" not in line and "] drew " not in line]
+        warnings = [line for line in obs.log().splitlines() if "[obs-typeset]" in line and "editing" not in line and "] drew " not in line and "] bar " not in line]
         check(not warnings, "no warnings from obs-typeset", "; ".join(warnings))
 
 
@@ -484,13 +495,26 @@ def test_rich(out):
         obs.key("ctrl+space")
         check(spans() == [], "Ctrl+Space puts the selection back to the text's own style", repr(spans()))
 
-        # The format bar above the frame: its B button (the first, 28 pixels
-        # square, starting 8 pixels left of the text and 14 above it).
+        # The format bar above the frame: its italic button, and its weight
+        # list (DejaVu Sans has ExtraLight, Book and Bold: the first is
+        # ExtraLight).
         obs.key("ctrl+a")
-        left, top = to_screen(200, 200)
-        obs.click(left - 8 + 14, top - 8 - 6 - 14)
+        time.sleep(0.3)
+        obs.click(*bar_button(obs, "italic"))
         save(out, "rich-bar.png", obs.screen())
-        check(spans() == [(0, 11, True, False, 0)], "the format bar's B makes the selection bold", repr(spans()))
+        check(spans() == [(0, 11, False, True, 0)], "the format bar's italic button italicises the selection",
+              repr(spans()))
+        obs.click(*bar_button(obs, "weight"))
+        obs.key("Home", "Return")
+        weights = [s.get("weight", 0) for s in obs.settings("Title").get("spans", [])]
+        check(weights == [200], "the weight list gives the selection a weight of the font's", repr(weights))
+        # The typeface list: type a name, Return.
+        obs.click(*bar_button(obs, "typeface"))
+        obs.key("ctrl+a")
+        obs.type("DejaVu Serif")
+        obs.key("Return")
+        families = [s.get("family", "") for s in obs.settings("Title").get("spans", [])]
+        check(families == ["DejaVu Serif"], "the typeface list gives the selection a typeface", repr(families))
         obs.key("ctrl+space")
 
         # Changed from the properties, before a styled word: the style stays
@@ -502,7 +526,7 @@ def test_rich(out):
         check(spans() and spans()[0][:2] == (3, 14), "the styles follow the text when it's changed elsewhere",
               repr(spans()))
         warnings = [line for line in obs.log().splitlines() if "[obs-typeset]" in line and "editing" not in line
-                    and "] drew " not in line]
+                    and "] drew " not in line and "] bar " not in line]
         check(not warnings, "no warnings from obs-typeset", "; ".join(warnings))
 
 
@@ -546,15 +570,15 @@ def test_history(out):
         check(text() == "After all" and bool(obs.settings("Title").get("spans")),
               "and Redo puts it back, styles too", "%r" % text())
 
-        # The format bar's alignment button: at once, in the same undo step
-        # as the edit's words. (It's the eighth button: B, I and U, a gap,
-        # A-, the size, A+, a gap, the colour, then alignment.)
+        # The format bar's alignment menu: at once, in the same undo step as
+        # the edit's words.
         tw, th = size("Title")
         obs.click(*to_screen(200 + tw * 0.5, 200 + th / 2), repeat=2)
         obs.key("End")
         obs.type("!")
-        left, top = to_screen(200, 200)
-        obs.click(left - 8 + 261, top - 8 - 6 - 14)
+        time.sleep(0.3)
+        obs.click(*bar_button(obs, "align"))
+        obs.key("Down", "Down", "Return")  # Left, Centre
         obs.key("Escape")
         align = lambda: obs.settings("Title").get("align", 0)  # noqa: E731
         check(align() == 1 and text() == "After all!", "the bar's alignment button aligns the text",
@@ -589,7 +613,7 @@ def test_history(out):
         check(obs.settings("Other")["text"] == "Stays", "hiding the text being edited ends the edit at once",
               repr(obs.settings("Other")["text"]))
 
-        warnings = [line for line in obs.log().splitlines() if "[obs-typeset]" in line and "editing" not in line and "] drew " not in line]
+        warnings = [line for line in obs.log().splitlines() if "[obs-typeset]" in line and "editing" not in line and "] drew " not in line and "] bar " not in line]
         check(not warnings, "no warnings from obs-typeset", "; ".join(warnings))
 
 

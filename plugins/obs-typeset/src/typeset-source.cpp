@@ -796,6 +796,12 @@ size_t TextSource::backspace_from(size_t index) const
 	return backspace_index(layout_, std::min(index, doc_.text.size()));
 }
 
+std::vector<int> TextSource::family_weights(const std::string &family, bool italic) const
+{
+	std::lock_guard lock(layout_lock());
+	return typeset::family_weights(layout_context(), family.empty() ? doc_.style.family : family, italic);
+}
+
 size_t TextSource::cursor_at_or_before(size_t index) const
 {
 	std::lock_guard lock(layout_lock());

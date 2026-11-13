@@ -18,9 +18,12 @@ add_library(obs-typeset MODULE
 	src/preview-editor.cpp
 	src/obs-preview.cpp
 	src/edit-model.cpp
-	src/overlay.cpp)
+	src/overlay.cpp
+	src/format-bar.cpp)
 target_link_libraries(obs-typeset PRIVATE OBS::libobs OBS::obs-frontend-api Qt6::Core Qt6::Gui Qt6::Widgets
 	PkgConfig::PANGOCAIRO)
 target_compile_options(obs-typeset PRIVATE -Wall -Wextra)
+# A symbol missing from the module fails the build, not OBS at the moment it's first called.
+target_link_options(obs-typeset PRIVATE -Wl,--no-undefined)
 set_target_properties(obs-typeset PROPERTIES PREFIX "" CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON
 	CXX_VISIBILITY_PRESET hidden C_VISIBILITY_PRESET hidden)
