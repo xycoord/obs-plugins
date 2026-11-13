@@ -2,6 +2,7 @@
 
 #include <obs.h>
 #include <util/platform.h>
+#include <util/threading.h>
 
 #include <cstdlib>
 #include <exception>
@@ -26,6 +27,7 @@ Worker *worker = nullptr;
 
 void run(Worker *w)
 {
+	os_set_thread_name("typeset: draw"); // so profilers can tell it apart
 	PangoFontMap *map = pango_cairo_font_map_new();
 	PangoContext *context = create_context(map);
 
