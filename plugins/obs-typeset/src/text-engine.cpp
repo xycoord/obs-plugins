@@ -522,6 +522,7 @@ struct Renderer {
 	cairo_t *cr;
 	double x0, y0; // where the layout's origin is, in user space
 	bool snap;
+	bool blank; // nothing is drawn on the target yet
 };
 struct RendererClass {
 	PangoRendererClass parent;
@@ -550,6 +551,67 @@ static void set_part_colour(Renderer *r, PangoRenderPart part)
 	cairo_set_source_rgba(r->cr, red, green, blue, alpha);
 }
 
+// Whether any of n bytes is set, eight at a time.
+static bool any_set(const uint8_t *p, size_t n)
+{
+	uint64_t acc = 0;
+	size_t i = 0;
+	for (; i + 8 <= n; i += 8) {
+		uint64_t v;
+		memcpy(&v, p + i, 8);
+		acc |= v;
+	}
+	for (; i < n; i++)
+		acc |= p[i];
+	return acc != 0;
+}
+
+// Whether a run of glyphs can be added into the surface rather than drawn
+// over what's there, with the same pixels: into an A8 surface (the coverage
+// form, a shadow), in an opaque colour, where every pixel the glyphs reach
+// is still clear (all of them, on a blank surface). Cairo draws a run over
+// through a mask of the glyphs added together, which into A8 takes pixman's
+// slow general path; added straight in, the glyphs take a fast one (and onto
+// clear pixels, over and add agree). Cairo adds them itself only into a
+// surface it made and hasn't drawn on: the first run, of a raster drawn in
+// its own memory, and no other.
+static bool adds_alike(cairo_t *cr, const std::vector<cairo_glyph_t> &glyphs, bool blank)
+{
+	cairo_surface_t *target = cairo_get_target(cr);
+	double red, green, blue, alpha;
+	if (glyphs.empty() || cairo_get_operator(cr) != CAIRO_OPERATOR_OVER ||
+	    cairo_surface_get_type(target) != CAIRO_SURFACE_TYPE_IMAGE ||
+	    cairo_image_surface_get_format(target) != CAIRO_FORMAT_A8 ||
+	    cairo_pattern_get_rgba(cairo_get_source(cr), &red, &green, &blue, &alpha) != CAIRO_STATUS_SUCCESS ||
+	    alpha < 1.0)
+		return false;
+	if (blank)
+		return true;
+	// Where the glyphs' outlines reach (Cairo measures from the first
+	// glyph), in device pixels, and a pixel more.
+	cairo_text_extents_t e;
+	cairo_glyph_extents(cr, glyphs.data(), int(glyphs.size()), &e);
+	if (e.width <= 0 || e.height <= 0)
+		return true; // no ink
+	double x0 = HUGE_VAL, y0 = HUGE_VAL, x1 = -HUGE_VAL, y1 = -HUGE_VAL;
+	for (int corner = 0; corner < 4; corner++) {
+		double x = glyphs[0].x + e.x_bearing + (corner & 1 ? e.width : 0);
+		double y = glyphs[0].y + e.y_bearing + (corner & 2 ? e.height : 0);
+		cairo_user_to_device(cr, &x, &y);
+		x0 = std::min(x0, x), y0 = std::min(y0, y), x1 = std::max(x1, x), y1 = std::max(y1, y);
+	}
+	const int w = cairo_image_surface_get_width(target), h = cairo_image_surface_get_height(target);
+	const int left = std::max(0, int(std::floor(x0)) - 1), top = std::max(0, int(std::floor(y0)) - 1);
+	const int right = std::min(w, int(std::ceil(x1)) + 1), bottom = std::min(h, int(std::ceil(y1)) + 1);
+	cairo_surface_flush(target);
+	const uint8_t *data = cairo_image_surface_get_data(target);
+	const int stride = cairo_image_surface_get_stride(target);
+	for (int row = top; row < bottom; row++)
+		if (right > left && any_set(data + size_t(row) * size_t(stride) + left, size_t(right - left)))
+			return false;
+	return true;
+}
+
 static void render_glyphs(PangoRenderer *renderer, PangoFont *font, PangoGlyphString *glyphs, int x, int y)
 {
 	Renderer *r = reinterpret_cast<Renderer *>(renderer);
@@ -563,6 +625,7 @@ static void render_glyphs(PangoRenderer *renderer, PangoFont *font, PangoGlyphSt
 		PangoGlyphString string{n, glyph, nullptr, 0};
 		cairo_move_to(cr, gx, gy);
 		pango_cairo_show_glyph_string(cr, font, &string);
+		r->blank = false;
 	};
 	cairo_scaled_font_t *scaled = font && PANGO_IS_CAIRO_FONT(font)
 					      ? pango_cairo_font_get_scaled_font(PANGO_CAIRO_FONT(font))
@@ -574,8 +637,10 @@ static void render_glyphs(PangoRenderer *renderer, PangoFont *font, PangoGlyphSt
 	}
 	cairo_set_scaled_font(cr, scaled);
 	// A colour font's glyphs Cairo draws one at a time, each at a whole
-	// pixel and with no mask: they're never cut, and are left where they are.
-	const bool snap = r->snap && !colour_font(font);
+	// pixel and with no mask: they're never cut, and are left where they
+	// are, and drawn as they always were.
+	const bool colour = colour_font(font);
+	const bool snap = r->snap && !colour;
 
 	std::vector<cairo_glyph_t> out;
 	out.reserve(size_t(glyphs->num_glyphs));
@@ -603,7 +668,10 @@ static void render_glyphs(PangoRenderer *renderer, PangoFont *font, PangoGlyphSt
 		}
 		out.push_back({gi->glyph, gx, gy});
 	}
+	if (!colour && adds_alike(cr, out, r->blank))
+		cairo_set_operator(cr, CAIRO_OPERATOR_ADD);
 	cairo_show_glyphs(cr, out.data(), int(out.size()));
+	r->blank = r->blank && out.empty();
 	cairo_restore(cr);
 }
 
@@ -616,6 +684,7 @@ static void render_rectangle(PangoRenderer *renderer, PangoRenderPart part, int 
 			double(width) / PANGO_SCALE, double(height) / PANGO_SCALE);
 	cairo_fill(r->cr);
 	cairo_restore(r->cr);
+	r->blank = false;
 }
 
 // In device space, from the layout's origin (Pango draws decorations this
@@ -638,6 +707,7 @@ static void render_trapezoid(PangoRenderer *renderer, PangoRenderPart part, doub
 	cairo_close_path(cr);
 	cairo_fill(cr);
 	cairo_restore(cr);
+	r->blank = false;
 }
 
 // (Shapes and squiggly error underlines, which Pango's renderer also draws,
@@ -660,11 +730,12 @@ static GType renderer_type()
 	return GType(type);
 }
 
-void show_layout(cairo_t *cr, PangoLayout *layout)
+void show_layout(cairo_t *cr, PangoLayout *layout, bool blank)
 {
 	Renderer *r = static_cast<Renderer *>(g_object_new(renderer_type(), nullptr));
 	r->cr = cr;
 	r->snap = quarter_pixel_glyphs();
+	r->blank = blank;
 	// At the current point, as pango_cairo_show_layout() draws, which it
 	// leaves where it was.
 	const bool had_point = cairo_has_current_point(cr);
@@ -678,7 +749,8 @@ void show_layout(cairo_t *cr, PangoLayout *layout)
 }
 
 // The text with its outline, in the current source; for the shadow, its
-// silhouette in one colour, grown by the outline and by spread.
+// silhouette in one colour, grown by the outline and by spread, drawn into
+// a new, clear surface.
 static void draw_text(cairo_t *cr, PangoLayout *layout, const Style &s, const Frame &f, bool silhouette,
 		      double spread = 0)
 {
@@ -695,12 +767,15 @@ static void draw_text(cairo_t *cr, PangoLayout *layout, const Style &s, const Fr
 		cairo_stroke(cr);
 	};
 	const double outline = s.outline && s.outline_width > 0 ? s.outline_width : 0.0;
+	bool blank = silhouette;
 	if (silhouette) {
 		// The shadow's shape is the outlined text's, grown by its spread
 		// (so it holds up thin letters over bright backgrounds): one
 		// stroke covers both.
-		if (outline + spread > 0)
+		if (outline + spread > 0) {
 			stroke(outline + spread);
+			blank = false;
+		}
 	} else if (outline > 0) {
 		// Behind the fill, so it grows the letters outwards and never eats
 		// into them.
@@ -709,7 +784,7 @@ static void draw_text(cairo_t *cr, PangoLayout *layout, const Style &s, const Fr
 	}
 	if (!silhouette)
 		set_colour(cr, s.colour);
-	show_layout(cr, layout);
+	show_layout(cr, layout, blank);
 	cairo_restore(cr);
 }
 
@@ -1114,19 +1189,6 @@ void find_parts(Raster &r)
 	const int tx = (r.width + tile - 1) / tile, ty = (r.height + tile - 1) / tile;
 	std::vector<uint8_t> inked(size_t(tx) * size_t(ty), 0);
 	const size_t bytes = size_t(r.bytes);
-	// Whether any of n bytes is set, eight at a time.
-	auto any = [](const uint8_t *p, size_t n) {
-		uint64_t acc = 0;
-		size_t i = 0;
-		for (; i + 8 <= n; i += 8) {
-			uint64_t v;
-			memcpy(&v, p + i, 8);
-			acc |= v;
-		}
-		for (; i < n; i++)
-			acc |= p[i];
-		return acc != 0;
-	};
 	for (int y = 0; y < r.height; y++) {
 		const uint8_t *row = &r.pixels[size_t(y) * size_t(r.width) * bytes];
 		const int t0 = std::max(0, (y - 1) / tile), t1 = std::min(ty - 1, (y + 1) / tile);
@@ -1138,13 +1200,13 @@ void find_parts(Raster &r)
 			const int x0 = u * tile, x1 = std::min(r.width, x0 + tile);
 			const uint8_t *chunk = row + size_t(x0) * bytes;
 			const size_t n = size_t(x1 - x0) * bytes;
-			if (!any(chunk, n))
+			if (!any_set(chunk, n))
 				continue;
 			mark(u);
 			// Ink at a tile's edge reaches the tile beside it.
-			if (u > 0 && any(chunk, bytes))
+			if (u > 0 && any_set(chunk, bytes))
 				mark(u - 1);
-			if (u + 1 < tx && any(chunk + n - bytes, bytes))
+			if (u + 1 < tx && any_set(chunk + n - bytes, bytes))
 				mark(u + 1);
 		}
 	}

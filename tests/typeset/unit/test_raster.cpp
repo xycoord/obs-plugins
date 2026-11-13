@@ -260,6 +260,27 @@ int main()
 		Document seethrough = shadowed;
 		seethrough.style.colour = 0x80FFFFFF;
 		compare(seethrough, 1.0, "coverage form: see-through text over its shadow, as in colour");
+		// Runs that overlap one another (lines squeezed together, an italic
+		// word leaning into the next, an underline through descenders): the
+		// coverage form adds a run straight in only where it's drawn on clear
+		// pixels, so where one lands on another it's drawn over, as in colour.
+		Document overlapping = text_doc("Wolf Type jumpy fifty\nTight lines, quickly");
+		overlapping.style.colour = 0xFF40C0F0;
+		overlapping.style.line_spacing = 0.55;
+		Span leaning(5, 9);
+		leaning.italic = 1;
+		Span under(10, 15);
+		under.underline = 1;
+		Span heavy(16, 21);
+		heavy.bold = 1;
+		overlapping.spans = {leaning, under, heavy};
+		compare(overlapping, 1.0, "coverage form: overlapping runs and lines, as in colour");
+		compare(overlapping, 2.3, "and scaled");
+		overlapping.style.shadow = true;
+		overlapping.style.shadow_colour = 0xBF102030;
+		overlapping.style.shadow_blur = 0;
+		overlapping.style.shadow_x = 1;
+		compare(overlapping, 1.0, "and with a sharp shadow");
 
 
 		// Letters' antialiased edges are whole in both forms: each pixel

@@ -154,8 +154,10 @@ constexpr double max_raster_pixels = 32.0 * 1024 * 1024;
 
 // Draws a layout as pango_cairo_show_layout() does (at the current point,
 // in the current source), but with every letter's antialiased edges whole,
-// which Cairo can otherwise cut a part-covered row or column from.
-void show_layout(cairo_t *cr, PangoLayout *layout);
+// which Cairo can otherwise cut a part-covered row or column from. blank:
+// nothing is drawn on cr's surface yet (it's clear), which into an A8
+// surface saves looking.
+void show_layout(cairo_t *cr, PangoLayout *layout, bool blank = false);
 
 // Draws the document at the given scale. A raster comes out empty when
 // there's no ink, and failed when memory couldn't be had for it.
