@@ -203,8 +203,13 @@ void item_to_canvas(obs_sceneitem_t *item, obs_sceneitem_t *group, matrix4 *out)
 	matrix4_translate3f(out, out, -float(crop.left), -float(crop.top), 0.0f);
 	matrix4_mul(out, out, &draw);
 	if (group) {
-		matrix4 g;
+		obs_sceneitem_crop gcrop;
+		obs_sceneitem_get_crop(group, &gcrop);
+		matrix4 g, shift;
 		obs_sceneitem_get_draw_transform(group, &g);
+		matrix4_identity(&shift);
+		matrix4_translate3f(&shift, &shift, -float(gcrop.left), -float(gcrop.top), 0.0f);
+		matrix4_mul(out, out, &shift);
 		matrix4_mul(out, out, &g);
 	}
 }
@@ -375,7 +380,7 @@ struct Quad {
 
 // The format bar above the text being edited: bold, italic, underline,
 // smaller, bigger, colour, clear. In display pixels.
-enum class BarAction { Bold, Italic, Underline, Smaller, SizeReadout, Bigger, Colour, Clear };
+enum class BarAction { Bold, Italic, Underline, Smaller, SizeReadout, Bigger, Colour, Align, Clear };
 struct BarButton {
 	BarAction action;
 	float x = 0, y = 0, w = 0, h = 0;
@@ -400,8 +405,10 @@ const char *bar_glyph(BarAction a)
 		return "A";
 	case BarAction::SizeReadout:
 		return "";
+	case BarAction::Align:
+		return "";
 	case BarAction::Clear:
-		return "\u00d7";
+		return "Clear";
 	}
 	return "";
 }
@@ -474,11 +481,12 @@ private:
 		std::vector<Target> placeholders; // empty texts
 	} overlay_;
 	Label editing_label_, placeholder_label_; // graphics thread only
-	Label bar_labels_[8];
+	Label bar_labels_[9];
 	Label size_label_;
 	std::string size_label_text_;
 	std::vector<BarButton> bar_; // as last drawn, for clicks (display pixels)
 	void bar_action(BarAction action);
+	void pick_colour();
 	std::string editing_label_text_;
 	// Dragging the text box's width grip.
 	bool resizing_ = false;
@@ -519,6 +527,9 @@ private:
 	void restore(Snapshot s);
 	void commit();
 	void style(StyleChange change, bool toggle);
+	bool typing_has(StyleChange::Field f) const;
+	int current_size() const;
+	void step_size(int direction);
 
 	Hit item_at(QPointF pos);
 	void select_only(obs_sceneitem_t *item);
@@ -565,6 +576,17 @@ PreviewEditor::PreviewEditor(QWidget *preview) : preview_(preview)
 		else
 			restore_hotkeys(); // in the background, hotkeys work as OBS has them
 	});
+	// The preview's scaling changed from its menu: editing stops if it's no
+	// longer Scale to Window.
+	if (QWidget *main = preview->window()) {
+		for (const char *name : {"actionScaleWindow", "actionScaleCanvas", "actionScaleOutput"}) {
+			if (QAction *a = main->findChild<QAction *>(name))
+				QObject::connect(a, &QAction::triggered, this, [this] {
+					if (editing() && !scaled_to_window(preview_))
+						end_edit();
+				});
+		}
+	}
 	timer_.setInterval(500);
 	QObject::connect(&timer_, &QTimer::timeout, this, [this] { on_timer(); });
 	timer_.start();
@@ -617,7 +639,7 @@ void PreviewEditor::on_timer()
 		attach_display();
 	}
 	if (editing()) {
-		if (!still_editable() || !scaled_to_window(preview_)) {
+		if (!still_editable()) {
 			end_edit();
 		} else if (!(text_->document() == shown_)) {
 			// Changed from its properties: draw the caret for it.
@@ -684,7 +706,18 @@ vec3 PreviewEditor::to_source(QPointF widget_pos, bool *inside)
 	const vec2 canvas = widget_to_canvas(preview_mapping(preview_), widget_pos);
 	vec3 local;
 	vec3_zero(&local);
-	const bool in = point_in_item(item_, group_, canvas, &local);
+	bool in = point_in_item(item_, group_, canvas, &local);
+	if (!in) {
+		// A margin round the text counts as the text, so a click just past a
+		// line's end or below the last line places the caret there.
+		matrix4 m;
+		item_to_canvas(item_, group_, &m);
+		const Mapping map = preview_mapping(preview_);
+		const double scale = std::max(1e-6, double(std::hypot(m.x.x, m.x.y)));
+		const double slack = 12 * map.dpr / map.scale / scale;
+		const Box b = text_->box();
+		in = local.x >= -slack && local.y >= -slack && local.x <= b.w + slack && local.y <= b.h + slack;
+	}
 	if (inside)
 		*inside = in;
 	return local;
@@ -856,21 +889,45 @@ void PreviewEditor::restore(Snapshot s)
 	commit();
 }
 
+// Whether what's typed next will have bold (italic, underline): as chosen
+// for it, or else as the character before the caret.
+bool PreviewEditor::typing_has(StyleChange::Field f) const
+{
+	for (const StyleChange &c : pending_)
+		if (c.field == f)
+			return c.value > 0;
+	return caret_ > 0 && all_on(spans_, caret_ - 1, caret_, f);
+}
+
+// The size (percent of the text's own) the selection, or what's typed next, has.
+int PreviewEditor::current_size() const
+{
+	if (!has_selection())
+		for (const StyleChange &c : pending_)
+			if (c.field == StyleChange::Size)
+				return c.value ? c.value : 100;
+	const Span at = style_at(spans_, has_selection() ? sel_from() : caret_ > 0 ? caret_ - 1 : 0);
+	return at.size ? at.size : 100;
+}
+
+// A tenth of the text's size bigger or smaller.
+void PreviewEditor::step_size(int direction)
+{
+	StyleChange c;
+	c.field = StyleChange::Size;
+	c.value = std::clamp(current_size() + 10 * direction, 10, 1000);
+	if (c.value == 100)
+		c.value = 0;
+	style(c, false);
+}
+
 // Bold, italic and so on: on the selection, or, with nothing selected, on
 // what's typed next. Toggled ones go off if the whole selection has them.
 void PreviewEditor::style(StyleChange change, bool toggle)
 {
 	if (!has_selection()) {
-		if (toggle) {
-			auto same = std::find_if(pending_.begin(), pending_.end(),
-						 [&](const StyleChange &c) { return c.field == change.field; });
-			const bool on_here = all_on(spans_, caret_ > 0 ? caret_ - 1 : 0, caret_, change.field);
-			if (same != pending_.end()) {
-				pending_.erase(same);
-				return;
-			}
-			change.value = on_here ? -1 : 1;
-		}
+		if (toggle) // the opposite of what's typed next now
+			change.value = typing_has(change.field) ? -1 : 1;
 		// The latest of each kind wins; clearing starts afresh.
 		if (change.field == StyleChange::Clear)
 			pending_.clear();
@@ -966,18 +1023,8 @@ bool PreviewEditor::key_press(QKeyEvent *event)
 	} else if (word && (event->key() == Qt::Key_Greater || event->key() == Qt::Key_Less ||
 			    event->key() == Qt::Key_BracketRight || event->key() == Qt::Key_BracketLeft)) {
 		// Bigger or smaller: the selection (or what's typed next), a tenth
-		// of the base size at a time.
-		{
-			const bool up = event->key() == Qt::Key_Greater || event->key() == Qt::Key_BracketRight;
-			const Span at = style_at(spans_, has_selection() ? sel_from() : caret_ > 0 ? caret_ - 1 : 0);
-			StyleChange c;
-			c.field = StyleChange::Size;
-			const int now = at.size ? at.size : 100;
-			c.value = std::clamp(now + (up ? 10 : -10), 10, 1000);
-			if (c.value == 100)
-				c.value = 0;
-			style(c, false);
-		}
+		// of the text's size at a time.
+		step_size(event->key() == Qt::Key_Greater || event->key() == Qt::Key_BracketRight ? 1 : -1);
 	} else if (word && event->key() == Qt::Key_Space) {
 		// Back to the text's own style (the selection, or what's typed next).
 		StyleChange c;
@@ -1111,17 +1158,40 @@ void PreviewEditor::bar_action(BarAction action)
 		style(c, true);
 		break;
 	case BarAction::Smaller:
-	case BarAction::Bigger: {
-		const Span at = style_at(spans_, has_selection() ? sel_from() : caret_ > 0 ? caret_ - 1 : 0);
-		c.field = StyleChange::Size;
-		const int now = at.size ? at.size : 100;
-		c.value = std::clamp(now + (action == BarAction::Bigger ? 10 : -10), 10, 1000);
-		if (c.value == 100)
-			c.value = 0;
+	case BarAction::Bigger:
+		step_size(action == BarAction::Bigger ? 1 : -1);
+		break;
+	case BarAction::Colour:
+		// The colour dialog runs an event loop of its own: opened after
+		// this click has been handled, not from inside it.
+		QTimer::singleShot(0, this, [this] { pick_colour(); });
+		break;
+	case BarAction::Align: {
+		// The whole text's alignment, round left, centre, right.
+		const int now = int(text_->document().style.align);
+		obs_data_t *settings = obs_data_create();
+		obs_data_set_int(settings, "align", (now + 1) % 3);
+		obs_source_update(source_, settings);
+		obs_data_release(settings);
+		break;
+	}
+	case BarAction::SizeReadout:
+		break;
+	case BarAction::Clear:
+		c.field = StyleChange::Clear;
 		style(c, false);
 		break;
 	}
-	case BarAction::Colour: {
+	refresh_overlay();
+}
+
+void PreviewEditor::pick_colour()
+{
+	if (!editing())
+		return;
+	sync_text();
+	StyleChange c;
+	{
 		const Span at = style_at(spans_, has_selection() ? sel_from() : caret_ > 0 ? caret_ - 1 : 0);
 		const uint32_t now = at.has_colour ? at.colour : text_->document().style.colour;
 		const QColor initial(now & 0xFF, (now >> 8) & 0xFF, (now >> 16) & 0xFF, (now >> 24) & 0xFF);
@@ -1131,19 +1201,11 @@ void PreviewEditor::bar_action(BarAction action)
 		if (preview_)
 			preview_->setFocus(Qt::OtherFocusReason);
 		if (!editing() || !picked.isValid())
-			break;
+			return;
 		c.field = StyleChange::Colour;
 		c.colour = uint32_t(picked.red()) | uint32_t(picked.green()) << 8 | uint32_t(picked.blue()) << 16 |
 			   uint32_t(picked.alpha()) << 24;
 		style(c, false);
-		break;
-	}
-	case BarAction::SizeReadout:
-		break;
-	case BarAction::Clear:
-		c.field = StyleChange::Clear;
-		style(c, false);
-		break;
 	}
 	refresh_overlay();
 }
@@ -1664,29 +1726,41 @@ void PreviewEditor::refresh_overlay()
 			y = 2;
 		float x = std::clamp(left - margin, 2.0f, std::max(2.0f, view_w - strip_w));
 		auto on = [&](StyleChange::Field f) {
-			for (const StyleChange &c : pending_)
-				if (c.field == f)
-					return c.value > 0;
-			return has_selection() ? all_on(spans_, sel_from(), sel_to(), f)
-					       : caret_ > 0 && all_on(spans_, caret_ - 1, caret_, f);
+			return has_selection() ? all_on(spans_, sel_from(), sel_to(), f) : typing_has(f);
 		};
 		const Span here = style_at(spans_, has_selection() ? sel_from() : caret_ > 0 ? caret_ - 1 : 0);
-		const BarAction actions[] = {BarAction::Bold,   BarAction::Italic,      BarAction::Underline,
+		// The buttons light up for what the text has, its own font's weight
+		// and slant included (a Bold font's text shows B lit).
+		PangoFontDescription *base = font_description(doc.style);
+		const bool base_bold = pango_font_description_get_weight(base) >= PANGO_WEIGHT_SEMIBOLD;
+		const bool base_italic = pango_font_description_get_style(base) != PANGO_STYLE_NORMAL;
+		pango_font_description_free(base);
+		const bool base_underline = doc.style.font_flags & OBS_FONT_UNDERLINE;
+		const BarAction actions[] = {BarAction::Bold,   BarAction::Italic, BarAction::Underline,
 					     BarAction::Smaller, BarAction::SizeReadout, BarAction::Bigger,
-					     BarAction::Colour,  BarAction::Clear};
+					     BarAction::Colour,  BarAction::Align,  BarAction::Clear};
 		for (BarAction a : actions) {
-			BarButton btn{a, x, y, a == BarAction::SizeReadout ? size * 1.6f : size, size, false, 0, {}};
-			btn.active = (a == BarAction::Bold && on(StyleChange::Bold)) ||
-				     (a == BarAction::Italic && on(StyleChange::Italic)) ||
-				     (a == BarAction::Underline && on(StyleChange::Underline));
-			if (a == BarAction::Colour)
+			const float w = a == BarAction::SizeReadout ? size * 1.9f : a == BarAction::Clear ? size * 1.9f : size;
+			BarButton btn{a, x, y, w, size, false, 0, {}};
+			btn.active = (a == BarAction::Bold && (base_bold || on(StyleChange::Bold))) ||
+				     (a == BarAction::Italic && (base_italic || on(StyleChange::Italic))) ||
+				     (a == BarAction::Underline && (base_underline || on(StyleChange::Underline)));
+			if (a == BarAction::Colour) {
 				btn.swatch = here.has_colour ? here.colour : doc.style.colour;
-			if (a == BarAction::SizeReadout)
-				btn.text = std::to_string(here.size ? here.size : 100) + "%";
+				if (!has_selection())
+					for (const StyleChange &c : pending_)
+						if (c.field == StyleChange::Colour && !c.no_colour)
+							btn.swatch = c.colour;
+			}
+			if (a == BarAction::SizeReadout) // in the dialog's units: the text's own pixels
+				btn.text = std::to_string(int(std::lround(doc.style.size * current_size() / 100.0))) + " px";
+			if (a == BarAction::Align)
+				btn.text = std::to_string(int(doc.style.align));
 			o.bar.push_back(btn);
-			x += btn.w + gap + (a == BarAction::Underline || a == BarAction::Bigger ? 2 * gap : 0);
+			x += btn.w + gap +
+			     (a == BarAction::Underline || a == BarAction::Bigger || a == BarAction::Align ? 3 * gap : 0);
 		}
-		o.tag_x = x + 4 * px;
+		o.tag_x = x + 10 * px;
 		o.strip_y = y;
 		o.strip_h = size;
 	}
@@ -1934,9 +2008,27 @@ void PreviewEditor::draw_overlay(uint32_t cx, uint32_t cy)
 					size_label_.draw(b.x + (b.w - size_label_.width) / 2, b.y + (b.h - size_label_.height) / 2);
 					continue;
 				}
+				if (b.action == BarAction::Align) {
+					// Three lines, aligned as the text is.
+					const int align = b.text.empty() ? 0 : b.text[0] - '0';
+					const float widths[] = {16 * px, 10 * px, 13 * px};
+					std::vector<Quad> lines;
+					for (int i = 0; i < 3; i++) {
+						const float lw = widths[i], ly = b.y + 9 * px + i * 5 * px;
+						const float lx = align == 1   ? b.x + (b.w - lw) / 2
+								 : align == 2 ? b.x + b.w - 6 * px - lw
+									      : b.x + 6 * px;
+						vec2 a0, a1;
+						vec2_set(&a0, lx, ly);
+						vec2_set(&a1, lx + lw, ly);
+						lines.push_back(line_quad(a0, a1, 2 * px));
+					}
+					fill(lines, 0xFFFFFFFF);
+					continue;
+				}
 				Label &l = bar_labels_[int(b.action)];
 				if (!l.texture)
-					l.make(bar_glyph(b.action), 15 * px, 0xFFFFFFFF, 0);
+					l.make(bar_glyph(b.action), b.action == BarAction::Clear ? 12 * px : 15 * px, 0xFFFFFFFF, 0);
 				const float lift = b.action == BarAction::Colour ? 3 * px : 0;
 				l.draw(b.x + (b.w - l.width) / 2, b.y + (b.h - l.height) / 2 - lift);
 			}

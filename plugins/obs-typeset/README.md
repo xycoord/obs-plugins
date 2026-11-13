@@ -15,7 +15,8 @@ Sources, then **+**, then **Typeset Text**. The simple job is the top of its pro
 the font (any weight or style the font has), its size, colour and alignment. New text has a soft
 shadow, so it reads over projector visuals and video from the start.
 
-Everything else is in groups that show their settings only when ticked:
+Everything else is in groups you tick to turn on; a group's settings show only while it's ticked
+(unticked, it says in a line what it does):
 
 | Group | For |
 |---|---|
@@ -23,7 +24,7 @@ Everything else is in groups that show their settings only when ticked:
 | **Outline** | Colour and width. Drawn outside the letters, so it never thins them. |
 | **Shadow** | Colour, opacity, offset and blur. With no offset, it's a glow. On by default. |
 | **Background** | A plate behind the text: colour, opacity, padding, rounded corners. For lower thirds and messages over busy visuals. |
-| **Adjust spacing and case** | Line and letter spacing; UPPERCASE, lowercase or capitals at the start of each word (the text stays as you typed it); even-width numbers, so set times line up. |
+| **Spacing and case** | Line and letter spacing; UPPERCASE, lowercase or capitals at the start of each word (the text stays as you typed it); even-width numbers, so set times line up. |
 
 In the **Style** group, **Copy style** and **Paste style** copy everything but the words from one
 Typeset Text to another; **Use this style for new text** makes new ones start with it.
@@ -44,8 +45,9 @@ editing in the preview, select the words, then:
 | Ctrl+Shift+> and < (or Ctrl+] and [) | bigger, smaller, a tenth of the text's size at a time |
 | Ctrl+Space | back to the text's own style |
 
-or use the format bar above the text (the same, and a colour). With nothing selected, a style goes on
-what you type next. Bold is always bolder than the text around it (a SemiBold text's bold is Black).
+or use the format bar above the text while editing: B, I, U, smaller and bigger (with the size in
+pixels between them), colour, the whole text's alignment, and Clear. The buttons light up for what the
+selection has. With nothing selected, a style goes on what you type next. Bold is always bolder than the text around it (a SemiBold text's bold is Black).
 
 The properties are the style of the rest of the text: change the font there and the bold words stay
 bold, in the new font. A note in the properties says when some words have a style of their own, with

@@ -337,7 +337,10 @@ void TextSource::update(obs_data_t *settings)
 			follow_text(doc.spans, doc_.text, doc.text);
 			follow = true;
 		} else if (stale) {
+			// Still the old runs in the settings: keep the current ones,
+			// and make sure they're written back.
 			doc.spans = doc_.spans;
+			follow = true;
 		} else {
 			superseded_.clear();
 		}
@@ -434,6 +437,11 @@ void TextSource::tick()
 	}
 	for (int i = 0; i < 2; i++) {
 		View &v = views_[i];
+		if (v.retry_ticks > 0) {
+			v.retry_ticks--;
+			v.want = false;
+			continue;
+		}
 		// What the last frame drew the source at (the largest, if it was
 		// drawn more than once), against what was last asked for.
 		if (v.want) {
@@ -469,6 +477,12 @@ void TextSource::upload_result(View &view)
 	view.texture_seq = seq;
 
 	Raster &r = *result;
+	if (r.failed) {
+		// Keep what's shown; ask again in a few seconds.
+		view.requested = false;
+		view.retry_ticks = 180;
+		return;
+	}
 	if (r.width <= 0 || r.height <= 0 || r.pixels.empty()) {
 		if (view.texture)
 			gs_texture_destroy(view.texture);
@@ -545,7 +559,7 @@ void TextSource::render()
 		view.wanted.sx = std::max(view.wanted.sx, want.sx);
 		view.wanted.sy = std::max(view.wanted.sy, want.sy);
 	}
-	if (!view.requested)
+	if (!view.requested && view.retry_ticks == 0)
 		request(view, want); // the first time: don't wait a frame
 
 	draw(view);
@@ -608,25 +622,6 @@ Document TextSource::document() const
 	return doc_;
 }
 
-void TextSource::set_text(const std::string &text)
-{
-	std::lock_guard content(content_mutex_);
-	// OBS applies an update to a video source on its next frame; an edit
-	// has to be laid out now, for the caret. The update that follows finds
-	// the text already as it is.
-	Document doc;
-	{
-		std::lock_guard lock(layout_lock());
-		doc = doc_;
-	}
-	doc.text = text;
-	apply(std::move(doc));
-
-	obs_data_t *settings = obs_data_create();
-	obs_data_set_string(settings, "text", text.c_str());
-	obs_source_update(source_, settings);
-	obs_data_release(settings);
-}
 
 void TextSource::set_box_width(int width)
 {
@@ -636,11 +631,12 @@ void TextSource::set_box_width(int width)
 		std::lock_guard lock(layout_lock());
 		doc = doc_;
 	}
-	doc.style.box_width = std::max(1, width);
+	width = std::clamp(width, 1, 16384);
+	doc.style.box_width = width;
 	apply(std::move(doc));
 
 	obs_data_t *settings = obs_data_create();
-	obs_data_set_int(settings, "box_width", std::max(1, width));
+	obs_data_set_int(settings, "box_width", width);
 	obs_source_update(source_, settings);
 	obs_data_release(settings);
 }
@@ -1098,40 +1094,66 @@ void fill_typography(obs_properties_t *g, obs_data_t *)
 }
 
 struct Group {
-	const char *name, *label, *help;
+	const char *name, *label, *help, *about;
 	void (*fill)(obs_properties_t *, obs_data_t *);
 };
-// In the order the jobs use them most.
+// In the order a venue's jobs use them most.
 const Group groups[] = {
-	{"plate", "Plate", nullptr, fill_plate},
-	{"outline", "Outline", nullptr, fill_outline},
-	{"shadow", "Shadow", "Shadow.Help", fill_shadow},
-	{"box", "Box", "Box.Help", fill_box},
-	{"typography", "Typography", nullptr, fill_typography},
+	{"plate", "Plate", nullptr, "Plate.About", fill_plate},
+	{"shadow", "Shadow", "Shadow.Help", "Shadow.About", fill_shadow},
+	{"outline", "Outline", nullptr, "Outline.About", fill_outline},
+	{"box", "Box", "Box.Help", "Box.About", fill_box},
+	{"typography", "Typography", nullptr, "Typography.About", fill_typography},
 };
 
-// A feature is a checkbox; its settings show beneath it only while it's
-// ticked, so a feature not in use is one line in the dialog.
-bool feature_toggled(obs_properties_t *props, obs_property_t *box, obs_data_t *settings)
+// Each feature is a checkable group (OBS's own: the switch is the box's
+// title). Off, it holds one line saying what it does; on, its settings.
+// (The council compared this with checkbox rows that reveal a box: this
+// read clearest, with on/off and its settings plainly one thing.) OBS calls
+// this when the dialog opens, before building it, and when a group is
+// ticked, then rebuilds it.
+bool group_toggled(obs_properties_t *props, obs_property_t *group, obs_data_t *settings)
 {
-	const char *name = obs_property_name(box);
+	const char *name = obs_property_name(group);
 	const bool on = obs_data_get_bool(settings, name);
-	obs_property_t *group = obs_properties_get(props, (std::string(name) + "_settings").c_str());
-	// A box starts as wide as the text is now, so ticking it changes
-	// nothing until its width is changed.
-	if (on && strcmp(name, "box") == 0 && obs_data_get_int(settings, "box_width") <= 0) {
-		auto *text = static_cast<TextSource *>(obs_properties_get_param(props));
-		if (text) {
-			const Document doc = text->document();
-			const double pad = doc.style.plate ? doc.style.plate_padding : 0;
-			obs_data_set_int(settings, "box_width", std::max(1LL, (long long)std::lround(text->width() - 2 * pad)));
+	obs_properties_t *content = obs_property_group_content(group);
+	const std::string about = std::string(name) + "_about";
+	const bool showing_about = obs_properties_get(content, about.c_str()) != nullptr;
+	if (obs_properties_first(content) && on != showing_about)
+		return false; // already as it should be
+
+	std::vector<std::string> names;
+	for (obs_property_t *p = obs_properties_first(content); p; obs_property_next(&p))
+		names.push_back(obs_property_name(p));
+	for (const std::string &n : names)
+		obs_properties_remove_by_name(content, n.c_str());
+
+	const Group *g = nullptr;
+	for (const Group &each : groups)
+		if (strcmp(each.name, name) == 0)
+			g = &each;
+	if (!g)
+		return true;
+	if (on) {
+		// A box starts as wide as the text is now, so ticking it changes
+		// nothing until its width is changed.
+		if (strcmp(name, "box") == 0 && obs_data_get_int(settings, "box_width") <= 0) {
+			auto *text = static_cast<TextSource *>(obs_properties_get_param(props));
+			if (text) {
+				const Document doc = text->document();
+				const double pad = doc.style.plate ? doc.style.plate_padding : 0;
+				obs_data_set_int(settings, "box_width",
+						 std::max(1LL, (long long)std::lround(text->width() - 2 * pad)));
+			}
 		}
+		g->fill(content, settings);
+	} else {
+		obs_property_t *p = obs_properties_add_text(content, about.c_str(), obs_module_text(g->about), OBS_TEXT_INFO);
+		obs_property_text_set_info_word_wrap(p, true);
 	}
-	if (!group || obs_property_visible(group) == on)
-		return false;
-	obs_property_set_visible(group, on);
 	return true;
 }
+
 
 // The font picker holds the size, but the size is what's changed most, so it
 // has a field of its own too; the two are kept the same.
@@ -1227,7 +1249,7 @@ bool paste_style(obs_properties_t *props, obs_property_t *, void *data)
 	obs_data_t *settings = obs_source_get_settings(text->source());
 	for (const Group &g : groups)
 		if (obs_property_t *p = obs_properties_get(props, g.name))
-			feature_toggled(props, p, settings);
+			group_toggled(props, p, settings);
 	obs_data_release(settings);
 	return true;
 }
@@ -1265,7 +1287,7 @@ obs_properties_t *get_properties(void *data)
 	obs_property_text_set_info_word_wrap(p, true);
 	p = obs_properties_add_font(props, "font", obs_module_text("Font"));
 	obs_property_set_modified_callback(p, font_changed);
-	p = obs_properties_add_int_slider(props, "size", obs_module_text("Size"), 4, 1024, 1);
+	p = obs_properties_add_int_slider(props, "size", obs_module_text("Size"), 4, 4096, 1);
 	obs_property_int_set_suffix(p, " px");
 	obs_property_set_long_description(p, obs_module_text("Size.Help"));
 	obs_property_set_modified_callback(p, size_changed);
@@ -1303,15 +1325,11 @@ obs_properties_t *get_properties(void *data)
 	obs_property_set_visible(p, styled);
 
 	for (const Group &g : groups) {
-		p = obs_properties_add_bool(props, g.name, obs_module_text(g.label));
+		p = obs_properties_add_group(props, g.name, obs_module_text(g.label), OBS_GROUP_CHECKABLE,
+					     obs_properties_create());
 		if (g.help)
 			obs_property_set_long_description(p, obs_module_text(g.help));
-		obs_property_set_modified_callback(p, feature_toggled);
-		obs_properties_t *content = obs_properties_create();
-		g.fill(content, nullptr);
-		p = obs_properties_add_group(props, (std::string(g.name) + "_settings").c_str(), "", OBS_GROUP_NORMAL,
-					     content);
-		obs_property_set_visible(p, false);
+		obs_property_set_modified_callback(p, group_toggled);
 	}
 
 	obs_properties_t *style = obs_properties_create();

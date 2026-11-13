@@ -48,7 +48,6 @@ public:
 	obs_source_t *source() const { return source_; }
 	std::string text() const;
 	Document document() const;
-	void set_text(const std::string &text);
 	void set_content(const std::string &text, const Spans &spans); // text and styled runs together
 	void set_box_width(int width); // the text box's width, while dragging its grip
 	Frame frame() const;
@@ -107,6 +106,7 @@ private:
 		RasterParams requested_params;
 		uint64_t requested_version = 0;
 		int idle_ticks = 0;
+		int retry_ticks = 0; // after a failed drawing, frames until it's asked for again
 	};
 	View views_[2]; // output, windows
 	uint64_t next_seq_ = 1;

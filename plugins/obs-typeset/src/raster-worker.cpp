@@ -69,7 +69,8 @@ void run(Worker *w)
 			// Out of memory, most likely: the text isn't shown, and OBS
 			// carries on.
 			blog(LOG_WARNING, "[obs-typeset] couldn't draw text: %s", e.what());
-			continue;
+			raster = Raster();
+			raster.failed = true; // the source keeps what it shows, and asks again later
 		}
 		// TYPESET_DEBUG=1 in OBS's environment logs every drawing (for the
 		// tests, which check that nothing is drawn when nothing changes).
