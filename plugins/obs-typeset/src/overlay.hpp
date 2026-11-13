@@ -40,7 +40,6 @@ struct Overlay {
 	bool show_caret = true;
 	std::vector<Box> selection;
 	Box box;
-	bool grip = false;  // the text box's width grip
 	bool plate = false; // a background plate behind the text
 	uint32_t accent = 0x2F8FFFFF; // OBS's theme's highlight, 0xRRGGBBAA
 	// Words, as images: a composition in progress, and the placeholders'.

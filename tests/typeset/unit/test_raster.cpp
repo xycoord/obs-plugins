@@ -187,6 +187,19 @@ int main()
 			check("and no more lines", l.texts.size() == lines_of(context, boxed(title, alone)).texts.size());
 		}
 
+		// A box narrower than a word: the word stays whole, unhyphenated.
+		{
+			const Lines l = lines_of(context, boxed("Live tonight", 60));
+			bool whole = l.texts.size() == 2;
+			for (const std::string &t : l.texts)
+				whole = whole && t.find('-') == std::string::npos;
+			check("a word is never broken or hyphenated", whole,
+			      l.texts.empty() ? "" : l.texts[0] + "|" + l.texts.back());
+			const double widest = widest_word(context, boxed("Live tonight", 60));
+			check("the widest word is the narrowest a box can be", widest > 60 && widest < 400,
+			      std::to_string(widest));
+		}
+
 		Document j = boxed(title, 700);
 		j.style.align = Align::Justified;
 		const Lines just = lines_of(context, j);

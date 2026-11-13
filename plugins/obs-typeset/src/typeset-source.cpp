@@ -339,7 +339,7 @@ uint64_t TextSource::size_for_obs() const
 {
 	constexpr uint64_t longest_ns = 100'000'000; // a slow or failing drawing can't hold the old size longer
 	const uint64_t s = shown_size_.load();
-	if (s && os_gettime_ns() - laid_out_ns_.load() < longest_ns)
+	if (s && !live_size_ && os_gettime_ns() - laid_out_ns_.load() < longest_ns)
 		return s;
 	return size_.load();
 }
@@ -597,6 +597,13 @@ bool TextSource::draw_raster()
 			return true;
 		}
 	}
+	// None of the text as it is now (a slider being dragged changes it every
+	// frame): the output's latest, a step behind, as the rest of the text
+	// shown at this moment is. The letters stay, and catch up a frame later.
+	if (views_[0].texture) {
+		draw(views_[0]);
+		return true;
+	}
 	return false;
 }
 
@@ -631,6 +638,39 @@ void TextSource::set_box_width(int width)
 
 	obs_data_t *settings = obs_data_create();
 	obs_data_set_int(settings, "box_width", width);
+	{
+		WritingEdit writing;
+		obs_source_update(source_, settings);
+	}
+	obs_data_release(settings);
+}
+
+double TextSource::min_box_width() const
+{
+	std::lock_guard lock(layout_lock());
+	return widest_word(layout_context(), doc_);
+}
+
+void TextSource::set_box(int width, int height)
+{
+	std::lock_guard content(content_mutex_);
+	Document doc;
+	{
+		std::lock_guard lock(layout_lock());
+		doc = doc_;
+	}
+	width = std::clamp(width, 1, 16384);
+	height = std::clamp(height, 0, 16384);
+	doc.style.box = true;
+	doc.style.box_width = width;
+	doc.style.box_height = height;
+	apply(std::move(doc));
+
+	// Still under content_mutex_ (see the header and writing_edit).
+	obs_data_t *settings = obs_data_create();
+	obs_data_set_bool(settings, "box", true);
+	obs_data_set_int(settings, "box_width", width);
+	obs_data_set_int(settings, "box_height", height);
 	{
 		WritingEdit writing;
 		obs_source_update(source_, settings);
@@ -773,9 +813,12 @@ std::vector<Box> TextSource::selection_boxes(size_t from, size_t to) const
 	if (from >= to)
 		return boxes;
 	const double s = frame_.text_scale;
+	// Kept within the source's box (OBS's outline): a selected line's end
+	// mark, or trailing letter spacing, never reaches past it.
 	auto add = [&](double x0, double y, double x1, double h) {
-		if (x1 > x0)
-			boxes.push_back({to_source_x(x0), to_source_y(y), (x1 - x0) * s, h * s});
+		const double left = std::max(0.0, to_source_x(x0)), right = std::min(frame_.width, to_source_x(x1));
+		if (right > left)
+			boxes.push_back({left, to_source_y(y), right - left, h * s});
 	};
 
 	PangoLayoutIter *iter = pango_layout_get_iter(layout_);
@@ -810,12 +853,13 @@ std::vector<Box> TextSource::selection_boxes(size_t from, size_t to) const
 			const double mark = doc_.style.size * 0.25;
 			// The piece that reaches the line's end grows; with none (the
 			// selection starts at the line's very end), a piece of its own.
+			const double end_x = std::min(frame_.width, to_source_x(line_x1));
 			Box *last = nullptr;
 			for (Box &bx : boxes)
-				if (std::fabs(bx.x + bx.w - to_source_x(line_x1)) < 1e-6 && std::fabs(bx.y - to_source_y(y)) < 1e-6)
+				if (std::fabs(bx.x + bx.w - end_x) < 1e-6 && std::fabs(bx.y - to_source_y(y)) < 1e-6)
 					last = &bx;
 			if (last)
-				last->w += mark * s;
+				last->w = std::min(last->w + mark * s, frame_.width - last->x);
 			else
 				add(line_x1, y, line_x1 + mark, h);
 		}

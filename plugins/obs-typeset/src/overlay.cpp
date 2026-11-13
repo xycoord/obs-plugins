@@ -340,18 +340,6 @@ void OverlayPainter::paint(const Overlay &o, uint32_t, uint32_t cy)
 		}
 
 
-		// The text box's width grip, on the frame's right edge.
-		if (o.grip) {
-			const vec2 a = to_display(o.box.w, o.box.h * 0.5);
-			vec2 g0, g1;
-			// (Clear of OBS's own handle on the box's edge.)
-			vec2_set(&g0, a.x + 12 * px, a.y - 12 * px);
-			vec2_set(&g1, a.x + 12 * px, a.y + 12 * px);
-			fill({line_quad(g0, g1, 9 * px)}, accent_edge);
-			fill({line_quad(g0, g1, 6 * px)}, 0xFFFFFFFF);
-			fill({line_quad(g0, g1, 3 * px)}, accent);
-		}
-
 		// The selection: a solid highlight with the selected text drawn
 		// again on top, clipped to it, so it keeps its own colours. A
 		// rotated source can't be clipped to a box, and on a background

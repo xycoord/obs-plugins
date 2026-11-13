@@ -71,7 +71,15 @@ public:
 	std::string text() const;
 	Document document() const;
 	void set_content(const std::string &text, const Spans &spans); // text and styled runs together
-	void set_box_width(int width); // the text box's width, while dragging its grip
+	void set_box_width(int width); // the text box's width
+	// The text box (turned on if it isn't), its width and its height (0: as
+	// tall as the text), at once: dragging a side handle in the preview.
+	void set_box(int width, int height);
+	// While a box is dragged, OBS takes the source's new size at once, not
+	// when the drawing for it lands (see width()): the box's edge follows the
+	// pointer, and the text, left in place, is drawn again a moment later.
+	void set_live_size(bool live) { live_size_ = live; }
+	double min_box_width() const; // the widest word: a box never narrower (UI thread)
 	void set_align(int align);
 	void set_line_spacing(double spacing);
 	void set_wrap_options(bool balance, bool avoid_orphans); // balanced lines, no lone last word, at once // the whole text's leading (a multiple of the font's line height), at once     // the whole text's alignment (Align), at once
@@ -95,7 +103,7 @@ public:
 	// Drawing the current output raster again elsewhere (the editor draws
 	// selected text over its highlight), on OBS's graphics thread, with the
 	// world matrix set to map the source's units.
-	bool draw_raster(); // false if no raster shows the text as it is now
+	bool draw_raster(); // the text as it is now, else the latest drawing of it; false if none
 
 private:
 	obs_source_t *source_;
@@ -112,6 +120,7 @@ private:
 	// Width and height in one value, so OBS never gets one drawing's width
 	// with another's height.
 	std::atomic<uint64_t> shown_size_{0};
+	std::atomic<bool> live_size_{false};
 	std::atomic<bool> update_queued_{false}; // an update passed to the UI thread, not yet applied
 
 	void update_now(obs_data_t *settings);

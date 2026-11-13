@@ -167,14 +167,25 @@ def main():
             d.drag(r, b, r + 160, b + 90, steps=40)
             d.pause()
 
-            # 3. Stretching by a side.
-            d.caption("3. Stretching by a side handle (the letters stretch, still sharp)")
-            l, t, r, b = d.where("Set times")
-            d.click((l + r) / 2, (t + b) / 2)
-            d.drag(r, (t + b) / 2, r + 140, (t + b) / 2, steps=40)
-            d.pause()
-            d.key("ctrl+z")
-            d.pause(0.8)
+            # 3. Side handles: the text box.
+            d.caption("3. Side handles change the text box: the text rewraps at the same size")
+            l, t, r, b = d.where("Title")
+            d.drag(r, (t + b) / 2, r - 260, (t + b) / 2, steps=70, delay=0.035)
+            d.pause(1.2)
+            l, t, r, b = d.where("Title")
+            d.drag(r, (t + b) / 2, r + 330, (t + b) / 2, steps=70, delay=0.035)
+            d.pause(1.2)
+            d.caption("3. The left handle too: the right edge stays put")
+            l, t, r, b = d.where("Title")
+            d.drag(l, (t + b) / 2, l + 200, (t + b) / 2, steps=60, delay=0.035)
+            d.pause(1.2)
+            l, t, r, b = d.where("Title")
+            d.drag(l, (t + b) / 2, l - 200, (t + b) / 2, steps=60, delay=0.035)
+            d.pause(1.2)
+            d.caption("3. ...and corners still scale the whole text")
+            l, t, r, b = d.where("Title")
+            d.drag(r, t, r - 160, t + 80, steps=50)  # the top right: on the canvas, however tall it's grown
+            d.pause(1.2)
 
             # 4. Editing.
             d.caption("4. Double-click to edit: the word is selected, typing replaces it")
@@ -235,8 +246,8 @@ def main():
             d.key("Escape")
             d.pause()
 
-            # 6. A text box.
-            d.caption("6. A text box: drag its grip, the lines rewrap (balanced)")
+            # 6. A text box while editing.
+            d.caption("6. While editing: a side handle rewraps the text live (balanced lines)")
             items = obs.request("GetSceneItemList", sceneName="Scene")["sceneItems"]
             box_id = next(it["sceneItemId"] for it in items if it["sourceName"] == "Text box")
             obs.request("SetSceneItemEnabled", sceneName="Scene", sceneItemId=box_id, sceneItemEnabled=True)
@@ -245,9 +256,10 @@ def main():
             d.click(l + 40, (t + b) / 2)
             d.click(l + 40, (t + b) / 2, repeat=2)
             d.pause()
-            d.drag(r + 7, (t + b) / 2, r - 380, (t + b) / 2, steps=70, delay=0.035)
+            d.drag(r, (t + b) / 2, r - 380, (t + b) / 2, steps=70, delay=0.035)
             d.pause()
-            d.drag(r - 373, (t + b) / 2, r + 60, (t + b) / 2, steps=60, delay=0.035)
+            l, t, r, b = d.where("Text box")
+            d.drag(r, (t + b) / 2, r + 420, (t + b) / 2, steps=60, delay=0.035)
             d.pause()
             d.key("Escape")
             d.pause(0.6)

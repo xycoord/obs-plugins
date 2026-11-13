@@ -143,6 +143,10 @@ Raster rasterise(PangoLayout *layout, const Document &doc, RasterParams params);
 // one character is deleted (Indic scripts: क + ि loses only the vowel sign).
 size_t backspace_index(PangoLayout *layout, size_t index);
 
+// The widest word (or other unbreakable run) of a text, as laid out: the
+// narrowest its text box can be.
+double widest_word(PangoContext *context, const Document &doc);
+
 // Whether a font family is installed, and the family Pango will use for it.
 bool font_installed(PangoContext *context, const std::string &family, std::string *used);
 

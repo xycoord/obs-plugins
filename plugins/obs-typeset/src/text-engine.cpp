@@ -164,6 +164,17 @@ static bool has_orphan(PangoLayout *layout, const std::string &text)
 // one word alone. frame_of() places the narrower block in the box as the
 // alignment says. A few layouts of a title's few words: well under a
 // millisecond.
+// The widest word's width, in Pango units, laid out as the layout is.
+static int widest_word_units(PangoLayout *layout)
+{
+	const int width = pango_layout_get_width(layout);
+	pango_layout_set_width(layout, 1); // every word a line of its own
+	PangoRectangle logical;
+	pango_layout_get_extents(layout, nullptr, &logical);
+	pango_layout_set_width(layout, width);
+	return logical.width;
+}
+
 static void tune_wrap(PangoLayout *layout, const Document &doc)
 {
 	const Style &s = doc.style;
@@ -178,7 +189,8 @@ static void tune_wrap(PangoLayout *layout, const Document &doc)
 	int width = full;
 	if (s.balance) {
 		// The narrowest width with no more lines: lines as even as they go.
-		int lo = full / (n + 1), hi = full;
+		// (Never narrower than the widest word: it would stick out.)
+		int lo = std::max(full / (n + 1), widest_word_units(layout)), hi = full;
 		for (int i = 0; i < 14 && hi - lo > PANGO_SCALE / 2; i++) {
 			const int mid = lo + (hi - lo) / 2;
 			if (lines_at(mid) <= n)
@@ -193,7 +205,8 @@ static void tune_wrap(PangoLayout *layout, const Document &doc)
 		if (has_orphan(layout, doc.text)) {
 			// Narrower a little at a time, until a word comes down to join
 			// the last one, the lines no more than before.
-			for (int w = width - full / 50; w > full / 2; w -= full / 50) {
+			const int floor = std::max(full / 2, widest_word_units(layout));
+			for (int w = width - full / 50; w >= floor; w -= full / 50) {
 				if (lines_at(w) > n)
 					break;
 				if (!has_orphan(layout, doc.text)) {
@@ -234,10 +247,14 @@ PangoLayout *create_layout(PangoContext *context, const Document &doc)
 		pango_layout_set_line_spacing(layout, float(style.line_spacing));
 	if (wraps(style)) {
 		pango_layout_set_width(layout, int(std::lround(style.box_width * PANGO_SCALE)));
-		pango_layout_set_wrap(layout, PANGO_WRAP_WORD_CHAR);
+		// At spaces only: a word too wide for the box stays whole (and the
+		// box's handles stop at the widest: see widest_word()), never broken
+		// or hyphenated, as display type is set.
+		pango_layout_set_wrap(layout, PANGO_WRAP_WORD);
 	}
 
 	PangoAttrList *attrs = pango_attr_list_new();
+	pango_attr_list_insert(attrs, pango_attr_insert_hyphens_new(FALSE));
 	if (style.font_flags & OBS_FONT_UNDERLINE)
 		pango_attr_list_insert(attrs, pango_attr_underline_new(PANGO_UNDERLINE_SINGLE));
 	if (style.font_flags & OBS_FONT_STRIKEOUT)
@@ -369,17 +386,20 @@ Frame frame_of(PangoLayout *layout, const Document &doc)
 	}
 	const double block_w = logical.w * f.text_scale, block_h = logical.h * f.text_scale;
 
-	// An empty text keeps a little width, so it can still be found.
-	double inner_w = fixed_w ? s.box_width : block_w;
+	// An empty text keeps a little width, so it can still be found. A box
+	// is never narrower than its text: a word too wide for it (it's never
+	// broken) widens it, so OBS's box goes round everything shown.
+	double inner_w = fixed_w ? std::max(s.box_width, block_w) : block_w;
 	if (!fixed_w && doc.text.empty())
 		inner_w = std::max(inner_w, s.size * 0.3);
 	const double inner_h = fixed_h ? s.box_height : block_h;
 
 	// Wrapped, Pango places each line within its wrapping width itself; that
 	// width is the box's, or narrower (balanced lines), placed in the box as
-	// the alignment says.
+	// the alignment says. A line wider than it (a word too wide) Pango puts
+	// partly before 0; the box widened for it, which brings it back inside.
 	if (wraps(s))
-		f.text_x = (s.box_width - double(pango_layout_get_width(layout)) / PANGO_SCALE) * fraction(s.align);
+		f.text_x = (inner_w - double(pango_layout_get_width(layout)) / PANGO_SCALE) * fraction(s.align);
 	else
 		f.text_x = (inner_w - block_w) * fraction(s.align) - logical.x * f.text_scale;
 	f.text_y = (fixed_h ? (inner_h - block_h) * fraction(s.valign) : 0.0) - logical.y * f.text_scale;
@@ -682,6 +702,14 @@ bool font_installed(PangoContext *context, const std::string &family, std::strin
 		}
 	}
 	return found;
+}
+
+double widest_word(PangoContext *context, const Document &doc)
+{
+	PangoLayout *layout = create_layout(context, doc);
+	const int w = widest_word_units(layout);
+	g_object_unref(layout);
+	return double(w) / PANGO_SCALE;
 }
 
 } // namespace typeset

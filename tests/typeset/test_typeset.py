@@ -386,19 +386,46 @@ def test_features(out):
         x0, y0, sx, sy = canvas_on_screen(obs.screen())
         to_screen = lambda cx, cy: (x0 + cx * sx, y0 + cy * sy)  # noqa: E731
 
-        # While editing a text box, its width grip (on the editing frame's
-        # right edge) sets the box's width: dragged right by 50 preview
-        # pixels, it's that much wider in the text's own pixels.
+        # Side handles set the text box, the font size kept: the right one
+        # its width (dragged 50 preview pixels, that much wider in the text's
+        # own pixels), the left one too, the right edge staying put. Corners
+        # still scale. Each drag is one step in OBS's undo history.
+        def transform(name):
+            return obs.request("GetSceneItemTransform", sceneName="Scene", sceneItemId=ids[name])["sceneItemTransform"]
+
         bw, bh = size("Boxed")
-        obs.click(*to_screen(210, 700 + bh / 2), repeat=2)
-        grip = to_screen(200 + bw, 700 + bh / 2)
-        obs.drag(grip[0] + 7, grip[1], grip[0] + 57, grip[1])
-        save(out, "features-grip.png", obs.screen())
-        obs.key("Escape")
+        obs.click(*to_screen(210, 700 + bh / 2))  # selected: its handles show
+        right = to_screen(200 + bw, 700 + bh / 2)
+        obs.drag(right[0], right[1], right[0] + 50, right[1])
+        save(out, "features-side-handle.png", obs.screen())
         new_width = obs.settings("Boxed").get("box_width")
         expected = 400 + 50 / sx
-        check(new_width is not None and abs(new_width - expected) < 4 / sx,
-              "dragging the text box's grip sets its width", "%s (about %.0f expected)" % (new_width, expected))
+        t = transform("Boxed")
+        check(new_width is not None and abs(new_width - expected) < 4 / sx and abs(t["scaleX"] - 1) < 1e-3,
+              "the right side handle sets the text box's width, not the scale",
+              "%s (about %.0f expected), scale %.3f" % (new_width, expected, t["scaleX"]))
+
+        right_edge = t["positionX"] + t["width"]
+        left = to_screen(t["positionX"], t["positionY"] + t["height"] / 2)
+        obs.drag(left[0], left[1], left[0] + 60, left[1])
+        t = transform("Boxed")
+        check(abs(t["positionX"] + t["width"] - right_edge) < 3 and t["width"] < new_width,
+              "the left side handle narrows the box, the right edge staying put",
+              "right edge %.1f -> %.1f" % (right_edge, t["positionX"] + t["width"]))
+
+        obs.key("ctrl+z")
+        time.sleep(0.5)
+        t = transform("Boxed")
+        check(abs(obs.settings("Boxed").get("box_width") - new_width) < 1 and abs(t["positionX"] - 200) < 1,
+              "OBS's Undo takes a side-handle drag back", repr(obs.settings("Boxed").get("box_width")))
+
+        corner = to_screen(t["positionX"] + t["width"], t["positionY"] + t["height"])
+        obs.drag(corner[0], corner[1], corner[0] + 40, corner[1] + 20)
+        t = transform("Boxed")
+        check(t["scaleX"] > 1.02 and abs(obs.settings("Boxed").get("box_width") - new_width) < 1,
+              "a corner handle still scales the text", "scale %.3f" % t["scaleX"])
+        obs.key("ctrl+z")
+        time.sleep(0.5)
 
         tw, th = size("Title")
         title = to_screen(200 + tw * 0.7, 200 + th / 2)

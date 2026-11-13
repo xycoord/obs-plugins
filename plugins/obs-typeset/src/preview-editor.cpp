@@ -28,6 +28,7 @@
 #include <QWindow>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <mutex>
@@ -83,6 +84,51 @@ obs_data_t *undo_state(obs_source_t *source, const Document &doc)
 	obs_data_set_obj(state, "settings", settings);
 	obs_data_release(settings);
 	return state;
+}
+
+// A text box dragged by a side handle: its box and the item's position, the
+// item named by its scene's UUID and its id there.
+obs_data_t *box_undo_state(const ItemRef &item, const Document &doc)
+{
+	obs_data_t *settings = obs_data_create();
+	obs_data_set_bool(settings, "box", doc.style.box);
+	obs_data_set_int(settings, "box_width", (long long)std::lround(doc.style.box_width));
+	obs_data_set_int(settings, "box_height", (long long)std::lround(doc.style.box_height));
+	obs_data_t *state = obs_data_create();
+	obs_data_set_string(state, "uuid", obs_source_get_uuid(obs_sceneitem_get_source(item.item())));
+	obs_data_set_obj(state, "settings", settings);
+	obs_data_release(settings);
+	obs_scene_t *scene = obs_sceneitem_get_scene(item.item());
+	obs_data_set_string(state, "scene", obs_source_get_uuid(obs_scene_get_source(scene)));
+	obs_data_set_int(state, "item", obs_sceneitem_get_id(item.item()));
+	vec2 pos;
+	obs_sceneitem_get_pos(item.item(), &pos);
+	obs_data_set_double(state, "x", pos.x);
+	obs_data_set_double(state, "y", pos.y);
+	return state;
+}
+
+void restore_undo_state(const char *json);
+
+void restore_box_state(const char *json)
+{
+	restore_undo_state(json);
+	obs_data_t *state = json ? obs_data_create_from_json(json) : nullptr;
+	if (!state)
+		return;
+	if (obs_source_t *scene_source = obs_get_source_by_uuid(obs_data_get_string(state, "scene"))) {
+		obs_scene_t *scene = obs_scene_from_source(scene_source);
+		if (!scene)
+			scene = obs_group_from_source(scene_source);
+		if (obs_sceneitem_t *item = scene ? obs_scene_find_sceneitem_by_id(scene, obs_data_get_int(state, "item"))
+						: nullptr) {
+			vec2 pos;
+			vec2_set(&pos, float(obs_data_get_double(state, "x")), float(obs_data_get_double(state, "y")));
+			obs_sceneitem_set_pos(item, &pos);
+		}
+		obs_source_release(scene_source);
+	}
+	obs_data_release(state);
 }
 
 void restore_undo_state(const char *json)
@@ -173,10 +219,21 @@ private:
 	std::string preedit_; // an input method's composition, not yet in the text
 	bool committed_ = false; // an input method committed text (while it was asked to finish)
 	uint64_t edit_serial_ = 0; // which edit this is, for what outlasts one (the colour dialog)
-	// Dragging the text box's width grip.
-	bool resizing_ = false;
-	QPointF resize_from_pos_;
-	double resize_from_width_ = 0;
+	// Dragging a side handle: a text's box (see handle_at()).
+	struct BoxDrag {
+		ItemRef item;
+		obs_source_t *source = nullptr; // referenced
+		TextSource *text = nullptr;
+		int handle = -1;
+		QPointF from;
+		double width = 0, height = 0, natural_height = 0; // at the start
+		double min_width = 1;                             // the widest word
+		obs_data_t *before = nullptr;                   // for OBS's undo history
+	} box_drag_;
+	int handle_at(QPointF pos, ItemRef *hit);
+	void begin_box_drag(const ItemRef &hit, int handle, QPointF pos);
+	void move_box_drag(QPointF pos);
+	void end_box_drag();
 	// What was under the pointer when the button went down (see mouse_event).
 	ItemRef pressed_; // referenced until the next press, or a scene change
 	bool pressed_selected_ = false;
@@ -238,7 +295,6 @@ private:
 	QRect frame_rect();
 	void pick_colour();
 	void place_beside_text(QWidget *window);
-	bool on_grip(QPointF widget_pos);
 	void input_method(QInputMethodEvent *event);
 	QVariant input_method_query(Qt::InputMethodQuery query);
 
@@ -421,7 +477,6 @@ void PreviewEditor::refresh_overlay()
 	o.selection = text_->selection_boxes(model_.sel_from(), model_.sel_to());
 	o.box = text_->box();
 	const Document doc = text_->document();
-	o.grip = doc.style.box && doc.style.box_width > 0;
 	o.plate = doc.style.plate;
 	// The marks in OBS's theme's own highlight colour.
 	const QColor h = theme_accent(preview_->window());
@@ -487,7 +542,7 @@ bool PreviewEditor::begin_edit(const ItemRef &hit)
 	item_ = hit;
 	source_ = obs_source_get_ref(source);
 	text_ = text;
-	resizing_ = dragging_ = false;
+	dragging_ = false;
 	preedit_.clear();
 	const Document d = text_->document();
 	model_.start(d.text, d.spans, strip_layout(d));
@@ -533,7 +588,7 @@ void PreviewEditor::end_edit()
 				commit();
 		}
 	}
-	dragging_ = resizing_ = swallow_release_ = false;
+	dragging_ = swallow_release_ = false;
 	preedit_.clear();
 	{
 		Overlay old; // let go after the lock (see attach_display)
@@ -1038,21 +1093,172 @@ void PreviewEditor::place_beside_text(QWidget *window)
 	window->move(at);
 }
 
-// Whether a point is on the text box's width grip (a little generous: it's
-// small).
-bool PreviewEditor::on_grip(QPointF pos)
+// --- Side handles: the text box ------------------------------------------------------------
+//
+// OBS's handles all scale a source (a side one keeping its shape too, unless
+// Shift stretches it). For a Typeset Text, a side handle is taken before OBS
+// sees it: left and right set its text box's width, so the text rewraps at
+// its own size; top and bottom, the box's height. The opposite edge stays
+// where it was, whatever the item's alignment or rotation. Corners still
+// scale, and Shift with a side handle still stretches, as in OBS.
+
+namespace {
+
+// OBS's handles, as it places them: the corners and middles of the item's
+// box, as cropped. 0-7 round from the top left; the sides are 1 (top), 3
+// (right), 5 (bottom), 7 (left).
+std::array<QPointF, 8> handles(const Mapping &map, obs_sceneitem_t *item, obs_sceneitem_t *group)
 {
-	const Document doc = text_->document();
-	if (!doc.style.box || doc.style.box_width <= 0)
-		return false;
+	obs_source_t *source = obs_sceneitem_get_source(item);
+	obs_sceneitem_crop crop;
+	obs_sceneitem_get_crop(item, &crop);
+	const float x0 = float(crop.left), y0 = float(crop.top);
+	const float x1 = float(int(obs_source_get_width(source)) - crop.right);
+	const float y1 = float(int(obs_source_get_height(source)) - crop.bottom);
+	const float xm = (x0 + x1) / 2, ym = (y0 + y1) / 2;
+	const float xs[8] = {x0, xm, x1, x1, x1, xm, x0, x0}, ys[8] = {y0, y0, y0, ym, y1, y1, y1, ym};
 	matrix4 m;
-	item_to_canvas(item_.item(), item_.group(), &m);
-	const Box b = text_->box();
-	vec3 p;
-	vec3_set(&p, float(b.w), float(b.h * 0.5), 0.0f);
-	vec3_transform(&p, &p, &m);
-	const QPointF g = canvas_to_widget(preview_mapping(preview_), p) + QPointF(12, 0);
-	return std::fabs(pos.x() - g.x()) <= 8 && std::fabs(pos.y() - g.y()) <= 18;
+	item_to_canvas(item, group, &m);
+	std::array<QPointF, 8> out;
+	for (int i = 0; i < 8; i++) {
+		vec3 p;
+		vec3_set(&p, xs[i], ys[i], 0.0f);
+		vec3_transform(&p, &p, &m);
+		out[size_t(i)] = canvas_to_widget(map, p);
+	}
+	return out;
+}
+
+constexpr double handle_reach = 7; // widget pixels: OBS's own (HANDLE_SEL_RADIUS) and a little
+
+} // namespace
+
+// The handle of a selected Typeset Text under a point (the topmost), or -1.
+int PreviewEditor::handle_at(QPointF pos, ItemRef *hit)
+{
+	const Mapping map = preview_mapping(preview_);
+	int found = -1;
+	each_preview_item([&](obs_sceneitem_t *item, obs_sceneitem_t *group) {
+		if (!obs_sceneitem_selected(item) || obs_sceneitem_locked(item) ||
+		    obs_sceneitem_get_bounds_type(item) != OBS_BOUNDS_NONE ||
+		    !TextSource::from(obs_sceneitem_get_source(item)))
+			return;
+		const auto h = handles(map, item, group);
+		for (int i = 0; i < 8; i++) {
+			const QPointF d = h[size_t(i)] - pos;
+			if (std::hypot(d.x(), d.y()) <= handle_reach) {
+				found = i;
+				*hit = ItemRef(item, group); // referenced inside the enumeration
+			}
+		}
+	});
+	return found;
+}
+
+void PreviewEditor::begin_box_drag(const ItemRef &hit, int handle, QPointF pos)
+{
+	TextSource *text = TextSource::from(obs_sceneitem_get_source(hit.item()));
+	if (!text)
+		return;
+	box_drag_ = {};
+	box_drag_.item = hit;
+	box_drag_.source = obs_source_get_ref(obs_sceneitem_get_source(hit.item()));
+	box_drag_.text = text;
+	box_drag_.handle = handle;
+	box_drag_.from = pos;
+	const Document d = text->document();
+	const double pad = d.style.plate ? d.style.plate_padding : 0;
+	const Box b = text->box();
+	// A text without a box starts from its own size (so the first move
+	// changes nothing); one with a box, from the box's.
+	box_drag_.width = d.style.box && d.style.box_width > 0 ? d.style.box_width : std::max(1.0, b.w - 2 * pad);
+	box_drag_.height = d.style.box && d.style.box_height > 0 ? d.style.box_height : 0;
+	box_drag_.natural_height = std::max(1.0, b.h - 2 * pad);
+	box_drag_.min_width = text->min_box_width();
+	box_drag_.before = box_undo_state(hit, d);
+	text->set_live_size(true);
+	if (editing())
+		sync_text();
+}
+
+void PreviewEditor::move_box_drag(QPointF pos)
+{
+	BoxDrag &bd = box_drag_;
+	const Mapping map = preview_mapping(preview_);
+	matrix4 m;
+	item_to_canvas(bd.item.item(), bd.item.group(), &m);
+	// The pointer's movement along the item's own axes, in the text's units.
+	const double dx = (pos.x() - bd.from.x()) * map.dpr / map.scale;
+	const double dy = (pos.y() - bd.from.y()) * map.dpr / map.scale;
+	auto along = [&](const vec4 &axis) {
+		const double len2 = double(axis.x) * axis.x + double(axis.y) * axis.y;
+		return len2 > 0 ? (dx * axis.x + dy * axis.y) / len2 : 0.0;
+	};
+	const bool horizontal = bd.handle == 3 || bd.handle == 7;
+	const Document d = bd.text->document();
+	const double old_w = d.style.box && d.style.box_width > 0 ? d.style.box_width : bd.width;
+	const double old_h = d.style.box && d.style.box_height > 0 ? d.style.box_height : bd.natural_height;
+	int w = int(std::lround(old_w)), h = int(std::lround(d.style.box ? d.style.box_height : 0));
+	if (horizontal) {
+		const double moved = along(m.x) * (bd.handle == 3 ? 1 : -1);
+		// Never narrower than the widest word (it stays whole: no box could
+		// hold it narrower), so the edge stops where the text would break.
+		const int narrowest = d.style.overflow == Overflow::Wrap ? int(std::ceil(bd.min_width)) : 1;
+		w = std::clamp(int(std::lround(bd.width + moved)), std::max(1, narrowest), 16384);
+	} else {
+		const double start = bd.height > 0 ? bd.height : bd.natural_height;
+		const double moved = along(m.y) * (bd.handle == 5 ? 1 : -1);
+		h = std::clamp(int(std::lround(start + moved)), 1, 16384);
+	}
+	bd.text->set_box(w, h);
+
+	// The opposite edge kept where it was: the item moved by what its
+	// alignment point moves (a point a fraction of the way across).
+	const uint32_t align = obs_sceneitem_get_alignment(bd.item.item());
+	const double fx = align & OBS_ALIGN_LEFT ? 0 : align & OBS_ALIGN_RIGHT ? 1 : 0.5;
+	const double fy = align & OBS_ALIGN_TOP ? 0 : align & OBS_ALIGN_BOTTOM ? 1 : 0.5;
+	double shift_x = 0, shift_y = 0; // in the text's units, along its axes
+	if (horizontal) {
+		const double grew = w - old_w;
+		shift_x = bd.handle == 3 ? fx * grew : -(1 - fx) * grew;
+	} else {
+		const double grew = h - old_h;
+		shift_y = bd.handle == 5 ? fy * grew : -(1 - fy) * grew;
+	}
+	if (shift_x != 0 || shift_y != 0) {
+		matrix4 own; // the item's own transform, in its parent's space (a group's, if it's in one)
+		obs_sceneitem_get_draw_transform(bd.item.item(), &own);
+		vec2 p;
+		obs_sceneitem_get_pos(bd.item.item(), &p);
+		p.x += float(own.x.x * shift_x + own.y.x * shift_y);
+		p.y += float(own.x.y * shift_x + own.y.y * shift_y);
+		obs_sceneitem_set_pos(bd.item.item(), &p);
+	}
+	if (editing() && bd.text == text_) {
+		sync_text();
+		refresh_overlay();
+	}
+}
+
+void PreviewEditor::end_box_drag()
+{
+	BoxDrag &bd = box_drag_;
+	if (!bd.item)
+		return;
+	bd.text->set_live_size(false);
+	// One step in OBS's undo history for the drag.
+	obs_data_t *after = box_undo_state(bd.item, bd.text->document());
+	const std::string undo_json = obs_data_get_json(bd.before), redo_json = obs_data_get_json(after);
+	if (undo_json != redo_json) {
+		char name[256];
+		snprintf(name, sizeof(name), obs_module_text("Undo.Box"), obs_source_get_name(bd.source));
+		obs_frontend_add_undo_redo_action(name, restore_box_state, restore_box_state, undo_json.c_str(),
+						  redo_json.c_str(), false);
+	}
+	obs_data_release(after);
+	obs_data_release(bd.before);
+	obs_source_release(bd.source);
+	bd = {};
 }
 
 bool PreviewEditor::mouse_event(QMouseEvent *event)
@@ -1060,6 +1266,34 @@ bool PreviewEditor::mouse_event(QMouseEvent *event)
 	const QEvent::Type type = event->type();
 	const QPointF pos = event->position();
 	const bool left = event->button() == Qt::LeftButton;
+
+	// A side handle of a selected Typeset Text: its box (see above).
+	if (box_drag_.item) {
+		if (type == QEvent::MouseMove) {
+			move_box_drag(pos);
+			return true;
+		}
+		if (type == QEvent::MouseButtonRelease && left) {
+			end_box_drag();
+			return true;
+		}
+		return true;
+	}
+	if (type == QEvent::MouseButtonPress && left && !(event->modifiers() & Qt::ShiftModifier)) {
+		ItemRef hit;
+		const int handle = handle_at(pos, &hit);
+		if (handle == 1 || handle == 3 || handle == 5 || handle == 7) {
+			begin_box_drag(hit, handle, pos);
+			return true;
+		}
+		if (handle >= 0 && editing())
+			return false; // a corner: OBS scales it, editing carrying on
+	}
+	if (type == QEvent::MouseMove && editing()) {
+		ItemRef hit;
+		if (handle_at(pos, &hit) >= 0)
+			return false; // OBS shows its resize pointer over its handles
+	}
 
 	// Whether what's under the pointer was selected before this click: OBS
 	// then selects what's below it instead (clicks cycle down through
@@ -1103,43 +1337,6 @@ bool PreviewEditor::mouse_event(QMouseEvent *event)
 
 	if (!editing())
 		return false;
-
-	// The text box's width grip.
-	if (resizing_) {
-		if (type == QEvent::MouseMove) {
-			// How far the pointer has moved along the text's own x axis, in
-			// its own units (not through its transform, which moves as the
-			// box grows when the item isn't anchored at its left).
-			const Mapping map = preview_mapping(preview_);
-			matrix4 m;
-			item_to_canvas(item_.item(), item_.group(), &m);
-			const double ax = m.x.x, ay = m.x.y, len2 = ax * ax + ay * ay;
-			const double dx = (pos.x() - resize_from_pos_.x()) * map.dpr / map.scale;
-			const double dy = (pos.y() - resize_from_pos_.y()) * map.dpr / map.scale;
-			const double along = len2 > 0 ? (dx * ax + dy * ay) / len2 : 0;
-			const int width = std::clamp(int(std::lround(resize_from_width_ + along)), 1, 16384);
-			if (model_.set_box_width(width))
-				text_->set_box_width(width);
-			refresh_overlay();
-			return true;
-		}
-		if (type == QEvent::MouseButtonRelease && left) {
-			resizing_ = false;
-			return true;
-		}
-	}
-	if (type == QEvent::MouseButtonPress && left && on_grip(pos)) {
-		resizing_ = true;
-		resize_from_pos_ = pos;
-		resize_from_width_ = text_->document().style.box_width;
-		sync_text();
-		model_.begin_box_drag(); // one undo step for the whole drag
-		return true;
-	}
-	if (type == QEvent::MouseMove && !dragging_ && on_grip(pos)) {
-		preview_->setCursor(Qt::SizeHorCursor);
-		return true;
-	}
 
 	bool inside = false;
 	const vec3 local = to_source(pos, &inside);
