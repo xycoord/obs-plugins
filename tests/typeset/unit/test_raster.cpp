@@ -344,6 +344,17 @@ int main()
 		Document small = big;
 		small.style.size = 17;
 		whole(small, 1.7, "and a small size scaled up");
+		// A family with no bold face, which Cairo emboldens itself: its
+		// letters reach past their metrics, and Cairo's own drawing cut them.
+		if (font_installed(context, "IPAGothic", nullptr)) {
+			Document thickened = big;
+			thickened.style.family = "IPAGothic";
+			thickened.style.face_style = "Bold";
+			whole(thickened, 1.0, "and letters Cairo emboldens itself");
+			whole(thickened, 2.3, "and those scaled");
+		} else {
+			printf("SKIPPED letters Cairo emboldens itself: no IPAGothic\n");
+		}
 
 		// Otherwise it's drawn as Pango's own renderer draws it: colours,
 		// see-through runs, underlines, strikethrough, a second line, colour

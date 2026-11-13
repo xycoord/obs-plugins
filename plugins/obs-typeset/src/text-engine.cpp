@@ -10,6 +10,7 @@
 #include <strings.h>
 
 #include <hb-ot.h>
+#include <cairo-ft.h>
 #include <cairo-pdf.h>
 
 namespace typeset {
@@ -566,52 +567,130 @@ static bool any_set(const uint8_t *p, size_t n)
 	return acc != 0;
 }
 
-// Whether a run of glyphs can be added into the surface rather than drawn
-// over what's there, with the same pixels: into an A8 surface (the coverage
-// form, a shadow), in an opaque colour, where every pixel the glyphs reach
-// is still clear (all of them, on a blank surface). Cairo draws a run over
-// through a mask of the glyphs added together, which into A8 takes pixman's
-// slow general path; added straight in, the glyphs take a fast one (and onto
-// clear pixels, over and add agree). Cairo adds them itself only into a
-// surface it made and hasn't drawn on: the first run, of a raster drawn in
-// its own memory, and no other.
-static bool adds_alike(cairo_t *cr, const std::vector<cairo_glyph_t> &glyphs, bool blank)
+// Where a run of glyphs reaches on its image surface, in pixels, and a
+// pixel more: from the glyphs' metrics, or (outlines) from their outlines,
+// which go further than a face's metrics when Cairo emboldens it itself.
+namespace {
+struct Area {
+	int left = 0, top = 0, right = 0, bottom = 0;
+	bool empty() const { return right <= left || bottom <= top; }
+};
+} // namespace
+
+static Area area_of(cairo_t *cr, const std::vector<cairo_glyph_t> &glyphs, bool outlines)
 {
-	cairo_surface_t *target = cairo_get_target(cr);
-	double red, green, blue, alpha;
-	if (glyphs.empty() || cairo_get_operator(cr) != CAIRO_OPERATOR_OVER ||
-	    cairo_surface_get_type(target) != CAIRO_SURFACE_TYPE_IMAGE ||
-	    cairo_image_surface_get_format(target) != CAIRO_FORMAT_A8 ||
-	    cairo_pattern_get_rgba(cairo_get_source(cr), &red, &green, &blue, &alpha) != CAIRO_STATUS_SUCCESS ||
-	    alpha < 1.0)
-		return false;
-	if (blank)
-		return true;
-	// Where the glyphs' outlines reach (Cairo measures from the first
-	// glyph), in device pixels, and a pixel more.
-	cairo_text_extents_t e;
-	cairo_glyph_extents(cr, glyphs.data(), int(glyphs.size()), &e);
-	if (e.width <= 0 || e.height <= 0)
-		return true; // no ink
-	double x0 = HUGE_VAL, y0 = HUGE_VAL, x1 = -HUGE_VAL, y1 = -HUGE_VAL;
-	for (int corner = 0; corner < 4; corner++) {
-		double x = glyphs[0].x + e.x_bearing + (corner & 1 ? e.width : 0);
-		double y = glyphs[0].y + e.y_bearing + (corner & 2 ? e.height : 0);
-		cairo_user_to_device(cr, &x, &y);
-		x0 = std::min(x0, x), y0 = std::min(y0, y), x1 = std::max(x1, x), y1 = std::max(y1, y);
+	if (glyphs.empty())
+		return {};
+	double x0, y0, x1, y1;
+	if (outlines) {
+		cairo_new_path(cr);
+		cairo_glyph_path(cr, glyphs.data(), int(glyphs.size()));
+		cairo_path_extents(cr, &x0, &y0, &x1, &y1);
+		cairo_new_path(cr);
+	} else {
+		cairo_text_extents_t e; // measured from the first glyph
+		cairo_glyph_extents(cr, glyphs.data(), int(glyphs.size()), &e);
+		x0 = glyphs[0].x + e.x_bearing, y0 = glyphs[0].y + e.y_bearing;
+		x1 = x0 + e.width, y1 = y0 + e.height;
 	}
-	const int w = cairo_image_surface_get_width(target), h = cairo_image_surface_get_height(target);
-	const int left = std::max(0, int(std::floor(x0)) - 1), top = std::max(0, int(std::floor(y0)) - 1);
-	const int right = std::min(w, int(std::ceil(x1)) + 1), bottom = std::min(h, int(std::ceil(y1)) + 1);
-	if (right <= left || bottom <= top)
-		return true; // all off the surface
+	if (x1 <= x0 || y1 <= y0)
+		return {}; // no ink
+	double xs[4] = {x0, x1, x0, x1}, ys[4] = {y0, y0, y1, y1};
+	x0 = y0 = HUGE_VAL;
+	x1 = y1 = -HUGE_VAL;
+	for (int i = 0; i < 4; i++) {
+		cairo_user_to_device(cr, &xs[i], &ys[i]);
+		x0 = std::min(x0, xs[i]), y0 = std::min(y0, ys[i]), x1 = std::max(x1, xs[i]), y1 = std::max(y1, ys[i]);
+	}
+	cairo_surface_t *target = cairo_get_target(cr);
+	return {std::max(0, int(std::floor(x0)) - 1), std::max(0, int(std::floor(y0)) - 1),
+		std::min(cairo_image_surface_get_width(target), int(std::ceil(x1)) + 1),
+		std::min(cairo_image_surface_get_height(target), int(std::ceil(y1)) + 1)};
+}
+
+// Whether every pixel of an area of an image surface is clear.
+static bool clear(cairo_surface_t *target, const Area &a)
+{
+	if (a.empty())
+		return true;
 	cairo_surface_flush(target);
 	const uint8_t *data = cairo_image_surface_get_data(target);
 	const int stride = cairo_image_surface_get_stride(target);
-	for (int row = top; row < bottom; row++)
-		if (any_set(data + size_t(row) * size_t(stride) + left, size_t(right - left)))
+	for (int row = a.top; row < a.bottom; row++)
+		if (any_set(data + size_t(row) * size_t(stride) + a.left, size_t(a.right - a.left)))
 			return false;
 	return true;
+}
+
+// Whether glyphs drawn over an A8 surface (the coverage form, a shadow) in
+// an opaque colour can be added in instead: the same pixels wherever the
+// pixels under them are still clear. Cairo draws a run over through a mask
+// of the glyphs added together, which into A8 takes pixman's slow general
+// path; added straight in, the glyphs take a fast one. Cairo adds them
+// itself only into a surface it made and hasn't drawn on: the first run, of
+// a raster drawn in its own memory, and no other.
+static bool can_add(cairo_t *cr)
+{
+	cairo_surface_t *target = cairo_get_target(cr);
+	double red, green, blue, alpha;
+	return cairo_get_operator(cr) == CAIRO_OPERATOR_OVER && cairo_surface_get_type(target) == CAIRO_SURFACE_TYPE_IMAGE &&
+	       cairo_image_surface_get_format(target) == CAIRO_FORMAT_A8 &&
+	       cairo_pattern_get_rgba(cairo_get_source(cr), &red, &green, &blue, &alpha) == CAIRO_STATUS_SUCCESS &&
+	       alpha >= 1.0;
+}
+
+// Whether Cairo emboldens a font's letters itself (a family with no bold
+// face): its glyph metrics then fall short of their outlines, by up to a
+// pixel and more at 140 px, and Cairo's mask for a run, cut to the metrics,
+// cuts the letters' edges with it.
+static bool emboldened(cairo_scaled_font_t *scaled)
+{
+	cairo_font_face_t *face = cairo_scaled_font_get_font_face(scaled);
+	return cairo_font_face_get_type(face) == CAIRO_FONT_TYPE_FT &&
+	       (cairo_ft_font_face_get_synthesize(face) & CAIRO_FT_SYNTHESIZE_BOLD);
+}
+
+// Draws a run as Cairo draws one, in the current source over the target
+// through a mask of its glyphs added together, but with the mask the size
+// of the glyphs' outlines, so nothing is cut. False if it can't (not into
+// an image surface, or no memory): the run is then Cairo's to draw.
+static bool show_through_mask(cairo_t *cr, const std::vector<cairo_glyph_t> &glyphs, bool blank)
+{
+	cairo_surface_t *target = cairo_get_target(cr);
+	double sx = 1, sy = 1, dx = 0, dy = 0;
+	if (cairo_surface_get_type(target) != CAIRO_SURFACE_TYPE_IMAGE ||
+	    cairo_pattern_get_type(cairo_get_source(cr)) != CAIRO_PATTERN_TYPE_SOLID)
+		return false;
+	cairo_surface_get_device_scale(target, &sx, &sy);
+	if (sx != 1 || sy != 1)
+		return false;
+	const Area a = area_of(cr, glyphs, true);
+	if (a.empty())
+		return true;
+	cairo_surface_get_device_offset(target, &dx, &dy);
+	cairo_surface_t *mask = cairo_image_surface_create(CAIRO_FORMAT_A8, a.right - a.left, a.bottom - a.top);
+	cairo_t *m = cairo_create(mask);
+	cairo_matrix_t ctm;
+	cairo_get_matrix(cr, &ctm);
+	ctm.x0 += dx - a.left;
+	ctm.y0 += dy - a.top;
+	cairo_set_matrix(m, &ctm);
+	cairo_set_scaled_font(m, cairo_get_scaled_font(cr));
+	cairo_set_operator(m, CAIRO_OPERATOR_ADD); // every glyph whole, with no mask of Cairo's own
+	cairo_set_source_rgba(m, 0, 0, 0, 1);
+	cairo_show_glyphs(m, glyphs.data(), int(glyphs.size()));
+	const bool ok = cairo_status(m) == CAIRO_STATUS_SUCCESS;
+	cairo_destroy(m);
+	if (ok) {
+		cairo_save(cr);
+		if (can_add(cr) && (blank || clear(target, a)))
+			cairo_set_operator(cr, CAIRO_OPERATOR_ADD);
+		cairo_identity_matrix(cr);
+		cairo_mask_surface(cr, mask, a.left - dx, a.top - dy);
+		cairo_restore(cr);
+	}
+	cairo_surface_destroy(mask);
+	return ok;
 }
 
 static void render_glyphs(PangoRenderer *renderer, PangoFont *font, PangoGlyphString *glyphs, int x, int y)
@@ -670,9 +749,11 @@ static void render_glyphs(PangoRenderer *renderer, PangoFont *font, PangoGlyphSt
 		}
 		out.push_back({gi->glyph, gx, gy});
 	}
-	if (!colour && adds_alike(cr, out, r->blank))
-		cairo_set_operator(cr, CAIRO_OPERATOR_ADD);
-	cairo_show_glyphs(cr, out.data(), int(out.size()));
+	if (out.empty() || colour || !emboldened(scaled) || !show_through_mask(cr, out, r->blank)) {
+		if (!out.empty() && !colour && can_add(cr) && (r->blank || clear(cairo_get_target(cr), area_of(cr, out, false))))
+			cairo_set_operator(cr, CAIRO_OPERATOR_ADD);
+		cairo_show_glyphs(cr, out.data(), int(out.size()));
+	}
 	r->blank = r->blank && out.empty();
 	cairo_restore(cr);
 }
