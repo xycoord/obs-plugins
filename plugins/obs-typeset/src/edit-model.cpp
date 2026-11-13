@@ -317,14 +317,45 @@ bool EditModel::step_size(int direction)
 	StyleChange c;
 	c.field = StyleChange::Size;
 	if (has_selection()) {
+		// Each part from its own size; a run of steps is one undo.
 		c.relative = true;
 		c.amount = 10.0 * direction;
-	} else {
-		c.amount = std::clamp(size_percent() + 10.0 * direction, 10.0, 1000.0);
-		if (std::fabs(c.amount - 100.0) < 1e-9)
-			c.amount = 0;
+		if (last_edit_ != EditKind::Stepping)
+			push_undo();
+		apply(spans_, sel_from(), sel_to(), c, text_);
+		last_edit_ = EditKind::Stepping;
+		return true;
 	}
+	c.amount = std::clamp(size_percent() + 10.0 * direction, 10.0, 1000.0);
+	if (std::fabs(c.amount - 100.0) < 1e-9)
+		c.amount = 0;
 	return style(c, false, {});
+}
+
+void EditModel::size_range(double *smallest, double *largest) const
+{
+	if (!has_selection()) {
+		*smallest = *largest = size_percent();
+		return;
+	}
+	double lo = 1e9, hi = -1;
+	auto see = [&](double pct) {
+		lo = std::min(lo, pct);
+		hi = std::max(hi, pct);
+	};
+	size_t at = sel_from();
+	for (const Span &s : spans_) {
+		if (s.end <= at || s.start >= sel_to())
+			continue;
+		if (s.start > at)
+			see(100); // a gap: the text's own size
+		see(s.size > 0 ? s.size : 100);
+		at = s.end;
+	}
+	if (at < sel_to())
+		see(100);
+	*smallest = lo;
+	*largest = hi;
 }
 
 bool EditModel::set_size_percent(double percent)

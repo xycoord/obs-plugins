@@ -176,6 +176,21 @@ int main()
 		check("Clear goes back to the text's own", m.family(&f) && f.empty() && m.spans().empty());
 	}
 	{
+		// A run of steps is one undo; the range of a mixed selection.
+		EditModel m;
+		m.start("abcd", {});
+		m.select(0, 2);
+		m.step_size(1);
+		m.step_size(1);
+		m.step_size(1);
+		double lo = 0, hi = 0;
+		m.select(0, 4);
+		m.size_range(&lo, &hi);
+		check("a mixed selection's range", lo == 100 && hi == 130, std::to_string(lo) + " " + std::to_string(hi));
+		m.undo();
+		check("three steps undo as one", m.spans().empty());
+	}
+	{
 		// A size typed in pixels is kept to the fraction.
 		EditModel m;
 		m.start("ab", {});

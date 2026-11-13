@@ -31,7 +31,9 @@ public:
 		int weight = 400;         // 0: mixed
 		bool italic = false, underline = false;
 		int script = 0;   // 0 none, 1 superscript, 2 subscript; -1 mixed
-		int size_px = 0;  // in the text's own pixels; 0: mixed
+		int size_px = 0;     // in the text's own pixels; mixed: the smallest
+		int size_max_px = 0; // mixed: the largest (else the same as size_px)
+		int base_px = 0;     // the text's own size
 		uint32_t colour = 0xFFFFFFFF; // 0xAABBGGRR
 		int align = 0;
 	};
@@ -40,6 +42,7 @@ public:
 		std::function<void(const std::string &)> family;
 		std::function<void(int)> weight;
 		std::function<void(int)> size_px;
+		std::function<void()> size_base; // back to the text's own size
 		std::function<void(int)> step_size; // +1 bigger, -1 smaller
 		std::function<void(Toggle)> toggle;
 		std::function<void()> colour;
@@ -71,6 +74,10 @@ private:
 	QComboBox *size_;
 	QToolButton *italic_, *underline_, *super_, *sub_, *colour_, *align_, *clear_;
 	State state_;
+	int listed_base_ = -1; // the base size the list was made with
+	bool select_on_release_ = false;
+	void show_size();      // the state's size in the field (its typing let go)
+	void step_size_field(int dir);
 	bool updating_ = false;
 };
 

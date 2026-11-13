@@ -16,7 +16,7 @@
 
 namespace typeset {
 
-enum class EditKind { None, Typing, Deleting, Other };
+enum class EditKind { None, Typing, Deleting, Stepping, Other };
 
 // What the text's own font has (its weight and slant), for bold, italic and
 // underline toggling off text that has them from its font.
@@ -102,6 +102,7 @@ public:
 	// What the selection (or what's typed next) has, for the format bar.
 	bool has(StyleChange::Field f, const BaseStyle &base) const;
 	double size_percent() const;           // of the text's own size
+	void size_range(double *smallest, double *largest) const; // the same, over a selection
 	int weight(int base_weight) const;     // as drawn; 0 if mixed
 	int script() const;                    // 0 none, 1 super, 2 sub; -1 if mixed
 	bool family(std::string *out) const;   // the typeface ("": the text's own); false if mixed

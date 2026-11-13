@@ -508,6 +508,15 @@ def test_rich(out):
         obs.key("Home", "Return")
         weights = [s.get("weight", 0) for s in obs.settings("Title").get("spans", [])]
         check(weights == [200], "the weight list gives the selection a weight of the font's", repr(weights))
+        # The size list: type a size, Enter (in the text's own pixels; the
+        # text is 160 px, so 200 is 125%).
+        obs.click(*bar_button(obs, "size"))
+        obs.type("200")
+        obs.key("Return")
+        sizes = [round(s.get("size", 0), 3) for s in obs.settings("Title").get("spans", [])]
+        check(sizes == [125.0], "a size typed in the size list", repr(sizes))
+        obs.key("ctrl+z")
+
         # The typeface list: type a name, Return.
         obs.click(*bar_button(obs, "typeface"))
         obs.key("ctrl+a")

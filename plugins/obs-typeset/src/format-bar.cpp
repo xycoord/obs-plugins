@@ -11,11 +11,13 @@
 #include <QKeyEvent>
 #include <QMenu>
 #include <QBitmap>
+#include <QAbstractItemView>
 #include <QFrame>
 #include <QPainter>
 #include <QPainterPath>
 #include <QRegion>
-#include <QIntValidator>
+#include <QSignalBlocker>
+#include <QTimer>
 #include <QWheelEvent>
 #include <QToolButton>
 
@@ -29,7 +31,12 @@ namespace {
 
 // The sizes the size list offers (the text's own pixels); any other can be
 // typed.
-constexpr int preset_sizes[] = {12, 16, 20, 24, 32, 40, 48, 64, 72, 96, 120, 144, 192, 240, 288, 384};
+// Dense where lower thirds and set times are (24 to 72), sparse at title
+// sizes; the text's own size is added (see set_state()).
+constexpr int preset_sizes[] = {16, 20, 24, 28, 32, 40, 48, 56, 64, 72, 96, 120, 144, 192, 240, 288, 384, 480};
+
+// An item's role: the text's own size (back to it), not a size of its own.
+constexpr int base_role = Qt::UserRole + 1;
 
 // A size typed: its number, whatever's round it ("140 px"); 0 if none.
 int typed_size(const QString &text)
@@ -220,25 +227,41 @@ FormatBar::FormatBar(QWidget *parent, Actions actions)
 			actions_.back_to_text();
 	});
 
-	// The size: a list like the typeface's (Word's size box): type any size,
-	// or pick a common one; scrolling over it steps it, as the shortcuts do.
+	// The size: a list like the typeface's (Word's size box). Type any size
+	// and press Enter, or pick a common one, or the text's own; once clicked
+	// into, Up/Down and the wheel step it a tenth, as the shortcuts do.
+	// Nothing reaches the text (which may be on air) until it's committed.
 	size_ = new QComboBox(this);
 	size_->setEditable(true);
 	size_->setInsertPolicy(QComboBox::NoInsert);
-	size_->setToolTip(tip("Bar.Size", "Ctrl+Shift+> / <"));
 	size_->setFocusPolicy(Qt::ClickFocus);
-	size_->lineEdit()->setValidator(new QIntValidator(1, 4096, size_));
-	for (int px : preset_sizes)
-		size_->addItem(QString::number(px), px);
-	auto apply_size = [this] {
+	size_->setMaxVisibleItems(int(std::size(preset_sizes)) + 1); // all of it, no scrolling
+	// A fixed width, room for "4096+": the bar doesn't shift as sizes change.
+	size_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+	size_->setMinimumContentsLength(5);
+	auto apply_typed = [this] {
 		const int px = typed_size(size_->currentText());
-		if (!updating_ && px > 0 && px != state_.size_px && actions_.size_px)
+		if (!updating_ && px > 0 && (px != state_.size_px || state_.size_max_px != state_.size_px) &&
+		    actions_.size_px)
 			actions_.size_px(px);
+		show_size();
 		if (actions_.back_to_text)
 			actions_.back_to_text();
 	};
-	QObject::connect(size_, QOverload<int>::of(&QComboBox::activated), this, apply_size);
-	QObject::connect(size_->lineEdit(), &QLineEdit::returnPressed, this, apply_size);
+	QObject::connect(size_, QOverload<int>::of(&QComboBox::activated), this, [this](int i) {
+		if (!updating_ && i >= 0) {
+			if (size_->itemData(i, base_role).toBool()) {
+				if (actions_.size_base)
+					actions_.size_base();
+			} else if (actions_.size_px) {
+				actions_.size_px(size_->itemData(i).toInt());
+			}
+		}
+		show_size();
+		if (actions_.back_to_text)
+			actions_.back_to_text();
+	});
+	QObject::connect(size_->lineEdit(), &QLineEdit::returnPressed, this, apply_typed);
 	size_->installEventFilter(this);
 	row->addWidget(size_);
 	row->addWidget(weight_); // typeface, size, then weight
@@ -401,10 +424,28 @@ void FormatBar::set_state(const State &s)
 		weight_->setCurrentIndex(weight_->count() - 1);
 	}
 
-	if (!size_->hasFocus() && !size_->lineEdit()->hasFocus()) {
-		size_->setCurrentIndex(size_->findData(s.size_px)); // -1 if it isn't one of the list's
-		size_->setEditText(s.size_px > 0 ? QString::number(s.size_px) : QString()); // blank if mixed
+	// The list: the common sizes and the text's own, in order (marked; the
+	// common size itself if it's one of them).
+	if (s.base_px != listed_base_) {
+		listed_base_ = s.base_px;
+		size_->clear();
+		std::vector<int> sizes(std::begin(preset_sizes), std::end(preset_sizes));
+		if (s.base_px > 0 && std::find(sizes.begin(), sizes.end(), s.base_px) == sizes.end())
+			sizes.insert(std::upper_bound(sizes.begin(), sizes.end(), s.base_px), s.base_px);
+		for (int px : sizes) {
+			const bool base = px == s.base_px;
+			size_->addItem(base ? QString("%1 \u2014 %2").arg(px).arg(QString::fromUtf8(obs_module_text("Bar.TextSize")))
+					    : QString::number(px),
+				       px);
+			if (base)
+				size_->setItemData(size_->count() - 1, true, base_role);
+		}
+		// The list as wide as its widest entry ("96 — text size"), however
+		// narrow the field.
+		size_->view()->setMinimumWidth(size_->view()->sizeHintForColumn(0) + 24);
 	}
+	if (!size_->hasFocus() && !size_->lineEdit()->hasFocus())
+		show_size();
 	italic_->setChecked(s.italic);
 	underline_->setChecked(s.underline);
 	super_->setChecked(s.script == 1);
@@ -413,6 +454,28 @@ void FormatBar::set_state(const State &s)
 	align_->setIcon(align_icon(this, s.align));
 	updating_ = false;
 	adjustSize();
+}
+
+// The state's size in the field: the size, or for a mixed selection the
+// smallest and a plus (as PowerPoint shows it), the range in the tooltip.
+void FormatBar::show_size()
+{
+	const State &s = state_;
+	const bool mixed = s.size_max_px != s.size_px;
+	const QSignalBlocker block(size_);
+	size_->setCurrentIndex(mixed ? -1 : size_->findData(s.size_px));
+	size_->setEditText(s.size_px <= 0 ? QString() : mixed ? QString("%1+").arg(s.size_px) : QString::number(s.size_px));
+	QString t = tip("Bar.Size", "Ctrl+Shift+> / <");
+	if (mixed)
+		t += "\n" + QString::fromUtf8(obs_module_text("Bar.Size.Mixed")).arg(s.size_px).arg(s.size_max_px);
+	size_->setToolTip(t);
+}
+
+void FormatBar::step_size_field(int dir)
+{
+	if (actions_.step_size)
+		actions_.step_size(dir);
+	size_->lineEdit()->selectAll();
 }
 
 void FormatBar::place(int x, int y, int below_y, const QRect &within)
@@ -457,12 +520,49 @@ bool FormatBar::eventFilter(QObject *obj, QEvent *event)
 		weight_->showPopup();
 		return true;
 	}
-	if (obj == size_ && event->type() == QEvent::Wheel) {
-		const int dy = static_cast<QWheelEvent *>(event)->angleDelta().y();
-		if (dy != 0 && actions_.step_size)
-			actions_.step_size(dy > 0 ? 1 : -1);
+	// (An editable list has the keyboard itself and hands keys and focus to
+	// its field directly, past any filter on the field: they're caught on
+	// the list.)
+	QLineEdit *field = size_->lineEdit();
+	const bool size_focused = size_->hasFocus() || field->hasFocus();
+	if ((obj == size_ || obj == field) && event->type() == QEvent::Wheel) {
+		// Only once clicked into, as OBS's own fields: a stray scroll over
+		// the bar mustn't change text that may be on air.
+		if (size_focused) {
+			const int dy = static_cast<QWheelEvent *>(event)->angleDelta().y();
+			if (dy != 0)
+				step_size_field(dy > 0 ? 1 : -1);
+		}
 		return true;
 	}
+	if ((obj == size_ || obj == field) && event->type() == QEvent::KeyPress) {
+		const int key = static_cast<QKeyEvent *>(event)->key();
+		if (key == Qt::Key_Up || key == Qt::Key_Down) {
+			step_size_field(key == Qt::Key_Up ? 1 : -1);
+			return true;
+		}
+		if (key == Qt::Key_Escape) { // the field put back; back to the text
+			show_size();
+			if (actions_.back_to_text)
+				actions_.back_to_text();
+			return true;
+		}
+	}
+	// Clicked into, the size is all selected, so typing replaces it (on the
+	// click's release: its press places the cursor).
+	if ((obj == size_ || obj == field) && event->type() == QEvent::FocusIn) {
+		select_on_release_ = true;
+		QTimer::singleShot(0, field, [field] { field->selectAll(); });
+	}
+	if (obj == field && event->type() == QEvent::MouseButtonRelease && select_on_release_) {
+		select_on_release_ = false;
+		QTimer::singleShot(0, field, [field] { field->selectAll(); });
+	}
+	if ((obj == size_ || obj == field) && event->type() == QEvent::FocusOut) // left uncommitted: put back
+		QTimer::singleShot(0, this, [this] {
+			if (!size_->hasFocus() && !size_->lineEdit()->hasFocus())
+				show_size();
+		});
 	if (event->type() == QEvent::ShortcutOverride) {
 		event->accept();
 		return false; // and the key goes to the field

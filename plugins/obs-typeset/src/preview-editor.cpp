@@ -811,6 +811,10 @@ void PreviewEditor::make_bar()
 		if (base > 0 && model_.set_size_percent(px * 100.0 / base))
 			commit();
 	});
+	a.size_base = then([this] {
+		if (model_.set_size_percent(100))
+			commit();
+	});
 	a.step_size = then([this](int dir) { step_size(dir); });
 	a.toggle = then([this](FormatBar::Toggle t) {
 		StyleChange c;
@@ -865,7 +869,11 @@ void PreviewEditor::bar_state()
 	st.italic = model_.has(StyleChange::Italic, b);
 	st.underline = model_.has(StyleChange::Underline, b);
 	st.script = model_.script();
-	st.size_px = int(std::lround(doc.style.size * model_.size_percent() / 100.0)); // the dialog's units
+	double lo = 100, hi = 100;
+	model_.size_range(&lo, &hi);
+	st.size_px = int(std::lround(doc.style.size * lo / 100.0)); // the dialog's units
+	st.size_max_px = int(std::lround(doc.style.size * hi / 100.0));
+	st.base_px = int(std::lround(doc.style.size));
 	st.colour = model_.colour(doc.style.colour);
 	st.align = model_.layout().align;
 	bar_->set_state(st);
@@ -1242,9 +1250,11 @@ bool PreviewEditor::eventFilter(QObject *obj, QEvent *event)
 		// Switching windows or opening a menu keeps the edit going; while
 		// another of OBS's windows has the keyboard, its hotkeys work.
 		const Qt::FocusReason reason = static_cast<QFocusEvent *>(event)->reason();
-		QWidget *to = QApplication::focusWidget();
-		if (bar_ && to && bar_->isAncestorOf(to))
-			return false; // into the bar's size field or weight list: still editing
+		// Into the bar, or a list it has opened (a window of its own, whose
+		// parent is the bar's list): still editing.
+		for (QWidget *to = QApplication::focusWidget(); to; to = to->parentWidget())
+			if (to == bar_)
+				return false;
 		if (reason != Qt::ActiveWindowFocusReason && reason != Qt::PopupFocusReason)
 			end_edit();
 		else if (reason == Qt::ActiveWindowFocusReason)
