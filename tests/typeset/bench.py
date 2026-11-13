@@ -285,7 +285,7 @@ def edit_run(kind, seconds=8.0):
         }
 
 
-FT2_TEXT_BOX = (1000, 800)  # set from a look at the dialog
+FT2_TEXT_BOX = (1190, 840)  # its text box, with the dialog where edit_run puts it
 
 
 def main():
