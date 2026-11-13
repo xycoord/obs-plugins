@@ -10,6 +10,7 @@
 // gives it back to the preview after.
 #pragma once
 
+#include <QFrame>
 #include <QWidget>
 
 #include <functional>
@@ -26,6 +27,16 @@ class QSlider;
 class QToolButton;
 
 namespace typeset {
+
+// A pop-up from the bar (spacing, the paragraph): the bar's rounded panel.
+class RoundedPopup : public QFrame {
+public:
+	explicit RoundedPopup(QWidget *parent) : QFrame(parent, Qt::Popup) {}
+
+protected:
+	void paintEvent(QPaintEvent *event) override;
+	void resizeEvent(QResizeEvent *event) override;
+};
 
 class FormatBar : public QWidget {
 public:

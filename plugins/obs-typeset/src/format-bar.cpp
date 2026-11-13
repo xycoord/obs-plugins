@@ -34,6 +34,11 @@ namespace typeset {
 
 namespace {
 
+// One margin all round the bar (and its pop-ups), one gap within a group, a
+// wider one between groups (group_gap is added to gap).
+constexpr int margin = 6, gap = 4, group_gap = 8;
+constexpr int bar_radius = 10; // the controls' own (about 4) plus the margin: the corners nest
+
 // The sizes the size list offers (the text's own pixels); any other can be
 // typed.
 // Dense where lower thirds and set times are (24 to 72), sparse at title
@@ -245,7 +250,6 @@ FormatBar::FormatBar(QWidget *parent, Actions actions)
 	auto *row = new QHBoxLayout(this);
 	// One margin all round, one gap within a group, a wider one between
 	// groups (and either side of the line).
-	constexpr int margin = 6, gap = 4, group_gap = 8; // group_gap is added to gap
 	row->setContentsMargins(margin, margin, margin, margin);
 	row->setSpacing(gap);
 
@@ -406,6 +410,9 @@ FormatBar::FormatBar(QWidget *parent, Actions actions)
 	for (QToolButton *b : {italic_, underline_, super_, sub_, tracking_, colour_, clear_, paragraph_})
 		b->setFixedSize(h, h);
 	line->setFixedHeight(h - 2 * gap);
+	// The paragraph pop-up's alignment buttons as the bar's own.
+	for (QToolButton *b : aligns_)
+		b->setFixedSize(h, h);
 
 	// Keys typed into the size field or the weight list are theirs, not
 	// OBS's shortcuts (Delete would remove the source).
@@ -415,33 +422,52 @@ FormatBar::FormatBar(QWidget *parent, Actions actions)
 	hide();
 }
 
-// The bar's own shape: a rounded panel in the theme's window colour with a
+// The bar's own shape, and its pop-ups': a rounded panel in the theme's window colour with a
 // hairline edge, its corners as round as OBS's controls'. Cut to that shape
 // with a mask (no compositor is needed for it).
-constexpr int bar_radius = 10; // the controls' own (about 4) plus the margin: the corners nest
-
-void FormatBar::paintEvent(QPaintEvent *)
+static void paint_panel(QWidget *w)
 {
-	QPainter p(this);
+	QPainter p(w);
 	p.setRenderHint(QPainter::Antialiasing);
-	p.setPen(QPen(palette().color(QPalette::Mid), 1));
-	p.setBrush(palette().color(QPalette::Window));
-	p.drawRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5), bar_radius, bar_radius);
+	p.setPen(QPen(w->palette().color(QPalette::Mid), 1));
+	p.setBrush(w->palette().color(QPalette::Window));
+	p.drawRoundedRect(QRectF(w->rect()).adjusted(0.5, 0.5, -0.5, -0.5), bar_radius, bar_radius);
 }
 
-void FormatBar::resizeEvent(QResizeEvent *event)
+// The shape cut to the pixel from the same rounded rectangle that's painted
+// (a polygon of it would cut the corners off flat).
+static void cut_panel(QWidget *w)
 {
-	// The shape cut to the pixel from the same rounded rectangle that's
-	// painted (a polygon of it would cut the corners off flat).
-	QBitmap shape(size());
+	QBitmap shape(w->size());
 	shape.fill(Qt::color0);
 	QPainter p(&shape);
 	p.setPen(Qt::NoPen);
 	p.setBrush(Qt::color1);
-	p.drawRoundedRect(QRectF(rect()), bar_radius, bar_radius);
+	p.drawRoundedRect(QRectF(w->rect()), bar_radius, bar_radius);
 	p.end();
-	setMask(shape);
+	w->setMask(shape);
+}
+
+void FormatBar::paintEvent(QPaintEvent *)
+{
+	paint_panel(this);
+}
+
+void FormatBar::resizeEvent(QResizeEvent *event)
+{
+	cut_panel(this);
 	QWidget::resizeEvent(event);
+}
+
+void RoundedPopup::paintEvent(QPaintEvent *)
+{
+	paint_panel(this);
+}
+
+void RoundedPopup::resizeEvent(QResizeEvent *event)
+{
+	cut_panel(this);
+	QFrame::resizeEvent(event);
 }
 
 void FormatBar::set_state(const State &s)
@@ -574,8 +600,7 @@ void FormatBar::step_size_field(int dir)
 void FormatBar::make_popups()
 {
 	auto popup = [this] {
-		auto *p = new QFrame(this, Qt::Popup);
-		p->setFrameShape(QFrame::StyledPanel);
+		auto *p = new RoundedPopup(this);
 		p->installEventFilter(this);
 		return p;
 	};
@@ -619,8 +644,9 @@ void FormatBar::make_popups()
 
 	tracking_popup_ = popup();
 	auto *tg = new QGridLayout(tracking_popup_);
-	tg->setContentsMargins(10, 8, 10, 8);
-	tg->setHorizontalSpacing(8);
+	tg->setContentsMargins(margin + gap, margin + gap, margin + gap, margin + gap);
+	tg->setHorizontalSpacing(group_gap);
+	tg->setVerticalSpacing(margin);
 	number(tracking_popup_, tg, 0, tracking_icon(this), "Bar.Tracking", -20, 100, &tracking_slider_,
 	       &tracking_field_, &FormatBar::Actions::tracking, 1.0);
 	number(tracking_popup_, tg, 1, spacing_icon(this), "Bar.Leading", 50, 300, &leading_slider_, &leading_field_,
@@ -628,12 +654,13 @@ void FormatBar::make_popups()
 
 	paragraph_popup_ = popup();
 	auto *pg = new QGridLayout(paragraph_popup_);
-	pg->setContentsMargins(10, 8, 10, 8);
-	pg->setHorizontalSpacing(8);
-	pg->setVerticalSpacing(8);
+	// The bar's own margin and gaps, so the pop-up reads as part of it.
+	pg->setContentsMargins(margin, margin, margin, margin + gap);
+	pg->setHorizontalSpacing(group_gap);
+	pg->setVerticalSpacing(margin);
 	// Alignment: four buttons, the text's own lit.
 	auto *aligns = new QHBoxLayout();
-	aligns->setSpacing(4);
+	aligns->setSpacing(gap);
 	const char *names[] = {"Align.Left", "Align.Centre", "Align.Right", "Align.Justified"};
 	for (int i = 0; i < 4; i++) {
 		auto *b = new QToolButton(paragraph_popup_);
