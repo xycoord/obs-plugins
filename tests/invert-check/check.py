@@ -4,7 +4,7 @@
 
 Renders a sheet of colour swatches and an image with its own transparency (anti-aliased shapes,
 an alpha ramp) through OBS's real renderer (the headless harness from obs-shaderfilter's tests),
-with "Keep hue" on and off, and compares with the reference: it fails if any pixel is off by more
+and compares with the reference: it fails if any pixel is off by more
 than 2/255. Then prints how well each inversion keeps the contrast between pairs of colours.
 
 Setup: build the harness and its libobs once with obs-shaderfilter's `tests/run.sh setup`, then
@@ -45,7 +45,7 @@ def images(out):
 
 
 def render(plugin, data, out):
-    cases = [(f"{img}_{mode}", img, {"keep_hue_saturation": mode == "tone"}) for img in ("swatches", "transparent") for mode in ("tone", "plain")]
+    cases = [(img, img, {}) for img in ("swatches", "transparent")]
     spec = {"width": W, "height": H, "images": {i: f"{out}/{i}.png" for i in ("swatches", "transparent")},
             "cases": [{"name": n, "source": s, "filters": [{"id": "grove_invert_filter", "settings": st}], "steps": [{"dt": 0.05, "capture": True}]} for n, s, st in cases]}
     json.dump(spec, open(f"{out}/spec.json", "w"))
@@ -61,12 +61,11 @@ def compare(out):
     for img in ("swatches", "transparent"):
         src = np.asarray(Image.open(f"{out}/{img}.png").convert("RGBA")).astype(float) / 255
         a = src[..., 3:]
-        for mode, f in (("tone", tone_invert), ("plain", lambda c: 1 - c)):
-            got = np.asarray(Image.open(f"{out}/render/{img}_{mode}_0.png").convert("RGBA")).astype(float) / 255
-            want = a * f(src[..., :3])  # the harness captures premultiplied colour
-            err = max(np.abs(got[..., :3] - want).max(), np.abs(got[..., 3:] - a).max()) * 255
-            ok &= err <= 2.0
-            print(f"  {img:12s} {mode:6s} largest difference {err:4.1f}/255  {'ok' if err <= 2.0 else 'FAIL'}")
+        got = np.asarray(Image.open(f"{out}/render/{img}_0.png").convert("RGBA")).astype(float) / 255
+        want = a * tone_invert(src[..., :3])  # the harness captures premultiplied colour
+        err = max(np.abs(got[..., :3] - want).max(), np.abs(got[..., 3:] - a).max()) * 255
+        ok &= err <= 2.0
+        print(f"  {img:12s} largest difference {err:4.1f}/255  {'ok' if err <= 2.0 else 'FAIL'}")
     return ok
 
 

@@ -8,7 +8,7 @@ xvfb-run -a python3 check.py --plugin path/to/obs-invert.so --data plugins/obs-i
 ```
 
 It renders a sheet of colour swatches and an image with its own transparency (anti-aliased shapes
-and an alpha ramp) with "Keep hue" on and off. It fails if any pixel differs from the reference by
+and an alpha ramp). It fails if any pixel differs from the reference by
 more than 2/255; the filter is within 1.6 (8-bit rounding at partial alpha).
 
 Setup: build the harness and its libobs once with obs-shaderfilter's `tests/run.sh setup`, then point
@@ -17,7 +17,7 @@ Setup: build the harness and its libobs once with obs-shaderfilter's `tests/run.
 
 ## Why tone
 
-"Keep hue" flips each colour's tone (CIELAB L\*, perceived lightness from luminance alone) and keeps
+Invert flips each colour's tone (CIELAB L\*, perceived lightness from luminance alone) and keeps
 its OKLab hue and chroma, the way Google's HCT makes dark themes. Contrast between two colours is a
 matter of their luminance, and L\* is luminance on a perceptually even scale, so every pair keeps its
 contrast. The filter first flipped HSL lightness, which leaves vivid colours where they are and

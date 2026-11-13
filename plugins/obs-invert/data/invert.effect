@@ -1,6 +1,6 @@
-// Invert: swaps light and dark, by default keeping each colour's hue.
+// Invert: swaps light and dark, keeping each colour's hue.
 //
-// Keeping hue, each colour's tone (CIELAB L*, its perceived lightness, which
+// Each colour's tone (CIELAB L*, its perceived lightness, which
 // depends only on luminance) becomes 1 - L*, and its OKLab hue and chroma are
 // kept. That is how Google's HCT makes dark themes: tone differences are what
 // contrast is, so every pair of neighbouring colours stands out from each
@@ -9,15 +9,12 @@
 // colourful (no dark yellow is as colourful as yellow): it keeps its tone and
 // hue and loses chroma.
 //
-// Without keeping hue it's a plain inversion, 1 - rgb.
-//
 // Works on the colour each pixel has at full strength (OBS passes filters
 // premultiplied colour), so a source's own transparency is kept, and its
 // anti-aliased edges against it stay exact.
 
 uniform float4x4 ViewProj;
 uniform texture2d image;
-uniform float keep_hue;  // 1: keep hue (tone inversion), 0: plain inversion
 
 sampler_state textureSampler {
 	Filter   = Linear;
@@ -138,8 +135,7 @@ float4 PSInvert(VertData v_in) : TARGET
 	if (c.a <= 0.0)
 		return float4(0.0, 0.0, 0.0, 0.0);
 	float3 rgb = saturate(c.rgb / c.a);
-	rgb = (keep_hue > 0.5) ? perceptual_invert(rgb) : 1.0 - rgb;
-	return float4(rgb * c.a, c.a);
+	return float4(perceptual_invert(rgb) * c.a, c.a);
 }
 
 technique Draw

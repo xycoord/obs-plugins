@@ -1,6 +1,7 @@
-/* Invert: a video filter that swaps light and dark, by default keeping each
- * colour's hue, so a logo made for white paper reads the same on black. The
- * method is described in data/invert.effect. */
+/* Invert: a video filter that swaps light and dark, keeping each colour's hue
+ * and the contrast between colours, so a logo made for white paper reads the
+ * same on black. The method is described in data/invert.effect. It has no
+ * settings. */
 
 #include <obs-module.h>
 
@@ -9,28 +10,18 @@ OBS_MODULE_USE_DEFAULT_LOCALE("obs-invert", "en-US")
 
 MODULE_EXPORT const char *obs_module_description(void)
 {
-	return "Invert filter that can keep hue";
+	return "Invert filter that keeps hue and contrast";
 }
-
-#define SETTING_KEEP_HUE "keep_hue_saturation"
 
 struct invert_filter {
 	obs_source_t *context;
 	gs_effect_t *effect;
-	gs_eparam_t *keep_hue_param;
-	bool keep_hue;
 };
 
 static const char *invert_get_name(void *unused)
 {
 	UNUSED_PARAMETER(unused);
 	return obs_module_text("Invert");
-}
-
-static void invert_update(void *data, obs_data_t *settings)
-{
-	struct invert_filter *filter = data;
-	filter->keep_hue = obs_data_get_bool(settings, SETTING_KEEP_HUE);
 }
 
 static void invert_destroy(void *data)
@@ -44,6 +35,7 @@ static void invert_destroy(void *data)
 
 static void *invert_create(obs_data_t *settings, obs_source_t *context)
 {
+	UNUSED_PARAMETER(settings);
 	struct invert_filter *filter = bzalloc(sizeof(*filter));
 	filter->context = context;
 
@@ -51,8 +43,6 @@ static void *invert_create(obs_data_t *settings, obs_source_t *context)
 	char *errors = NULL;
 	obs_enter_graphics();
 	filter->effect = path ? gs_effect_create_from_file(path, &errors) : NULL;
-	if (filter->effect)
-		filter->keep_hue_param = gs_effect_get_param_by_name(filter->effect, "keep_hue");
 	obs_leave_graphics();
 
 	if (!filter->effect) {
@@ -67,23 +57,7 @@ static void *invert_create(obs_data_t *settings, obs_source_t *context)
 		return NULL;
 	}
 	bfree(path);
-
-	invert_update(filter, settings);
 	return filter;
-}
-
-static void invert_defaults(obs_data_t *settings)
-{
-	obs_data_set_default_bool(settings, SETTING_KEEP_HUE, true);
-}
-
-static obs_properties_t *invert_properties(void *data)
-{
-	UNUSED_PARAMETER(data);
-	obs_properties_t *props = obs_properties_create();
-	obs_property_t *p = obs_properties_add_bool(props, SETTING_KEEP_HUE, obs_module_text("KeepHueSaturation"));
-	obs_property_set_long_description(p, obs_module_text("KeepHueSaturation.Help"));
-	return props;
 }
 
 static bool is_hdr(enum gs_color_space space)
@@ -113,7 +87,6 @@ static void invert_render(void *data, gs_effect_t *unused)
 							      OBS_NO_DIRECT_RENDERING))
 		return;
 
-	gs_effect_set_float(filter->keep_hue_param, filter->keep_hue ? 1.0f : 0.0f);
 	/* The output is premultiplied. */
 	gs_blend_state_push();
 	gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
@@ -137,9 +110,6 @@ static struct obs_source_info invert_filter_info = {
 	.get_name = invert_get_name,
 	.create = invert_create,
 	.destroy = invert_destroy,
-	.update = invert_update,
-	.get_defaults = invert_defaults,
-	.get_properties = invert_properties,
 	.video_render = invert_render,
 	.video_get_color_space = invert_get_color_space,
 };

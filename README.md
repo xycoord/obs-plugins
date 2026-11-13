@@ -5,7 +5,7 @@ Linux.
 
 | Plugin | What it is |
 |---|---|
-| [obs-invert](plugins/obs-invert) | **Invert**: swaps light and dark. With **Keep hue** (the default) it flips each colour's tone, its perceived lightness (CIELAB L\*, the way Google's HCT makes dark themes), and keeps its hue, so a logo made for white goes onto black with the same contrast between its parts: white turns black, black text turns white, a dark navy becomes a light blue, a red stays a red and a pale badge becomes a dark one. Transparency in the source is kept. Without Keep hue it's a plain inversion. |
+| [obs-invert](plugins/obs-invert) | **Invert**: swaps light and dark. It flips each colour's tone, its perceived lightness (CIELAB L\*, the way Google's HCT makes dark themes), and keeps its hue, so a logo made for white goes onto black with the same contrast between its parts: white turns black, black text turns white, a dark navy becomes a light blue, a red stays a red and a pale badge becomes a dark one. Transparency in the source is kept. It has no settings. (For a photographic negative, with opposite hues, obs-shaderfilter's Invert shader does that.) |
 | [obs-shaderfilter](plugins/obs-shaderfilter) | A filter that applies a shader to a source, with a library of 150+ effects (blur, bloom, film grain, glitch, distortion, colour). A submodule: [xycoord/obs-shaderfilter](https://github.com/xycoord/obs-shaderfilter). |
 
 ### Using Invert

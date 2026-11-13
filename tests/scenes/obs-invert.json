@@ -15,17 +15,12 @@
    "settings": {
     "items": [
      {
-      "name": "JPEG, keep hue",
+      "name": "JPEG",
       "visible": true,
       "id": 1
      },
      {
-      "name": "JPEG, plain",
-      "visible": true,
-      "id": 2
-     },
-     {
-      "name": "PNG with alpha, keep hue",
+      "name": "PNG with alpha",
       "visible": true,
       "id": 3
      },
@@ -46,7 +41,7 @@
   {
    "id": "image_source",
    "versioned_id": "image_source",
-   "name": "JPEG, keep hue",
+   "name": "JPEG",
    "settings": {
     "file": "@TESTS@/fixtures/logo.jpg"
    },
@@ -63,26 +58,7 @@
   {
    "id": "image_source",
    "versioned_id": "image_source",
-   "name": "JPEG, plain",
-   "settings": {
-    "file": "@TESTS@/fixtures/logo.jpg"
-   },
-   "filters": [
-    {
-     "id": "grove_invert_filter",
-     "versioned_id": "grove_invert_filter",
-     "name": "Invert",
-     "enabled": true,
-     "settings": {
-      "keep_hue_saturation": false
-     }
-    }
-   ]
-  },
-  {
-   "id": "image_source",
-   "versioned_id": "image_source",
-   "name": "PNG with alpha, keep hue",
+   "name": "PNG with alpha",
    "settings": {
     "file": "@TESTS@/fixtures/logo-alpha.png"
    },
