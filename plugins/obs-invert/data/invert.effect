@@ -1,25 +1,33 @@
 // Invert: swaps light and dark, keeping each colour's hue.
 //
-// Each colour's tone (CIELAB L*, its perceived lightness, which
-// depends only on luminance) becomes 1 - L*, and its OKLab hue and chroma are
-// kept. That is how Google's HCT makes dark themes: tone differences are what
-// contrast is, so every pair of neighbouring colours stands out from each
-// other exactly as much after as before, and a logo made for white paper
-// reads the same on black. A light, vivid colour may have no dark version as
-// colourful (no dark yellow is as colourful as yellow): it keeps its tone and
-// hue and loses chroma.
+// Each colour's tone (CIELAB L*, its perceived lightness, which depends only
+// on luminance) becomes 1 - L*, and its OKLab hue and chroma are kept. That
+// is how Google's HCT makes dark themes: tone differences are what contrast
+// is, so every pair of neighbouring colours stands out from each other
+// exactly as much after as before, and a logo made for white paper reads the
+// same on black. A light, vivid colour may have no dark version as colourful
+// (no dark yellow is as colourful as yellow): it keeps its tone and hue and
+// loses chroma.
 //
-// Works on the colour each pixel has at full strength (OBS passes filters
-// premultiplied colour), so a source's own transparency is kept, and its
-// anti-aliased edges against it stay exact.
+// The inversion itself is worked out once, on the CPU, into a 3D lookup table
+// indexed by sRGB-encoded colour (see invert-filter.c); this looks colours up
+// in it. OBS hands the effect premultiplied colour (in 16-bit float); dividing
+// out alpha gives each pixel's colour at full strength, so a source's own
+// transparency is kept and its edges against it stay exact.
 
 uniform float4x4 ViewProj;
 uniform texture2d image;
+uniform texture3d lut;     // sRGB-encoded colour -> sRGB-encoded inverse
+uniform float3 lut_scale;  // encoded colour -> texture coordinate: centres of the end texels
+uniform float3 lut_offset;
+uniform float hdr;         // 1: an HDR space (linear, may exceed 1), 0: SDR
+uniform float multiplier;  // HDR input * multiplier has 1.0 at SDR white (scRGB: 80 nits / SDR white)
 
 sampler_state textureSampler {
 	Filter   = Linear;
 	AddressU = Clamp;
 	AddressV = Clamp;
+	AddressW = Clamp;
 };
 
 struct VertData {
@@ -35,107 +43,47 @@ VertData VSDefault(VertData v_in)
 	return v_out;
 }
 
-// ------------------------------------------------------------ colour --
-
-float3 srgb_to_linear(float3 c)
+float to_srgb(float u)
 {
-	c = saturate(c);
-	return lerp(c / 12.92, pow((c + 0.055) / 1.055, float3(2.4, 2.4, 2.4)), step(float3(0.04045, 0.04045, 0.04045), c));
+	return (u <= 0.0031308) ? (12.92 * u) : ((1.055 * pow(u, 1.0 / 2.4)) - 0.055);
 }
 
-float3 linear_to_srgb(float3 c)
+float from_srgb(float u)
 {
-	c = saturate(c);
-	return lerp(c * 12.92, 1.055 * pow(c, float3(1.0 / 2.4, 1.0 / 2.4, 1.0 / 2.4)) - 0.055,
-		    step(float3(0.0031308, 0.0031308, 0.0031308), c));
+	return (u <= 0.04045) ? (u / 12.92) : pow((u + 0.055) / 1.055, 2.4);
 }
 
-float3 linear_to_oklab(float3 c)
+float3 to_srgb3(float3 u)
 {
-	float3 lms = float3(dot(float3(0.4122214708, 0.5363325363, 0.0514459929), c),
-			    dot(float3(0.2119034982, 0.6806995451, 0.1073969566), c),
-			    dot(float3(0.0883024619, 0.2817188376, 0.6299787005), c));
-	lms = pow(max(lms, float3(0.0, 0.0, 0.0)), float3(1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0));
-	return float3(dot(float3(0.2104542553, 0.7936177850, -0.0040720468), lms),
-		      dot(float3(1.9779984951, -2.4285922050, 0.4505937099), lms),
-		      dot(float3(0.0259040371, 0.7827717662, -0.8086757660), lms));
+	return float3(to_srgb(u.r), to_srgb(u.g), to_srgb(u.b));
 }
 
-float3 oklab_to_linear(float3 lab)
+float3 from_srgb3(float3 u)
 {
-	float3 lms = float3(dot(float3(1.0, 0.3963377774, 0.2158037573), lab),
-			    dot(float3(1.0, -0.1055613458, -0.0638541728), lab),
-			    dot(float3(1.0, -0.0894841775, -1.2914855480), lab));
-	lms = lms * lms * lms;
-	return float3(dot(float3(4.0767416621, -3.3077115913, 0.2309699292), lms),
-		      dot(float3(-1.2684380046, 2.6097574011, -0.3413193965), lms),
-		      dot(float3(-0.0041960863, -0.7034186147, 1.7076147010), lms));
+	return float3(from_srgb(u.r), from_srgb(u.g), from_srgb(u.b));
 }
 
-bool in_gamut(float3 c)
+float3 invert(float3 encoded)
 {
-	return min(c.r, min(c.g, c.b)) >= -0.0001 && max(c.r, max(c.g, c.b)) <= 1.0001;
+	return lut.Sample(textureSampler, saturate(encoded) * lut_scale + lut_offset).rgb;
 }
-
-// CIELAB L* (0..1) of a luminance, and back.
-float tone_of(float y)
-{
-	return (y > 0.008856) ? 1.16 * pow(y, 1.0 / 3.0) - 0.16 : y * 9.033;
-}
-
-float luminance_of_tone(float t)
-{
-	return (t > 0.08) ? pow((t + 0.16) / 1.16, 3.0) : t / 9.033;
-}
-
-// The linear colour with OKLab chroma ab and luminance y: Newton on OKLab L
-// (luminance is a cubic in it).
-float3 with_luminance(float y, float2 ab)
-{
-	float3 u = float3(dot(float2(0.3963377774, 0.2158037573), ab),
-			  dot(float2(-0.1055613458, -0.0638541728), ab),
-			  dot(float2(-0.0894841775, -1.2914855480), ab));
-	float3 cw = float3(-0.04077454, 1.11249218, -0.07171764);  // luminance from cubed LMS
-	float l = pow(max(y, 0.0), 1.0 / 3.0);
-	for (int i = 0; i < 8; i++) {
-		float3 q = l + u;
-		float f = dot(cw, q * q * q) - y;
-		float df = 3.0 * dot(cw, q * q);
-		l = saturate(l - f / ((abs(df) > 0.0001) ? df : 0.0001));
-	}
-	return oklab_to_linear(float3(l, ab));
-}
-
-float3 perceptual_invert(float3 rgb)
-{
-	float3 lin = srgb_to_linear(rgb);
-	float y = luminance_of_tone(1.0 - tone_of(dot(float3(0.2126, 0.7152, 0.0722), lin)));
-	float2 ab = linear_to_oklab(lin).yz;
-	float3 c = with_luminance(y, ab);
-	if (!in_gamut(c)) {
-		float lo = 0.0;
-		float hi = 1.0;
-		for (int i = 0; i < 10; i++) {
-			float k = 0.5 * (lo + hi);
-			if (in_gamut(with_luminance(y, ab * k)))
-				lo = k;
-			else
-				hi = k;
-		}
-		c = with_luminance(y, ab * lo);
-	}
-	return linear_to_srgb(c);
-}
-
-// ---------------------------------------------------------------- draw --
 
 float4 PSInvert(VertData v_in) : TARGET
 {
 	float4 c = image.Sample(textureSampler, v_in.uv);
 	if (c.a <= 0.0)
 		return float4(0.0, 0.0, 0.0, 0.0);
-	float3 rgb = saturate(c.rgb / c.a);
-	return float4(perceptual_invert(rgb) * c.a, c.a);
+	if (hdr < 0.5) {
+		// SDR: OBS keeps colour premultiplied in sRGB-encoded values (and
+		// hands an sRGB-aware filter their decode), so re-encode, divide out
+		// alpha, invert, and premultiply the same way.
+		float3 inverse = invert(to_srgb3(max(c.rgb, 0.0)) / c.a);
+		return float4(from_srgb3(inverse * c.a), c.a);
+	}
+	// HDR: linear and premultiplied in linear light. Anything past SDR white
+	// is past paper white, and inverts to black.
+	float3 lin = saturate(c.rgb / c.a * multiplier);
+	return float4(from_srgb3(invert(to_srgb3(lin))) / multiplier * c.a, c.a);
 }
 
 technique Draw

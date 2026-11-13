@@ -4,12 +4,20 @@
 inversion (`oklab.py`), through OBS's real renderer, and shows how well it keeps contrast.
 
 ```bash
-xvfb-run -a python3 check.py --plugin path/to/obs-invert.so --data plugins/obs-invert/data
+xvfb-run -a python3 tests/invert-check/check.py --plugin path/to/obs-invert.so --data plugins/obs-invert/data
 ```
 
-It renders a sheet of colour swatches and an image with its own transparency (anti-aliased shapes
-and an alpha ramp). It fails if any pixel differs from the reference by
-more than 2/255; the filter is within 1.6 (8-bit rounding at partial alpha).
+- **The reference**, over a 33 x 33 x 33 grid of sRGB colours: every tone lands on 100 - L\* (within
+  0.03) and hue stays put (within 1 degree).
+- **The filter** against the reference, on that grid of colours, a sheet of swatches, and an image
+  with its own transparency (anti-aliased shapes and an alpha ramp). The filter looks colours up in a
+  65 x 65 x 65 table built once from the same algorithm, so between table points it can be off a
+  little: the check fails above a mean of 1/255 or any pixel off by 4/255. It's at 0.49 and 3.0 on
+  the grid, 2.0 at worst elsewhere.
+- **HDR**, if the harness has the HDR test source (it reads raw half-float images named
+  `NAME_WxH_SPACE.f32`): linear colour up to 4x SDR white, in the canvas HDR space and in scRGB,
+  against the reference followed by OBS's own HDR-to-SDR tonemap. Within 1.7/255. With a harness
+  without it, the check says it skipped this.
 
 Setup: build the harness and its libobs once with obs-shaderfilter's `tests/run.sh setup`, then point
 `WORK` at its work folder (default `~/.cache/obs-shaderfilter-tests`), or set `OBS_PREFIX` and
