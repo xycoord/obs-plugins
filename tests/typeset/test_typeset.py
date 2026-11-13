@@ -173,6 +173,26 @@ def test_scaling(out):
         check(drawings(obs) == drawn, "no text is drawn again while nothing changes",
               "%d drawings, then %d after 3 s" % (drawn, drawings(obs)))
 
+        # Moved by fractions of a pixel every frame (a move transition): the
+        # drawing slides, not drawn again each frame, and once still it's
+        # drawn once more, on the pixel grid.
+        scene_items = obs.request("GetSceneItemList", sceneName="Scene")["sceneItems"]
+        ref_id = next(i["sceneItemId"] for i in scene_items if i["sourceName"] == "Reference")
+        t = obs.request("GetSceneItemTransform", sceneName="Scene", sceneItemId=ref_id)["sceneItemTransform"]
+        drawn = drawings(obs)
+        for k in range(1, 31):
+            obs.request("SetSceneItemTransform", sceneName="Scene", sceneItemId=ref_id,
+                        sceneItemTransform={"positionX": t["positionX"] + 0.37 * k, "positionY": t["positionY"] + 0.21 * k})
+            time.sleep(1 / 30)
+        during = drawings(obs) - drawn
+        time.sleep(0.6)
+        after = drawings(obs) - drawn - during
+        check(during <= 2 and after >= 1, "a text moving by fractions of a pixel slides, and is redrawn once still",
+              "%d drawings while moving (30 frames), %d once still" % (during, after))
+        obs.request("SetSceneItemTransform", sceneName="Scene", sceneItemId=ref_id,
+                    sceneItemTransform={"positionX": t["positionX"], "positionY": t["positionY"]})
+        time.sleep(0.6)
+
         obs_text = region(frame, 960, 440, w, h)
         mean_obs, _ = difference(obs_text, ref)
         print("      for comparison, OBS's own text at 24 px scaled 6x differs from 144 px text by %.2f "

@@ -34,8 +34,9 @@ class ObsError(Exception):
 
 
 class ObsSession:
-    def __init__(self, scene):
-        """scene: the scene collection (a dict as OBS saves it)."""
+    def __init__(self, scene, fps=30):
+        """scene: the scene collection (a dict as OBS saves it); fps: the canvas's frame rate."""
+        self.fps = fps
         self.dir = tempfile.mkdtemp(prefix="typeset-test-")
         self.display = None
         self.xvfb = self.obs = self.ws = None
@@ -60,8 +61,8 @@ class ObsSession:
                 )
         with open(os.path.join(cfg, "basic", "profiles", "Test", "basic.ini"), "w") as f:
             f.write(
-                "[General]\nName=Test\n[Video]\nBaseCX=%d\nBaseCY=%d\nOutputCX=%d\nOutputCY=%d\nFPSCommon=30\n"
-                % (CANVAS + CANVAS)
+                "[General]\nName=Test\n[Video]\nBaseCX=%d\nBaseCY=%d\nOutputCX=%d\nOutputCY=%d\nFPSType=1\nFPSInt=%d\n"
+                % (CANVAS + CANVAS + (self.fps,))
             )
         with open(os.path.join(cfg, "basic", "scenes", "Test.json"), "w") as f:
             json.dump(scene, f)

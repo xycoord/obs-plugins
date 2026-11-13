@@ -38,8 +38,11 @@ class Demo:
 
     def record(self):
         self.raw = tempfile.mktemp(suffix=".mkv")
+        # At 60 frames a second, so no frame OBS shows is missed (at 30,
+        # out of step with OBS's own 30, some would be shown twice and
+        # some not at all, and motion would look jumpier than it is).
         self.ffmpeg = subprocess.Popen(
-            ["ffmpeg", "-loglevel", "error", "-y", "-f", "x11grab", "-draw_mouse", "1", "-framerate", "30",
+            ["ffmpeg", "-loglevel", "error", "-y", "-f", "x11grab", "-draw_mouse", "1", "-framerate", "60",
              "-video_size", "%dx%d" % SCREEN, "-i", self.obs.display, "-c:v", "libx264", "-preset", "ultrafast",
              "-qp", "18", self.raw], stdin=subprocess.PIPE)
         time.sleep(1)
@@ -75,14 +78,18 @@ class Demo:
     # --- Hands -----------------------------------------------------------------------------
 
     def move(self, x, y, steps=20, delay=0.02):
-        """The pointer to (x, y), smoothly, as a hand moves it."""
+        """The pointer to (x, y), smoothly, as a hand moves it: eased, over
+        steps x delay seconds, in moves 60 times a second (one xdotool for
+        the lot, so the moves are evenly spaced, as a real mouse's are)."""
         loc = self.obs.xdo("getmouselocation").split()
         x0, y0 = int(loc[0].split(":")[1]), int(loc[1].split(":")[1])
-        for i in range(1, steps + 1):
-            t = i / steps
+        n = max(2, round(steps * delay * 60))
+        args = []
+        for i in range(1, n + 1):
+            t = i / n
             t = t * t * (3 - 2 * t)
-            self.obs.xdo("mousemove", str(int(x0 + (x - x0) * t)), str(int(y0 + (y - y0) * t)))
-            time.sleep(delay)
+            args += ["mousemove", str(round(x0 + (x - x0) * t)), str(round(y0 + (y - y0) * t)), "sleep", "0.0167"]
+        self.obs.xdo(*args)
 
     def drag(self, x0, y0, x1, y1, steps=45, delay=0.03):
         self.move(x0, y0)

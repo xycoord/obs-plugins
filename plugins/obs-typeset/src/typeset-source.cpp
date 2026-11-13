@@ -393,8 +393,24 @@ void TextSource::tick(float seconds)
 		if (v.want) {
 			v.want = false;
 			v.idle = 0;
-			if (!v.requested || version != v.requested_version || !v.wanted.close_to(v.requested_params))
-				request(v, v.wanted);
+			const bool moved = !v.wanted.close_to(v.last_wanted);
+			v.last_wanted = v.wanted;
+			v.still = moved ? 0 : v.still + seconds;
+			if (!v.requested || version != v.requested_version || !v.wanted.close_to(v.requested_params)) {
+				// Moved but not scaled (dragged, or a move transition):
+				// the drawing slides, as any image does, smooth if a
+				// little soft between pixels; drawn again on the pixel
+				// grid once it's been still a moment. Chasing every
+				// fraction of a pixel would redraw it every frame of a
+				// move, each a frame late, sharp and soft by turns.
+				const bool only_moved = v.requested && version == v.requested_version &&
+							RasterParams{v.wanted.sx, v.wanted.sy, v.requested_params.ox,
+								     v.requested_params.oy}
+								.close_to(v.requested_params);
+				constexpr double settle = 0.1; // seconds
+				if (!only_moved || v.still >= settle)
+					request(v, v.wanted);
+			}
 		} else if (i == 0) {
 			// Not shown now, but it can be cut to at any moment: kept
 			// drawn for the output, so it's never blank on a cut, at the

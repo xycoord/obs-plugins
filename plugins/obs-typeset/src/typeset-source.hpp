@@ -158,6 +158,8 @@ private:
 		uint64_t texture_seq = 0;
 		bool want = false;
 		RasterParams wanted;
+		RasterParams last_wanted; // the frame before's
+		double still = 0;         // seconds drawn at the same place and scale
 		bool requested = false;
 		RasterParams requested_params;
 		uint64_t requested_version = 0;
