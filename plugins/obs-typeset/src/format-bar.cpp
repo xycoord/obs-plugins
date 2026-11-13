@@ -655,12 +655,13 @@ void FormatBar::make_popups()
 	paragraph_popup_ = popup();
 	auto *pg = new QGridLayout(paragraph_popup_);
 	// The bar's own margin and gaps, so the pop-up reads as part of it.
-	pg->setContentsMargins(margin, margin, margin, margin + gap);
+	pg->setContentsMargins(margin, margin, margin, margin);
 	pg->setHorizontalSpacing(group_gap);
-	pg->setVerticalSpacing(margin);
+	pg->setVerticalSpacing(gap);
 	// Alignment: four buttons, the text's own lit.
 	auto *aligns = new QHBoxLayout();
 	aligns->setSpacing(gap);
+	aligns->setContentsMargins(0, 0, 0, gap); // a group's gap before the options (with the row's)
 	const char *names[] = {"Align.Left", "Align.Centre", "Align.Right", "Align.Justified"};
 	for (int i = 0; i < 4; i++) {
 		auto *b = new QToolButton(paragraph_popup_);
@@ -691,6 +692,10 @@ void FormatBar::make_popups()
 				actions_.wrap_options(balance_->isChecked(), orphans_->isChecked());
 		});
 	}
+	// The two options close together, as one set (the theme gives a check
+	// box room of its own above and below).
+	for (QCheckBox *c : {balance_, orphans_})
+		c->setStyleSheet("QCheckBox { margin: 0px; padding: 1px 2px; }");
 	pg->addWidget(balance_, 1, 0, 1, 3);
 	pg->addWidget(orphans_, 2, 0, 1, 3);
 	wrap_note_ = new QLabel(tip("Bar.WrapNote"), paragraph_popup_);
