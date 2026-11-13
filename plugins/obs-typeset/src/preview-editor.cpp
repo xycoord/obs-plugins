@@ -669,6 +669,20 @@ void PreviewEditor::step_size(int direction)
 
 bool PreviewEditor::key_press(QKeyEvent *event)
 {
+	// The pointer out of the way while typing, as text editors do (it sits
+	// on the text after a double-click, and covers the caret): back as soon
+	// as the mouse moves (mouse_event sets it again).
+	switch (event->key()) {
+	case Qt::Key_Control:
+	case Qt::Key_Shift:
+	case Qt::Key_Alt:
+	case Qt::Key_Meta:
+	case Qt::Key_AltGr:
+		break;
+	default:
+		if (preview_)
+			preview_->setCursor(Qt::BlankCursor);
+	}
 	sync_text();
 	const Qt::KeyboardModifiers mods = event->modifiers();
 	const bool shift = mods & Qt::ShiftModifier;
@@ -1037,7 +1051,7 @@ bool PreviewEditor::on_grip(QPointF pos)
 	vec3 p;
 	vec3_set(&p, float(b.w), float(b.h * 0.5), 0.0f);
 	vec3_transform(&p, &p, &m);
-	const QPointF g = canvas_to_widget(preview_mapping(preview_), p) + QPointF(7, 0);
+	const QPointF g = canvas_to_widget(preview_mapping(preview_), p) + QPointF(12, 0);
 	return std::fabs(pos.x() - g.x()) <= 8 && std::fabs(pos.y() - g.y()) <= 18;
 }
 

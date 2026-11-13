@@ -315,8 +315,9 @@ void OverlayPainter::paint(const Overlay &o, uint32_t, uint32_t cy)
 
 	if (o.editing && o.target) {
 		const Projector to_display(o.target, map);
-		// A frame of its own, clear of OBS's red box, blue edged in dark so
-		// it shows on any background.
+		// No frame of its own: OBS's selection box is the text's one outline
+		// (the text stays selected while it's edited). The veil leaves a
+		// margin round it clear.
 		const Quad frame = grown(to_display.box(o.box), 8 * px);
 		float top = 1e9f, left = 1e9f, bottom = -1e9f, right = -1e9f;
 		for (const vec2 &p : frame.p) {
@@ -338,18 +339,14 @@ void OverlayPainter::paint(const Overlay &o, uint32_t, uint32_t cy)
 			fill({rect(cx0, cy0, cx1, t), rect(cx0, b, cx1, cy1), rect(cx0, t, l, b), rect(r, t, cx1, b)}, veil);
 		}
 
-		std::vector<Quad> edges, inner;
-		outline(edges, frame, 6 * px);
-		outline(inner, frame, 3 * px);
-		fill(edges, accent_edge);
-		fill(inner, accent);
 
 		// The text box's width grip, on the frame's right edge.
 		if (o.grip) {
 			const vec2 a = to_display(o.box.w, o.box.h * 0.5);
 			vec2 g0, g1;
-			vec2_set(&g0, a.x + 7 * px, a.y - 12 * px);
-			vec2_set(&g1, a.x + 7 * px, a.y + 12 * px);
+			// (Clear of OBS's own handle on the box's edge.)
+			vec2_set(&g0, a.x + 12 * px, a.y - 12 * px);
+			vec2_set(&g1, a.x + 12 * px, a.y + 12 * px);
 			fill({line_quad(g0, g1, 9 * px)}, accent_edge);
 			fill({line_quad(g0, g1, 6 * px)}, 0xFFFFFFFF);
 			fill({line_quad(g0, g1, 3 * px)}, accent);
@@ -430,10 +427,10 @@ void OverlayPainter::paint(const Overlay &o, uint32_t, uint32_t cy)
 		if (o.show_caret && (since < caret_hold_ms || (since / caret_blink_ms) % 2 == 0)) {
 			const vec2 a = to_display(o.caret.x, o.caret.y);
 			const vec2 b = to_display(o.caret.x, o.caret.y + o.caret.height);
-			// Blue in white in dark: never mistaken for a letter's stem.
-			fill({line_quad(a, b, 7.0f * px)}, 0x000000B0);
-			fill({line_quad(a, b, 5.0f * px)}, 0xFFFFFFFF);
-			fill({line_quad(a, b, 3.0f * px)}, accent);
+			// A solid white bar edged in dark: plain on any background, light
+			// or dark, at any size the preview shows the text.
+			fill({line_quad(a, b, 6.0f * px)}, 0x000000C8);
+			fill({line_quad(a, b, 3.0f * px)}, 0xFFFFFFFF);
 		}
 	}
 
