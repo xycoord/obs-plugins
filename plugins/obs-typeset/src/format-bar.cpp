@@ -440,7 +440,7 @@ void FormatBar::set_state(const State &s)
 			if (base)
 				size_->setItemData(size_->count() - 1, true, base_role);
 		}
-		// The list as wide as its widest entry ("96 — text size"), however
+		// The list as wide as its widest entry ("96 — current"), however
 		// narrow the field.
 		size_->view()->setMinimumWidth(size_->view()->sizeHintForColumn(0) + 24);
 	}

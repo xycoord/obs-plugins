@@ -43,7 +43,8 @@ text, made of OBS's own controls in OBS's theme:
 - **Typeface**, **Size** and **Weight**: any font, in any of its weights (Thin to Black, as it has
   them), at any size in the text's own pixels. Type a size and press Enter (nothing changes on the
   canvas until you do; Esc puts it back), or pick a common one from the list, or the text's own size
-  ("96 — text size"), which puts the words back to it and leaves their other styles. Once you've
+  ("96 — current": the size set in its properties), which puts the words back to it and leaves
+  their other styles. Once you've
   clicked into it, Up and Down or the mouse wheel step it a tenth at a time (a run of steps is one
   undo); a stray scroll over the bar does nothing. A selection of several sizes shows its smallest
   and a plus ("96+"), with the range in the tooltip.
