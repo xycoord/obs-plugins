@@ -34,18 +34,19 @@ LOCATOR = (12, 200, 90)
 # Keys a version doesn't know are ignored by it.
 NEW = {}
 TITLE = {"text": "The Grove\nLive tonight", "font": {"face": "Inter", "style": "Bold", "size": 140, "flags": 0},
-         "align": 1}
+         "align": 1, "shadow": True}
 LOWER_THIRD = {"text": "Ada Lovelace\nAnalytical Engines",
                "font": {"face": "Inter", "style": "SemiBold", "size": 64, "flags": 0}, "colour": 0xFFFFFFFF,
-               "typography": True, "line_spacing": 1.1,
+               "typography": True, "line_spacing": 1.1, "shadow": True,
                "plate": True, "plate_colour": 0x281410, "plate_opacity": 85, "plate_padding": 28, "plate_radius": 6,
                # the role smaller and lighter than the name
                "spans": [{"start": 13, "end": 31, "size": 75, "colour": 0xFFD8D0C8}]}
 SET_TIMES = {"text": "19:30  Doors\n20:15  Support\n21:30  Headliner",
              "font": {"face": "Inter", "style": "Medium", "size": 48, "flags": 0}, "colour": 0xFFE0F0FF,
-             "typography": True, "tabular": True}
+             "typography": True, "tabular": True, "shadow": True}
 MESSAGE = {"text": "Bar closes in 10 minutes", "font": {"face": "DejaVu Serif", "style": "Italic", "size": 56,
-           "flags": 0}, "colour": 0xFFFFD060, "outline": True, "outline_width": 3}
+           "flags": 0}, "colour": 0xFFFFD060, "outline": True, "outline_width": 3,
+           "shadow": True}
 
 
 def busy_background(path):

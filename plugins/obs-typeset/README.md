@@ -12,8 +12,9 @@ other OBS text source does:
 ## Adding one
 
 Sources, then **+**, then **Typeset Text**. The simple job is the top of its properties: the text,
-the font (any weight or style the font has), its size, colour and alignment. New text has a soft
-shadow, so it reads over projector visuals and video from the start.
+the font (any weight or style the font has), its size, colour and alignment. New text is plain:
+turn on a shadow, outline or background in its properties where it needs to stand out from
+projector visuals or video.
 
 Everything else is in groups you tick to turn on; a group's settings show only while it's ticked
 (unticked, it says in a line what it does):
@@ -22,7 +23,7 @@ Everything else is in groups you tick to turn on; a group's settings show only w
 |---|---|
 | **Text box** | A fixed width, so the text stays put when the words change. Text that's too long wraps onto more lines, or shrinks to fit (for band names of any length: the font size itself isn't changed). Wrapped lines can be balanced (as even in length as they can be) and kept from ending in a lone word. An optional height, with vertical alignment. In the preview, a selected text's side handles set the box: left and right its width (the text rewraps at its size), top and bottom its height. |
 | **Outline** | Colour and width. Drawn outside the letters, so it never thins them. |
-| **Shadow** | Colour, opacity, offset, blur and spread (how far it reaches past the letters before it softens, so it holds behind thin type). With no offset, it's a glow. On by default. |
+| **Shadow** | Colour, opacity, offset, blur and spread (how far it reaches past the letters before it softens, so it holds behind thin type). With no offset, it's a glow. |
 | **Background** | A plate behind the text: colour, opacity, padding, rounded corners. For lower thirds and messages over busy visuals. |
 | **Spacing and case** | Line and letter spacing; UPPERCASE, lowercase or capitals at the start of each word (the text stays as you typed it); even-width numbers, so set times line up. |
 

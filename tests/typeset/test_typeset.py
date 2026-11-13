@@ -45,8 +45,8 @@ def font(size, style="Book", face=FONT):
 
 
 def text_source(name, text, size, **settings):
-    # Plain text: no shadow (on by default), so scaled renders can be compared
-    # pixel for pixel.
+    # Plain text: no shadow (the default, said anyway), so scaled renders can
+    # be compared pixel for pixel.
     return {"id": "typeset_text", "versioned_id": "typeset_text", "name": name,
             "settings": dict({"text": text, "font": font(size), "shadow": False}, **settings)}
 
@@ -408,6 +408,11 @@ def test_features(out):
                              "hotkeys": {"OBSBasic.SelectScene": [{"key": "OBS_KEY_1"}]}})
     with ObsSession(scene) as obs:
         time.sleep(1)
+        # New text starts plain: no shadow, outline or background.
+        defaults = obs.request("GetInputDefaultSettings", inputKind="typeset_text")["defaultInputSettings"]
+        check(not defaults.get("shadow") and not defaults.get("outline") and not defaults.get("plate"),
+              "new text starts with no shadow, outline or background",
+              repr({k: defaults.get(k) for k in ("shadow", "outline", "plate")}))
         ids = {i["sourceName"]: i["sceneItemId"]
                for i in obs.request("GetSceneItemList", sceneName="Scene")["sceneItems"]}
 

@@ -50,8 +50,9 @@ SCENARIOS = {
 def settings(kind, text, wrap=None):
     if kind.startswith("typeset"):
         s = {"text": text, "font": FONT, "colour": 0xFFFFFFFF}
-        if kind == "typeset-plain":  # as OBS's own: no shadow (Typeset Text's default has a soft one)
-            s["shadow"] = False
+        # typeset: with its soft shadow (which OBS's own hasn't); typeset-plain:
+        # without, as Typeset Text starts.
+        s["shadow"] = kind == "typeset"
         if wrap:
             s.update(box=True, box_width=wrap)
         return s
@@ -301,7 +302,7 @@ def main():
     parser.add_argument("--editing", action="store_true", help="the editing measurements instead")
     parser.add_argument("--kinds", default="none,ft2,typeset-plain,typeset",
                         help="which texts: none (a baseline), ft2 (OBS's own), pthread (obs-text-pthread, if "
-                             "installed), typeset-plain (no shadow), typeset")
+                             "installed), typeset-plain (no shadow, its default), typeset (with its soft shadow)")
     parser.add_argument("scenarios", nargs="*", default=list(SCENARIOS))
     args = parser.parse_args()
     results = {}

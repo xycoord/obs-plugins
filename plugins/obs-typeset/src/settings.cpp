@@ -102,13 +102,13 @@ void set_defaults(obs_data_t *settings)
 	obs_data_set_default_int(settings, "text_case", int(Case::AsTyped));
 	obs_data_set_default_bool(settings, "tabular", false);
 
-	// Over projector visuals and video, text needs something to stand out
-	// from them: a shadow is on from the start, close and fairly dense, so
-	// it holds up thin and light text too.
+	// No effects to start with: plain text, as typed. The shadow, once
+	// turned on, starts close and fairly dense, so it holds up thin and
+	// light text over projector visuals and video.
 	obs_data_set_default_bool(settings, "outline", false);
 	obs_data_set_default_int(settings, "outline_colour", 0xFF000000);
 	obs_data_set_default_int(settings, "outline_width", 4);
-	obs_data_set_default_bool(settings, "shadow", true);
+	obs_data_set_default_bool(settings, "shadow", false);
 	obs_data_set_default_int(settings, "shadow_colour", 0xFF000000);
 	obs_data_set_default_int(settings, "shadow_opacity", 75);
 	obs_data_set_default_int(settings, "shadow_x", 0);
