@@ -15,22 +15,17 @@
    "settings": {
     "items": [
      {
-      "name": "JPEG, defaults",
+      "name": "JPEG",
       "visible": true,
       "id": 1
      },
      {
-      "name": "JPEG, transparent",
-      "visible": true,
-      "id": 2
-     },
-     {
-      "name": "JPEG, plain, glow fade",
+      "name": "PNG with alpha",
       "visible": true,
       "id": 3
      },
      {
-      "name": "PNG with alpha, transparent",
+      "name": "JPEG, then Colour Correction",
       "visible": true,
       "id": 4
      },
@@ -38,20 +33,15 @@
       "name": "Colour",
       "visible": true,
       "id": 5
-     },
-     {
-      "name": "JPEG, tuned",
-      "visible": true,
-      "id": 6
      }
     ],
-    "id_counter": 6
+    "id_counter": 5
    }
   },
   {
    "id": "image_source",
    "versioned_id": "image_source",
-   "name": "JPEG, defaults",
+   "name": "JPEG",
    "settings": {
     "file": "@TESTS@/fixtures/logo.jpg"
    },
@@ -68,48 +58,7 @@
   {
    "id": "image_source",
    "versioned_id": "image_source",
-   "name": "JPEG, transparent",
-   "settings": {
-    "file": "@TESTS@/fixtures/logo.jpg"
-   },
-   "filters": [
-    {
-     "id": "grove_invert_filter",
-     "versioned_id": "grove_invert_filter",
-     "name": "Invert",
-     "enabled": true,
-     "settings": {
-      "transparent": true
-     }
-    }
-   ]
-  },
-  {
-   "id": "image_source",
-   "versioned_id": "image_source",
-   "name": "JPEG, plain, glow fade",
-   "settings": {
-    "file": "@TESTS@/fixtures/logo.jpg"
-   },
-   "filters": [
-    {
-     "id": "grove_invert_filter",
-     "versioned_id": "grove_invert_filter",
-     "name": "Invert",
-     "enabled": true,
-     "settings": {
-      "keep_hue_saturation": false,
-      "transparent": true,
-      "clean_up": 15.0,
-      "fade_soft": 60.0
-     }
-    }
-   ]
-  },
-  {
-   "id": "image_source",
-   "versioned_id": "image_source",
-   "name": "PNG with alpha, transparent",
+   "name": "PNG with alpha",
    "settings": {
     "file": "@TESTS@/fixtures/logo-alpha.png"
    },
@@ -119,9 +68,34 @@
      "versioned_id": "grove_invert_filter",
      "name": "Invert",
      "enabled": true,
+     "settings": {}
+    }
+   ]
+  },
+  {
+   "id": "image_source",
+   "versioned_id": "image_source",
+   "name": "JPEG, then Colour Correction",
+   "settings": {
+    "file": "@TESTS@/fixtures/logo.jpg"
+   },
+   "filters": [
+    {
+     "id": "grove_invert_filter",
+     "versioned_id": "grove_invert_filter",
+     "name": "Invert",
+     "enabled": true,
+     "settings": {}
+    },
+    {
+     "id": "color_filter",
+     "versioned_id": "color_filter_v2",
+     "name": "Colour Correction",
+     "enabled": true,
      "settings": {
-      "transparent": true,
-      "clean_up": 0.0
+      "saturation": -1.0,
+      "contrast": 1.5,
+      "gamma": 0.3
      }
     }
    ]
@@ -142,31 +116,6 @@
      "name": "Invert",
      "enabled": true,
      "settings": {}
-    }
-   ]
-  },
-  {
-   "id": "image_source",
-   "versioned_id": "image_source",
-   "name": "JPEG, tuned",
-   "settings": {
-    "file": "@TESTS@/fixtures/logo.jpg"
-   },
-   "filters": [
-    {
-     "id": "grove_invert_filter",
-     "versioned_id": "grove_invert_filter",
-     "name": "Invert",
-     "enabled": true,
-     "settings": {
-      "transparent": true,
-      "background": "pick",
-      "background_colour": 4294967295,
-      "clean_up": 18.0,
-      "edge_softness": 2.5,
-      "thin_details": "solid",
-      "grey_shadows": false
-     }
     }
    ]
   }

@@ -1,56 +1,219 @@
-/* Invert: a video filter that swaps light and dark, by default keeping each
- * colour's hue and saturation. Made for logos supplied on a white (or cream)
- * background that need to go on a black one: it also cleans up what JPEG does
- * to them and can make the background transparent, so the logo can go over
- * anything. The method is described in data/invert.effect; this file runs its
- * passes. */
+/* Invert: a video filter that swaps light and dark, keeping each colour's hue
+ * and the contrast between colours, so a logo made for white paper reads the
+ * same on black. It has no settings.
+ *
+ * Each colour's tone (CIELAB L*, perceived lightness from luminance alone)
+ * becomes 1 - L*, keeping its OKLab hue and chroma; a light, vivid colour with
+ * no dark version as colourful loses chroma at the same tone. That takes a
+ * Newton solve and, outside the gamut, a search, so it is worked out once, on
+ * the CPU, into a 3D lookup table (65 x 65 x 65, indexed by sRGB-encoded
+ * colour); the shader just looks colours up in it. tests/invert-check has the
+ * same inversion in numpy and checks the filter against it.
+ *
+ * HDR: the tone flip is across SDR black to SDR white, so on an HDR source
+ * white paper still turns black. Anything brighter than SDR white is past
+ * paper white, and turns black too. */
 
-#include <obs-module.h>
+#include <math.h>
+#include <pthread.h>
+#include <stdint.h>
 #include <string.h>
+#include <obs-module.h>
+#include <util/threading.h>
 
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE("obs-invert", "en-US")
 
 MODULE_EXPORT const char *obs_module_description(void)
 {
-	return "Invert filter that can keep hue and saturation";
+	return "Invert filter that keeps hue and contrast";
 }
 
-#define SETTING_KEEP_HUE "keep_hue_saturation"
-#define SETTING_CLEAN_UP "clean_up"
-#define SETTING_TRANSPARENT "transparent"
-#define SETTING_FADE "fade_soft"
-#define SETTING_BACKGROUND "background"         /* "auto" or "pick" */
-#define SETTING_BACKGROUND_COLOUR "background_colour"
-#define SETTING_EDGE_SOFTNESS "edge_softness"
-#define SETTING_THIN "thin_details"             /* "auto", "solid" or "faint" */
-#define SETTING_GREY_SHADOWS "grey_shadows"
+/* ------------------------------------------------------------- the inversion */
+
+#define LUT_SIZE 65
+
+static double srgb_to_linear(double c)
+{
+	return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
+}
+
+static double linear_to_srgb(double c)
+{
+	c = c < 0.0 ? 0.0 : (c > 1.0 ? 1.0 : c);
+	return c <= 0.0031308 ? c * 12.92 : 1.055 * pow(c, 1.0 / 2.4) - 0.055;
+}
+
+/* CIELAB L* (0..1) of a luminance, and back. */
+static double tone_of(double y)
+{
+	return y > 0.008856 ? 1.16 * cbrt(y) - 0.16 : y * 9.033;
+}
+
+static double luminance_of_tone(double t)
+{
+	return t > 0.08 ? pow((t + 0.16) / 1.16, 3.0) : t / 9.033;
+}
+
+static void linear_to_oklab(const double c[3], double lab[3])
+{
+	double l = cbrt(0.4122214708 * c[0] + 0.5363325363 * c[1] + 0.0514459929 * c[2]);
+	double m = cbrt(0.2119034982 * c[0] + 0.6806995451 * c[1] + 0.1073969566 * c[2]);
+	double s = cbrt(0.0883024619 * c[0] + 0.2817188376 * c[1] + 0.6299787005 * c[2]);
+	lab[0] = 0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s;
+	lab[1] = 1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s;
+	lab[2] = 0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s;
+}
+
+static void oklab_to_linear(double L, double a, double b, double c[3])
+{
+	double l = L + 0.3963377774 * a + 0.2158037573 * b;
+	double m = L - 0.1055613458 * a - 0.0638541728 * b;
+	double s = L - 0.0894841775 * a - 1.2914855480 * b;
+	l = l * l * l;
+	m = m * m * m;
+	s = s * s * s;
+	c[0] = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s;
+	c[1] = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s;
+	c[2] = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s;
+}
+
+static bool in_gamut(const double c[3])
+{
+	for (int i = 0; i < 3; i++)
+		if (c[i] < -0.0001 || c[i] > 1.0001)
+			return false;
+	return true;
+}
+
+/* The linear colour with OKLab chroma (a, b) and luminance y: Newton on OKLab L,
+ * since luminance is a cubic in it. */
+static void with_luminance(double y, double a, double b, double c[3])
+{
+	const double u[3] = {0.3963377774 * a + 0.2158037573 * b, -0.1055613458 * a - 0.0638541728 * b,
+			     -0.0894841775 * a - 1.2914855480 * b};
+	const double cw[3] = {-0.04077454, 1.11249218, -0.07171764}; /* luminance from cubed LMS */
+	double L = cbrt(y > 0.0 ? y : 0.0);
+	for (int i = 0; i < 20; i++) {
+		double f = -y, df = 0.0;
+		for (int k = 0; k < 3; k++) {
+			double q = L + u[k];
+			f += cw[k] * q * q * q;
+			df += 3.0 * cw[k] * q * q;
+		}
+		const double next = fmin(fmax(L - f / (fabs(df) > 0.0001 ? df : 0.0001), 0.0), 1.0);
+		const bool done = fabs(next - L) < 1e-9;
+		L = next;
+		if (done)
+			break;
+	}
+	oklab_to_linear(L, a, b, c);
+}
+
+/* sRGB-encoded colour in, sRGB-encoded inverse out. */
+static void tone_invert(const double rgb[3], double out[3])
+{
+	double lin[3], lab[3], c[3];
+	for (int i = 0; i < 3; i++)
+		lin[i] = srgb_to_linear(rgb[i]);
+	const double y = luminance_of_tone(1.0 - tone_of(0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]));
+	linear_to_oklab(lin, lab);
+	with_luminance(y, lab[1], lab[2], c);
+	if (!in_gamut(c)) {
+		/* Less chroma, same tone and hue: the most that fits. */
+		double lo = 0.0, hi = 1.0;
+		for (int i = 0; i < 14; i++) {
+			double k = 0.5 * (lo + hi);
+			with_luminance(y, lab[1] * k, lab[2] * k, c);
+			if (in_gamut(c))
+				lo = k;
+			else
+				hi = k;
+		}
+		with_luminance(y, lab[1] * lo, lab[2] * lo, c);
+	}
+	for (int i = 0; i < 3; i++)
+		out[i] = linear_to_srgb(c[i]);
+}
+
+/* IEEE half float, rounded to nearest even (values here are 0..1, so no
+ * overflow or NaN handling is needed). */
+static uint16_t to_half(float f)
+{
+	uint32_t x;
+	memcpy(&x, &f, sizeof(x));
+	const uint32_t sign = (x >> 16) & 0x8000;
+	const int32_t exp = (int32_t)((x >> 23) & 0xff) - 127 + 15;
+	uint32_t mant = x & 0x7fffff;
+	uint32_t shift = 13;
+	if (exp <= 0) { /* subnormal or zero */
+		if (exp < -10)
+			return (uint16_t)sign;
+		mant |= 0x800000;
+		shift = (uint32_t)(14 - exp);
+	}
+	uint32_t h = (exp <= 0 ? 0 : (uint32_t)exp << 10) | (mant >> shift);
+	const uint32_t rest = mant & ((1u << shift) - 1), half = 1u << (shift - 1);
+	if (rest > half || (rest == half && (h & 1)))
+		h++; /* a carry into the exponent is still correct */
+	return (uint16_t)(sign | h);
+}
+
+/* The lookup table, built once and shared: RGBA half floats, red fastest. It
+ * takes a few hundred milliseconds, so it is built on a thread started when
+ * the module loads; the first filter created waits for it if it must. */
+static uint16_t *lut_data;
+static pthread_t lut_thread;
+static bool lut_thread_started;
+static pthread_once_t lut_once = PTHREAD_ONCE_INIT;
+
+static void build_lut(void)
+{
+	uint16_t *data = bmalloc(sizeof(uint16_t) * 4 * LUT_SIZE * LUT_SIZE * LUT_SIZE);
+	size_t i = 0;
+	for (int b = 0; b < LUT_SIZE; b++) {
+		for (int g = 0; g < LUT_SIZE; g++) {
+			for (int r = 0; r < LUT_SIZE; r++) {
+				const double in[3] = {r / (LUT_SIZE - 1.0), g / (LUT_SIZE - 1.0), b / (LUT_SIZE - 1.0)};
+				double out[3];
+				tone_invert(in, out);
+				data[i++] = to_half((float)out[0]);
+				data[i++] = to_half((float)out[1]);
+				data[i++] = to_half((float)out[2]);
+				data[i++] = 0x3c00; /* 1.0 */
+			}
+		}
+	}
+	lut_data = data;
+}
+
+static void *lut_thread_main(void *unused)
+{
+	UNUSED_PARAMETER(unused);
+	os_set_thread_name("obs-invert: lookup table");
+	build_lut();
+	return NULL;
+}
+
+static void wait_for_lut(void)
+{
+	if (lut_thread_started)
+		pthread_join(lut_thread, NULL);
+	else
+		build_lut();
+}
+
+/* ----------------------------------------------------------------- the filter */
 
 struct invert_filter {
 	obs_source_t *context;
 	gs_effect_t *effect;
-	gs_eparam_t *image_param;
-	gs_eparam_t *paper_param;
-	gs_eparam_t *keep_hue_param;
-	gs_eparam_t *black_point_param;
-	gs_eparam_t *fade_param;
-	gs_eparam_t *texel_param;
-	gs_eparam_t *paper_pick_param;
-	gs_eparam_t *reach_param;
-	gs_eparam_t *detail_param;
-	gs_eparam_t *grey_shadows_param;
-	gs_texrender_t *copy;   /* the source, read by every pass */
-	gs_texrender_t *paper;  /* 1 x 1: the paper colour */
-	gs_texrender_t *processed;
-
-	bool keep_hue;
-	float black_point; /* 0..1 */
-	bool transparent;
-	float fade; /* 0..1 */
-	struct vec4 paper_pick; /* rgb, a: 1 to use it */
-	float reach;            /* 1..4 */
-	float detail;           /* 0 faint, 0.5 automatic, 1 solid */
-	bool grey_shadows;
+	gs_texture_t *lut;
+	gs_eparam_t *lut_param;
+	gs_eparam_t *lut_scale_param;
+	gs_eparam_t *lut_offset_param;
+	gs_eparam_t *hdr_param;
+	gs_eparam_t *multiplier_param;
 };
 
 static const char *invert_get_name(void *unused)
@@ -59,205 +222,63 @@ static const char *invert_get_name(void *unused)
 	return obs_module_text("Invert");
 }
 
-static void invert_update(void *data, obs_data_t *settings)
-{
-	struct invert_filter *filter = data;
-	filter->keep_hue = obs_data_get_bool(settings, SETTING_KEEP_HUE);
-	filter->black_point = (float)obs_data_get_double(settings, SETTING_CLEAN_UP) / 100.0f;
-	filter->transparent = obs_data_get_bool(settings, SETTING_TRANSPARENT);
-	filter->fade = (float)obs_data_get_double(settings, SETTING_FADE) / 100.0f;
-	uint32_t colour = (uint32_t)obs_data_get_int(settings, SETTING_BACKGROUND_COLOUR); /* 0xAABBGGRR */
-	bool pick = strcmp(obs_data_get_string(settings, SETTING_BACKGROUND), "pick") == 0;
-	vec4_set(&filter->paper_pick, (float)(colour & 0xff) / 255.0f, (float)((colour >> 8) & 0xff) / 255.0f,
-		 (float)((colour >> 16) & 0xff) / 255.0f, pick ? 1.0f : 0.0f);
-	filter->reach = (float)obs_data_get_double(settings, SETTING_EDGE_SOFTNESS);
-	const char *thin = obs_data_get_string(settings, SETTING_THIN);
-	filter->detail = strcmp(thin, "solid") == 0 ? 1.0f : strcmp(thin, "faint") == 0 ? 0.0f : 0.5f;
-	filter->grey_shadows = obs_data_get_bool(settings, SETTING_GREY_SHADOWS);
-}
-
 static void invert_destroy(void *data)
 {
 	struct invert_filter *filter = data;
 	obs_enter_graphics();
 	gs_effect_destroy(filter->effect);
-	gs_texrender_destroy(filter->copy);
-	gs_texrender_destroy(filter->paper);
-	gs_texrender_destroy(filter->processed);
+	gs_voltexture_destroy(filter->lut);
 	obs_leave_graphics();
 	bfree(filter);
 }
 
 static void *invert_create(obs_data_t *settings, obs_source_t *context)
 {
+	UNUSED_PARAMETER(settings);
 	struct invert_filter *filter = bzalloc(sizeof(*filter));
 	filter->context = context;
+	pthread_once(&lut_once, wait_for_lut);
 
 	char *path = obs_module_file("invert.effect");
 	char *errors = NULL;
 	obs_enter_graphics();
 	filter->effect = path ? gs_effect_create_from_file(path, &errors) : NULL;
+	const uint8_t *planes[] = {(const uint8_t *)lut_data};
+	filter->lut = gs_voltexture_create(LUT_SIZE, LUT_SIZE, LUT_SIZE, GS_RGBA16F, 1, planes, 0);
 	if (filter->effect) {
-		filter->image_param = gs_effect_get_param_by_name(filter->effect, "image");
-		filter->paper_param = gs_effect_get_param_by_name(filter->effect, "paper_tex");
-		filter->keep_hue_param = gs_effect_get_param_by_name(filter->effect, "keep_hue");
-		filter->black_point_param = gs_effect_get_param_by_name(filter->effect, "black_point");
-		filter->fade_param = gs_effect_get_param_by_name(filter->effect, "fade");
-		filter->texel_param = gs_effect_get_param_by_name(filter->effect, "texel");
-		filter->paper_pick_param = gs_effect_get_param_by_name(filter->effect, "paper_pick");
-		filter->reach_param = gs_effect_get_param_by_name(filter->effect, "reach");
-		filter->detail_param = gs_effect_get_param_by_name(filter->effect, "detail");
-		filter->grey_shadows_param = gs_effect_get_param_by_name(filter->effect, "grey_shadows");
-		filter->copy = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
-		filter->paper = gs_texrender_create(GS_RGBA16F, GS_ZS_NONE);
-		filter->processed = gs_texrender_create(GS_RGBA16F, GS_ZS_NONE);
+		filter->lut_param = gs_effect_get_param_by_name(filter->effect, "lut");
+		filter->lut_scale_param = gs_effect_get_param_by_name(filter->effect, "lut_scale");
+		filter->lut_offset_param = gs_effect_get_param_by_name(filter->effect, "lut_offset");
+		filter->hdr_param = gs_effect_get_param_by_name(filter->effect, "hdr");
+		filter->multiplier_param = gs_effect_get_param_by_name(filter->effect, "multiplier");
 	}
 	obs_leave_graphics();
 
-	if (!filter->effect) {
-		if (path)
+	if (!filter->effect || !filter->lut) {
+		if (!path)
+			blog(LOG_ERROR, "[obs-invert] failed to load: invert.effect not found");
+		else if (!filter->effect)
 			blog(LOG_ERROR, "[obs-invert] failed to compile %s: %s", path,
 			     errors ? errors : "(no details)");
 		else
-			blog(LOG_ERROR, "[obs-invert] failed to load: invert.effect not found");
+			blog(LOG_ERROR, "[obs-invert] failed to create the lookup table texture");
 		bfree(errors);
 		bfree(path);
 		invert_destroy(filter);
 		return NULL;
 	}
 	bfree(path);
-
-	invert_update(filter, settings);
 	return filter;
 }
 
-static void invert_defaults(obs_data_t *settings)
-{
-	obs_data_set_default_bool(settings, SETTING_KEEP_HUE, true);
-	/* JPEG specks around a logo's text are almost all below 8% brightness
-	 * once inverted. */
-	obs_data_set_default_double(settings, SETTING_CLEAN_UP, 8.0);
-	obs_data_set_default_bool(settings, SETTING_TRANSPARENT, false);
-	/* Shadows and glows fade fully, as on the page. */
-	obs_data_set_default_double(settings, SETTING_FADE, 100.0);
-	obs_data_set_default_string(settings, SETTING_BACKGROUND, "auto");
-	obs_data_set_default_int(settings, SETTING_BACKGROUND_COLOUR, 0xffffffff);
-	obs_data_set_default_double(settings, SETTING_EDGE_SOFTNESS, 1.0);
-	obs_data_set_default_string(settings, SETTING_THIN, "auto");
-	obs_data_set_default_bool(settings, SETTING_GREY_SHADOWS, true);
-}
-
-static bool transparent_changed(obs_properties_t *props, obs_property_t *p, obs_data_t *settings)
-{
-	UNUSED_PARAMETER(p);
-	bool on = obs_data_get_bool(settings, SETTING_TRANSPARENT);
-	const char *only_transparent[] = {SETTING_EDGE_SOFTNESS, SETTING_THIN, SETTING_GREY_SHADOWS, SETTING_FADE};
-	for (size_t i = 0; i < OBS_COUNTOF(only_transparent); i++)
-		obs_property_set_visible(obs_properties_get(props, only_transparent[i]), on);
-	return true;
-}
-
-static bool background_changed(obs_properties_t *props, obs_property_t *p, obs_data_t *settings)
-{
-	UNUSED_PARAMETER(p);
-	obs_property_set_visible(obs_properties_get(props, SETTING_BACKGROUND_COLOUR),
-				 strcmp(obs_data_get_string(settings, SETTING_BACKGROUND), "pick") == 0);
-	return true;
-}
-
-static obs_properties_t *invert_properties(void *data)
-{
-	UNUSED_PARAMETER(data);
-	obs_properties_t *props = obs_properties_create();
-	obs_property_t *p;
-
-	p = obs_properties_add_bool(props, SETTING_KEEP_HUE, obs_module_text("KeepHueSaturation"));
-	obs_property_set_long_description(p, obs_module_text("KeepHueSaturation.Help"));
-
-	p = obs_properties_add_list(props, SETTING_BACKGROUND, obs_module_text("Background"), OBS_COMBO_TYPE_LIST,
-				    OBS_COMBO_FORMAT_STRING);
-	obs_property_list_add_string(p, obs_module_text("Background.Auto"), "auto");
-	obs_property_list_add_string(p, obs_module_text("Background.Pick"), "pick");
-	obs_property_set_long_description(p, obs_module_text("Background.Help"));
-	obs_property_set_modified_callback(p, background_changed);
-	p = obs_properties_add_color(props, SETTING_BACKGROUND_COLOUR, obs_module_text("BackgroundColour"));
-	obs_property_set_long_description(p, obs_module_text("BackgroundColour.Help"));
-
-	p = obs_properties_add_float_slider(props, SETTING_CLEAN_UP, obs_module_text("CleanUp"), 0.0, 25.0, 0.5);
-	obs_property_float_set_suffix(p, "%");
-	obs_property_set_long_description(p, obs_module_text("CleanUp.Help"));
-
-	p = obs_properties_add_bool(props, SETTING_TRANSPARENT, obs_module_text("Transparent"));
-	obs_property_set_long_description(p, obs_module_text("Transparent.Help"));
-	obs_property_set_modified_callback(p, transparent_changed);
-
-	p = obs_properties_add_float_slider(props, SETTING_EDGE_SOFTNESS, obs_module_text("EdgeSoftness"), 1.0, 4.0, 0.25);
-	obs_property_float_set_suffix(p, " px");
-	obs_property_set_long_description(p, obs_module_text("EdgeSoftness.Help"));
-
-	p = obs_properties_add_list(props, SETTING_THIN, obs_module_text("Thin"), OBS_COMBO_TYPE_LIST,
-				    OBS_COMBO_FORMAT_STRING);
-	obs_property_list_add_string(p, obs_module_text("Thin.Auto"), "auto");
-	obs_property_list_add_string(p, obs_module_text("Thin.Solid"), "solid");
-	obs_property_list_add_string(p, obs_module_text("Thin.Faint"), "faint");
-	obs_property_set_long_description(p, obs_module_text("Thin.Help"));
-
-	p = obs_properties_add_bool(props, SETTING_GREY_SHADOWS, obs_module_text("GreyShadows"));
-	obs_property_set_long_description(p, obs_module_text("GreyShadows.Help"));
-
-	p = obs_properties_add_float_slider(props, SETTING_FADE, obs_module_text("FadeSoft"), 0.0, 100.0, 1.0);
-	obs_property_float_set_suffix(p, "%");
-	obs_property_set_long_description(p, obs_module_text("FadeSoft.Help"));
-
-	return props;
-}
-
-/* The inversion works on gamma-encoded SDR values, as image editors do. HDR
- * sources (extended range or scRGB) are passed through untouched: "1 - value"
- * has no meaning above SDR white. */
-static bool is_hdr(enum gs_color_space space)
-{
-	return space == GS_CS_709_EXTENDED || space == GS_CS_709_SCRGB;
-}
-
-static enum gs_color_space source_space(struct invert_filter *filter)
+/* The space the filter works and outputs in: the source's own, in 16-bit
+ * float (so dividing out alpha keeps faint colours precise). */
+static enum gs_color_space working_space(struct invert_filter *filter)
 {
 	const enum gs_color_space spaces[] = {GS_CS_SRGB, GS_CS_SRGB_16F, GS_CS_709_EXTENDED, GS_CS_709_SCRGB};
-	return obs_source_get_color_space(obs_filter_get_target(filter->context), OBS_COUNTOF(spaces), spaces);
-}
-
-/* Draw tex through the effect's technique into the current target, w x h.
- * The settings are set for every pass: OBS's filter drawing (the copy pass)
- * leaves the effect's other parameters at zero. */
-static void draw_pass(struct invert_filter *filter, gs_texture_t *tex, const char *technique, uint32_t w, uint32_t h,
-		      const struct vec2 *texel, gs_texture_t *paper)
-{
-	gs_effect_set_float(filter->keep_hue_param, filter->keep_hue ? 1.0f : 0.0f);
-	gs_effect_set_float(filter->black_point_param, filter->black_point);
-	gs_effect_set_float(filter->fade_param, filter->fade);
-	gs_effect_set_vec2(filter->texel_param, texel);
-	gs_effect_set_vec4(filter->paper_pick_param, &filter->paper_pick);
-	gs_effect_set_float(filter->reach_param, filter->reach);
-	gs_effect_set_float(filter->detail_param, filter->detail);
-	gs_effect_set_float(filter->grey_shadows_param, filter->grey_shadows ? 1.0f : 0.0f);
-	if (paper)
-		gs_effect_set_texture(filter->paper_param, paper);
-	gs_effect_set_texture(filter->image_param, tex);
-	while (gs_effect_loop(filter->effect, technique))
-		gs_draw_sprite(tex, 0, w, h);
-}
-
-/* Render into tr at w x h, replacing what's there. */
-static bool begin_target(gs_texrender_t *tr, uint32_t w, uint32_t h)
-{
-	gs_texrender_reset(tr);
-	if (!gs_texrender_begin(tr, w, h))
-		return false;
-	struct vec4 clear;
-	vec4_zero(&clear);
-	gs_clear(GS_CLEAR_COLOR, &clear, 0.0f, 0);
-	gs_ortho(0.0f, (float)w, 0.0f, (float)h, -100.0f, 100.0f);
-	return true;
+	const enum gs_color_space space =
+		obs_source_get_color_space(obs_filter_get_target(filter->context), OBS_COUNTOF(spaces), spaces);
+	return space == GS_CS_SRGB ? GS_CS_SRGB_16F : space;
 }
 
 static void invert_render(void *data, gs_effect_t *unused)
@@ -265,60 +286,33 @@ static void invert_render(void *data, gs_effect_t *unused)
 	UNUSED_PARAMETER(unused);
 	struct invert_filter *filter = data;
 
-	if (is_hdr(source_space(filter))) {
-		obs_source_skip_video_filter(filter->context);
-		return;
-	}
-	obs_source_t *target = obs_filter_get_target(filter->context);
-	uint32_t w = obs_source_get_base_width(target);
-	uint32_t h = obs_source_get_base_height(target);
-	if (!w || !h) {
-		obs_source_skip_video_filter(filter->context);
-		return;
-	}
-	if (!obs_source_process_filter_begin_with_color_space(filter->context, GS_RGBA, GS_CS_SRGB,
+	const enum gs_color_space space = working_space(filter);
+	/* Never rendered directly: the effect expects OBS's premultiplied filter
+	 * texture, not the source's own. 16-bit float, so dividing out alpha
+	 * keeps faint colours precise. */
+	if (!obs_source_process_filter_begin_with_color_space(filter->context, GS_RGBA16F, space,
 							      OBS_NO_DIRECT_RENDERING))
 		return;
 
-	struct vec2 texel;
-	vec2_set(&texel, 1.0f / (float)w, 1.0f / (float)h);
+	/* scRGB has 1.0 at 80 nits; the inversion works with 1.0 at SDR white. */
+	const float sdr_white = obs_get_video_sdr_white_level();
+	const float multiplier = space == GS_CS_709_SCRGB ? 80.0f / (sdr_white > 0.0f ? sdr_white : 300.0f) : 1.0f;
+	const float scale = (LUT_SIZE - 1.0f) / LUT_SIZE;
+	const float offset = 0.5f / LUT_SIZE;
+	struct vec3 v;
+	gs_effect_set_texture(filter->lut_param, filter->lut);
+	vec3_set(&v, scale, scale, scale);
+	gs_effect_set_vec3(filter->lut_scale_param, &v);
+	vec3_set(&v, offset, offset, offset);
+	gs_effect_set_vec3(filter->lut_offset_param, &v);
+	const bool hdr = space == GS_CS_709_EXTENDED || space == GS_CS_709_SCRGB;
+	gs_effect_set_float(filter->hdr_param, hdr ? 1.0f : 0.0f);
+	gs_effect_set_float(filter->multiplier_param, multiplier);
 
-	/* Passes into textures replace what's there. */
-	gs_blend_state_push();
-	gs_blend_function(GS_BLEND_ONE, GS_BLEND_ZERO);
-
-	/* 1. The source, to read several times. */
-	if (!begin_target(filter->copy, w, h)) {
-		gs_blend_state_pop();
-		return;
-	}
-	obs_source_process_filter_tech_end(filter->context, filter->effect, w, h, "Copy");
-	gs_texrender_end(filter->copy);
-	gs_texture_t *source = gs_texrender_get_texture(filter->copy);
-
-	/* 2. The paper colour, one pixel. */
-	if (begin_target(filter->paper, 1, 1)) {
-		draw_pass(filter, source, "Paper", 1, 1, &texel, NULL);
-		gs_texrender_end(filter->paper);
-	}
-	gs_texture_t *paper = gs_texrender_get_texture(filter->paper);
-
-	/* 3. Processed (and, for transparency, marked) image. */
-	gs_texture_t *processed = NULL;
-	if (filter->transparent && begin_target(filter->processed, w, h)) {
-		draw_pass(filter, source, "Process", w, h, &texel, paper);
-		gs_texrender_end(filter->processed);
-		processed = gs_texrender_get_texture(filter->processed);
-	}
-	gs_blend_state_pop();
-
-	/* 4. Out: the alpha pass, or (opaque) the processing itself. Premultiplied. */
+	/* The output is premultiplied. */
 	gs_blend_state_push();
 	gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
-	if (processed)
-		draw_pass(filter, processed, "Alpha", w, h, &texel, paper);
-	else
-		draw_pass(filter, source, "ProcessOpaque", w, h, &texel, paper);
+	obs_source_process_filter_tech_end(filter->context, filter->effect, 0, 0, "Draw");
 	gs_blend_state_pop();
 }
 
@@ -326,27 +320,31 @@ static enum gs_color_space invert_get_color_space(void *data, size_t count, cons
 {
 	UNUSED_PARAMETER(count);
 	UNUSED_PARAMETER(preferred);
-	struct invert_filter *filter = data;
-	const enum gs_color_space space = source_space(filter);
-	return is_hdr(space) ? space : GS_CS_SRGB;
+	return working_space(data);
 }
 
 static struct obs_source_info invert_filter_info = {
 	.id = "grove_invert_filter",
 	.type = OBS_SOURCE_TYPE_FILTER,
-	.output_flags = OBS_SOURCE_VIDEO,
+	/* SRGB: OBS hands the effect linear light and encodes what it writes. */
+	.output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_SRGB,
 	.get_name = invert_get_name,
 	.create = invert_create,
 	.destroy = invert_destroy,
-	.update = invert_update,
-	.get_defaults = invert_defaults,
-	.get_properties = invert_properties,
 	.video_render = invert_render,
 	.video_get_color_space = invert_get_color_space,
 };
 
 bool obs_module_load(void)
 {
+	lut_thread_started = pthread_create(&lut_thread, NULL, lut_thread_main, NULL) == 0;
 	obs_register_source(&invert_filter_info);
 	return true;
+}
+
+void obs_module_unload(void)
+{
+	pthread_once(&lut_once, wait_for_lut);
+	bfree(lut_data);
+	lut_data = NULL;
 }
