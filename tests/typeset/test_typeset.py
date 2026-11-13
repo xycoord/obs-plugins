@@ -599,6 +599,15 @@ def test_rich(out):
         sizes = [round(s.get("size", 0), 3) for s in obs.settings("Title").get("spans", [])]
         check(sizes == [125.0], "a size typed in the size list", repr(sizes))
         obs.key("ctrl+z")
+        # A decimal is a size to the nearest pixel, not its digits run
+        # together (12.5 isn't 125).
+        obs.click(*bar_button(obs, "size"))
+        obs.key("ctrl+a")
+        obs.type("79.6")
+        obs.key("Return")
+        sizes = [round(s.get("size", 0), 3) for s in obs.settings("Title").get("spans", [])]
+        check(sizes == [50.0], "a decimal size typed in the size list is rounded to a pixel", repr(sizes))
+        obs.key("ctrl+z")
 
         # Spacing: letter spacing for the selection, leading for the whole
         # text, from the same pop-up.
@@ -724,6 +733,31 @@ def test_history(out):
         obs.key("ctrl+z")
         time.sleep(0.5)
         check(align() == 2 and text() == "After all", "and OBS's Undo of the edit leaves it", "%r %r" % (align(), text()))
+
+        # Leading set elsewhere between two keys of one edit: the step for
+        # the first key doesn't take it in, so Redo of that key alone doesn't
+        # bring it back early.
+        obs.click(*to_screen(200 + tw * 0.5, 200 + th / 2), repeat=2)
+        obs.key("End")
+        obs.type("!")
+        time.sleep(0.3)
+        obs.request("SetInputSettings", inputName="Title", inputSettings={"typography": True, "line_spacing": 1.5})
+        time.sleep(0.5)
+        obs.type("?")
+        obs.key("Escape")
+        spacing = lambda: obs.settings("Title").get("line_spacing", 1.0)  # noqa: E731
+        obs.key("ctrl+z")
+        time.sleep(0.3)
+        obs.key("ctrl+z")
+        time.sleep(0.5)
+        obs.key("ctrl+shift+z")
+        time.sleep(0.5)
+        if text() != "After all!":  # OBS's Redo is Ctrl+Y on some setups
+            obs.key("ctrl+y")
+            time.sleep(0.5)
+        check(text() == "After all!" and abs(spacing() - 1.0) < 1e-6,
+              "Redo of a key typed before a change made elsewhere doesn't bring that change",
+              "%r %r" % (text(), spacing()))
 
         # Hidden while it's being edited: editing ends at once, so keys
         # typed straight after don't go into it.

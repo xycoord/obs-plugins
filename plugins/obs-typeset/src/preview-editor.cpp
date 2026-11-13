@@ -657,8 +657,12 @@ void PreviewEditor::sync_text()
 	Document edited = now;
 	edited.text = model_.text();
 	edited.spans = model_.spans();
-	edited.style.align = Align(model_.layout().align);
-	edited.style.box_width = model_.layout().box_width;
+	const StripLayout &l = model_.layout(); // all of what the edit sets (see undo_state)
+	edited.style.align = Align(l.align);
+	edited.style.box_width = l.box_width;
+	edited.style.line_spacing = l.line_spacing;
+	edited.style.balance = l.balance;
+	edited.style.avoid_orphans = l.avoid_orphans;
 	add_undo_step(undo_state(source_, edited));
 	before_ = undo_state(source_, now);
 	model_.take(std::move(now.text), std::move(now.spans), caret, anchor, strip_layout(now));
