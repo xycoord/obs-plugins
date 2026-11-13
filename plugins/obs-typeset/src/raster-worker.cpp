@@ -83,6 +83,8 @@ void run(Worker *w)
 			     job->params.sx, job->params.sy, double(os_gettime_ns() - started) / 1e6);
 
 		raster.version = job->version;
+		raster.source_width = job->source_width;
+		raster.source_height = job->source_height;
 		std::lock_guard lock(slot->mutex);
 		if (job->seq > slot->result_seq && job->seq > slot->discard_through) {
 			slot->result = std::move(raster);

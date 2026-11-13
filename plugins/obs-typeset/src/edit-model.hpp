@@ -38,14 +38,24 @@ constexpr size_t max_paste_chars = 20000;
 // max_paste_chars characters, cut at a character's edge.
 std::string clean_paste(std::string text, bool *cut = nullptr);
 
+// What the editing strip changes besides the words: the whole text's
+// alignment and its text box's width. In undo with the words.
+struct StripLayout {
+	int align = 0;
+	int box_width = 0;
+	bool operator==(const StripLayout &) const = default;
+};
+
 class EditModel {
 public:
+	using Layout = StripLayout;
+
 	// A new edit of this text.
-	void start(std::string text, Spans spans);
+	void start(std::string text, Spans spans, Layout layout = {});
 	// The text as it now is, changed from elsewhere (its properties): the
 	// caret and selection kept where they can be (cursor positions in the
 	// new text, worked out by the caller); undo starts afresh.
-	void take(std::string text, Spans spans, size_t caret, size_t anchor);
+	void take(std::string text, Spans spans, size_t caret, size_t anchor, Layout layout = {});
 
 	const std::string &text() const { return text_; }
 	const Spans &spans() const { return spans_; }
@@ -55,6 +65,7 @@ public:
 	size_t sel_from() const { return std::min(caret_, anchor_); }
 	size_t sel_to() const { return std::max(caret_, anchor_); }
 	std::string selected_text() const { return text_.substr(sel_from(), sel_to() - sel_from()); }
+	const Layout &layout() const { return layout_; }
 
 	// Moving the caret (extending the selection, or not). Any of these ends
 	// a run of typing for undo, and forgets styles chosen for what's typed
@@ -76,6 +87,11 @@ public:
 	// A tenth of the text's size bigger or smaller: each part of a
 	// selection from its own size, or what's typed next.
 	bool step_size(int direction);
+	// The alignment (one undo step), and the box's width (one undo step per
+	// drag of its grip: begin_box_drag() marks the start).
+	bool set_align(int align);
+	void begin_box_drag();
+	bool set_box_width(int width);
 	bool undo();
 	bool redo();
 
@@ -92,15 +108,17 @@ private:
 		std::string text;
 		Spans spans;
 		size_t caret = 0, anchor = 0;
+		Layout layout;
 	};
 	std::string text_;
 	Spans spans_;
+	Layout layout_;
 	size_t caret_ = 0, anchor_ = 0;
 	std::vector<StyleChange> pending_; // for what's typed next, in the order chosen
 	std::vector<Snapshot> undo_, redo_;
 	EditKind last_edit_ = EditKind::None;
 
-	Snapshot snapshot() const { return {text_, spans_, caret_, anchor_}; }
+	Snapshot snapshot() const { return {text_, spans_, caret_, anchor_, layout_}; }
 	void restore(Snapshot s);
 	void push_undo();
 	bool typing_has(StyleChange::Field f, const BaseStyle &base) const;

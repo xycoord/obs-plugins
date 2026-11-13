@@ -9,7 +9,9 @@
 #include "obs-preview.hpp"
 #include "typeset-source.hpp"
 
+#include <array>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -33,6 +35,21 @@ struct BarButton {
 	bool contains(float px, float py) const { return px >= x && px <= x + w && py >= y && py <= y + h; }
 };
 
+// A short piece of text drawn as an image (the tag, the bar's glyphs and
+// size, the placeholder's words): made on OBS's UI thread, where laying
+// text out can't hold up a frame, and only uploaded on the graphics thread.
+struct LabelImage {
+	std::string key; // what it's of: text, size and colours
+	int width = 0, height = 0;
+	std::vector<uint8_t> pixels; // BGRA, premultiplied, packed rows
+};
+using Label = std::shared_ptr<const LabelImage>;
+
+// A label for this text, at px pixels high, white on bg (0xRRGGBBAA; clear:
+// none). UI thread only. Kept and reused while it's asked for.
+Label make_label(const std::string &text, double px, uint32_t fg, uint32_t bg);
+
+
 struct Overlay {
 	bool editing = false;
 	ItemRef target;
@@ -44,12 +61,20 @@ struct Overlay {
 	Box box;
 	bool grip = false;  // the text box's width grip
 	bool plate = false; // a background plate behind the text
-	std::string tag;    // what the tag says
 	BarState bar;
-	std::string preedit; // an input method's composition
+	// Its words, as images: the tag, the bar's glyphs and size readout, a
+	// composition in progress, and the placeholders' words.
+	Label tag, size, preedit, placeholder;
+	std::array<Label, size_t(BarAction::Count)> glyphs;
 	uint64_t blink_from = 0;
 	std::vector<ItemRef> placeholders; // empty texts
 };
+
+// The overlay's labels, for its tag and composition (and its bar's glyphs
+// and size, from o.bar), at the preview's scale (o.mapping). UI thread.
+void make_labels(Overlay &o, const std::string &tag, const std::string &preedit);
+// The placeholders' words, at the preview's scale. UI thread.
+Label placeholder_label(const Mapping &mapping);
 
 // Draws an Overlay. OBS's graphics thread only (it keeps textures of its
 // labels).
@@ -60,25 +85,18 @@ public:
 	void destroy(); // with the graphics context entered
 
 private:
-	struct Label {
+	// A label's texture, made again only when the image it's for changes;
+	// one that couldn't be made isn't tried again until it does.
+	struct Texture {
 		gs_texture_t *texture = nullptr;
 		int width = 0, height = 0;
-		// What it was made for: made again when any of it changes (a
-		// different text, or the preview moved to a screen of another scale).
-		std::string text;
-		double px = 0;
-		uint32_t fg = 0, bg = 0;
-		void make(const std::string &text, double px, uint32_t fg, uint32_t bg);
-		void ensure(const std::string &t, double p, uint32_t f, uint32_t b)
-		{
-			if (!texture || t != text || p != px || f != fg || b != bg)
-				make(t, p, f, b);
-		}
+		std::string key, failed;
+		bool upload(const Label &label);
 		void draw(float x, float y) const;
 		void destroy();
 	};
-	Label tag_, placeholder_, preedit_, size_;
-	Label glyphs_[int(BarAction::Count)];
+	Texture tag_, placeholder_, preedit_, size_;
+	Texture glyphs_[int(BarAction::Count)];
 
 	void paint_bar(const Overlay &o, float x, float y, float px, std::vector<BarButton> *bar);
 };

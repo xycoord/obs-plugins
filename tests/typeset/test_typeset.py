@@ -546,6 +546,24 @@ def test_history(out):
         check(text() == "After all" and bool(obs.settings("Title").get("spans")),
               "and Redo puts it back, styles too", "%r" % text())
 
+        # The format bar's alignment button: at once, in the same undo step
+        # as the edit's words. (It's the eighth button: B, I and U, a gap,
+        # A-, the size, A+, a gap, the colour, then alignment.)
+        tw, th = size("Title")
+        obs.click(*to_screen(200 + tw * 0.5, 200 + th / 2), repeat=2)
+        obs.key("End")
+        obs.type("!")
+        left, top = to_screen(200, 200)
+        obs.click(left - 8 + 261, top - 8 - 6 - 14)
+        obs.key("Escape")
+        align = lambda: obs.settings("Title").get("align", 0)  # noqa: E731
+        check(align() == 1 and text() == "After all!", "the bar's alignment button aligns the text",
+              "%r %r" % (align(), text()))
+        obs.key("ctrl+z")
+        time.sleep(0.5)
+        check(align() == 0 and text() == "After all", "and OBS's Undo takes it back with the words",
+              "%r %r" % (align(), text()))
+
         # Hidden while it's being edited: editing ends at once, so keys
         # typed straight after don't go into it.
         ow, oh = size("Other")

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 namespace typeset {
@@ -24,28 +25,6 @@ constexpr uint32_t placeholder_line = 0xFFFFFFB0;
 
 // How long the caret stays solid after a key or click, and its blink.
 constexpr uint64_t caret_hold_ms = 500, caret_blink_ms = 530;
-
-const char *bar_glyph(BarAction a)
-{
-	switch (a) {
-	case BarAction::Bold:
-		return "B";
-	case BarAction::Italic:
-		return "I";
-	case BarAction::Underline:
-		return "U";
-	case BarAction::Smaller:
-		return "A−";
-	case BarAction::Bigger:
-		return "A+";
-	case BarAction::Colour:
-		return "A";
-	case BarAction::Clear:
-		return obs_module_text("Bar.Clear");
-	default: // drawn otherwise
-		return "";
-	}
-}
 
 struct Quad {
 	vec2 p[4]; // in order round the edge
@@ -165,67 +144,142 @@ struct Projector {
 
 // --- Labels -----------------------------------------------------------------------------------
 
-// A short piece of text as a texture, made once (with a font map of its own
-// on the graphics thread).
-void OverlayPainter::Label::make(const std::string &s, double px, uint32_t fg, uint32_t bg)
+static const char *bar_glyph(BarAction a)
 {
-	destroy();
-	text = s;
-	this->px = px;
-	this->fg = fg;
-	this->bg = bg;
+	switch (a) {
+	case BarAction::Bold:
+		return "B";
+	case BarAction::Italic:
+		return "I";
+	case BarAction::Underline:
+		return "U";
+	case BarAction::Smaller:
+		return "A−";
+	case BarAction::Bigger:
+		return "A+";
+	case BarAction::Colour:
+		return "A";
+	case BarAction::Clear:
+		return obs_module_text("Bar.Clear");
+	default: // drawn otherwise
+		return "";
+	}
+}
+
+
+
+// Made with a font map of the UI thread's own; kept while in use, so the
+// same label (a glyph, the tag between keys) isn't laid out again.
+Label make_label(const std::string &text, double px, uint32_t fg, uint32_t bg)
+{
+	char key_extra[64];
+	snprintf(key_extra, sizeof(key_extra), "|%g|%08x|%08x", px, fg, bg);
+	const std::string key = text + key_extra;
+	static std::vector<std::weak_ptr<const LabelImage>> made;
+	for (auto it = made.begin(); it != made.end();) {
+		if (Label l = it->lock()) {
+			if (l->key == key)
+				return l;
+			++it;
+		} else {
+			it = made.erase(it);
+		}
+	}
+
 	static PangoContext *context = create_context(pango_cairo_font_map_new());
+	auto image = std::make_shared<LabelImage>();
+	image->key = key;
 	PangoLayout *layout = pango_layout_new(context);
 	PangoFontDescription *desc = pango_font_description_from_string("Sans Bold");
 	pango_font_description_set_absolute_size(desc, px * PANGO_SCALE);
 	pango_layout_set_font_description(layout, desc);
 	pango_font_description_free(desc);
-	pango_layout_set_text(layout, s.c_str(), -1);
+	pango_layout_set_text(layout, text.c_str(), -1);
 	int tw = 0, th = 0;
 	pango_layout_get_pixel_size(layout, &tw, &th);
 	const int pad = int(px * 0.45);
-	width = tw + 2 * pad;
-	height = th + pad;
+	const int width = tw + 2 * pad, height = th + pad;
 	cairo_surface_t *surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height);
-	if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
-		cairo_surface_destroy(surface);
-		g_object_unref(layout);
-		return;
-	}
-	cairo_t *cr = cairo_create(surface);
-	auto rgba = [&](uint32_t c) {
-		cairo_set_source_rgba(cr, (c >> 24) / 255.0, ((c >> 16) & 0xFF) / 255.0, ((c >> 8) & 0xFF) / 255.0,
-				      (c & 0xFF) / 255.0);
-	};
-	if (bg & 0xFF) {
-		const double r = height / 2.0;
-		cairo_new_sub_path(cr);
-		cairo_arc(cr, width - r, r, r, -M_PI / 2, M_PI / 2);
-		cairo_arc(cr, r, r, r, M_PI / 2, 3 * M_PI / 2);
-		cairo_close_path(cr);
-		rgba(bg);
-		cairo_fill(cr);
-	}
-	cairo_move_to(cr, pad, pad / 2.0);
-	rgba(fg);
-	pango_cairo_show_layout(cr, layout);
-	cairo_destroy(cr);
-	cairo_surface_flush(surface);
-	const int stride = cairo_image_surface_get_stride(surface);
-	const uint8_t *data = cairo_image_surface_get_data(surface);
-	std::vector<uint8_t> pixels;
-	if (stride != width * 4) { // OBS takes rows packed
-		pixels.resize(size_t(width) * height * 4);
+	if (cairo_surface_status(surface) == CAIRO_STATUS_SUCCESS) {
+		cairo_t *cr = cairo_create(surface);
+		auto rgba = [&](uint32_t c) {
+			cairo_set_source_rgba(cr, (c >> 24) / 255.0, ((c >> 16) & 0xFF) / 255.0, ((c >> 8) & 0xFF) / 255.0,
+					      (c & 0xFF) / 255.0);
+		};
+		if (bg & 0xFF) {
+			const double r = height / 2.0;
+			cairo_new_sub_path(cr);
+			cairo_arc(cr, width - r, r, r, -M_PI / 2, M_PI / 2);
+			cairo_arc(cr, r, r, r, M_PI / 2, 3 * M_PI / 2);
+			cairo_close_path(cr);
+			rgba(bg);
+			cairo_fill(cr);
+		}
+		cairo_move_to(cr, pad, pad / 2.0);
+		rgba(fg);
+		pango_cairo_show_layout(cr, layout);
+		cairo_destroy(cr);
+		cairo_surface_flush(surface);
+		const int stride = cairo_image_surface_get_stride(surface);
+		const uint8_t *data = cairo_image_surface_get_data(surface);
+		image->width = width;
+		image->height = height;
+		image->pixels.resize(size_t(width) * height * 4);
 		for (int y = 0; y < height; y++)
-			memcpy(&pixels[size_t(y) * width * 4], data + size_t(y) * stride, size_t(width) * 4);
-		data = pixels.data();
+			memcpy(&image->pixels[size_t(y) * width * 4], data + size_t(y) * stride, size_t(width) * 4);
 	}
-	texture = gs_texture_create(uint32_t(width), uint32_t(height), GS_BGRA, 1, &data, 0);
 	cairo_surface_destroy(surface);
 	g_object_unref(layout);
+	made.push_back(image);
+	return image;
 }
 
-void OverlayPainter::Label::draw(float x, float y) const
+float pixel_size(const Mapping &m)
+{
+	return float(std::max(1.0, std::round(m.dpr)));
+}
+
+void make_labels(Overlay &o, const std::string &tag, const std::string &preedit)
+{
+	const float px = pixel_size(o.mapping);
+	o.tag = make_label(tag, 14 * px, 0xFFFFFFFF, tag_fill);
+	o.size = make_label(std::to_string(o.bar.size_px) + " px", 12 * px, 0xFFFFFFFF, 0);
+	o.preedit = preedit.empty() ? nullptr : make_label(preedit, 16 * px, 0xFFFFFFFF, accent);
+	for (int i = 0; i < int(BarAction::Count); i++) {
+		const auto a = BarAction(i);
+		if (*bar_glyph(a))
+			o.glyphs[size_t(i)] = make_label(bar_glyph(a), a == BarAction::Clear ? 12 * px : 15 * px, 0xFFFFFFFF, 0);
+	}
+}
+
+Label placeholder_label(const Mapping &mapping)
+{
+	return make_label(obs_module_text("Placeholder"), 13 * pixel_size(mapping), 0xFFFFFFFF, 0x000000A0);
+}
+
+bool OverlayPainter::Texture::upload(const Label &label)
+{
+	if (!label || label->pixels.empty())
+		return false;
+	if (label->key == key && texture)
+		return true;
+	if (label->key == failed)
+		return false; // not tried every frame
+	const uint8_t *data = label->pixels.data();
+	gs_texture_t *made = gs_texture_create(uint32_t(label->width), uint32_t(label->height), GS_BGRA, 1, &data, 0);
+	if (!made) {
+		failed = label->key;
+		return texture != nullptr;
+	}
+	destroy();
+	texture = made;
+	width = label->width;
+	height = label->height;
+	key = label->key;
+	return true;
+}
+
+void OverlayPainter::Texture::draw(float x, float y) const
 {
 	if (!texture)
 		return;
@@ -241,19 +295,20 @@ void OverlayPainter::Label::draw(float x, float y) const
 	gs_blend_state_pop();
 }
 
-void OverlayPainter::Label::destroy()
+void OverlayPainter::Texture::destroy()
 {
 	if (texture)
 		gs_texture_destroy(texture);
 	texture = nullptr;
+	key.clear();
 }
 
 void OverlayPainter::destroy()
 {
-	for (Label *l : {&tag_, &placeholder_, &preedit_, &size_})
-		l->destroy();
-	for (Label &l : glyphs_)
-		l.destroy();
+	for (Texture *t : {&tag_, &placeholder_, &preedit_, &size_})
+		t->destroy();
+	for (Texture &t : glyphs_)
+		t.destroy();
 }
 
 // --- The format bar -----------------------------------------------------------------------------
@@ -285,8 +340,8 @@ void OverlayPainter::paint_bar(const Overlay &o, float x, float y, float px, std
 	for (const BarButton &b : buttons) {
 		switch (b.action) {
 		case BarAction::SizeReadout:
-			size_.ensure(std::to_string(st.size_px) + " px", 12 * px, 0xFFFFFFFF, 0);
-			size_.draw(b.x + (b.w - size_.width) / 2, b.y + (b.h - size_.height) / 2);
+			if (size_.upload(o.size))
+				size_.draw(b.x + (b.w - size_.width) / 2, b.y + (b.h - size_.height) / 2);
 			continue;
 		case BarAction::Align: {
 			// Three lines, aligned as the text is.
@@ -316,10 +371,10 @@ void OverlayPainter::paint_bar(const Overlay &o, float x, float y, float px, std
 		default:
 			break;
 		}
-		Label &l = glyphs_[int(b.action)];
-		l.ensure(bar_glyph(b.action), b.action == BarAction::Clear ? 12 * px : 15 * px, 0xFFFFFFFF, 0);
+		Texture &t = glyphs_[int(b.action)];
 		const float lift = b.action == BarAction::Colour ? 3 * px : 0;
-		l.draw(b.x + (b.w - l.width) / 2, b.y + (b.h - l.height) / 2 - lift);
+		if (t.upload(o.glyphs[size_t(b.action)]))
+			t.draw(b.x + (b.w - t.width) / 2, b.y + (b.h - t.height) / 2 - lift);
 	}
 	if (bar)
 		*bar = std::move(buttons);
@@ -346,15 +401,16 @@ void OverlayPainter::paint(const Overlay &o, uint32_t, uint32_t cy, std::vector<
 
 	// Empty texts: a dashed frame and what to do, so they can be found.
 	if (!o.placeholders.empty()) {
-		placeholder_.ensure(obs_module_text("Placeholder"), 13 * px, 0xFFFFFFFF, 0x000000A0);
+		const bool words = placeholder_.upload(o.placeholder);
 		std::vector<Quad> lines;
 		for (const ItemRef &t : o.placeholders) {
 			const Projector to_display(t, map);
 			obs_source_t *s = obs_sceneitem_get_source(t.item());
 			const Quad q = to_display.box({0, 0, double(obs_source_get_width(s)), double(obs_source_get_height(s))});
 			outline(lines, q, px, 4 * px);
-			placeholder_.draw((q.p[0].x + q.p[2].x) / 2 - placeholder_.width / 2.0f,
-					  (q.p[0].y + q.p[2].y) / 2 - placeholder_.height / 2.0f);
+			if (words)
+				placeholder_.draw((q.p[0].x + q.p[2].x) / 2 - placeholder_.width / 2.0f,
+						  (q.p[0].y + q.p[2].y) / 2 - placeholder_.height / 2.0f);
 		}
 		fill(lines, placeholder_line);
 	}
@@ -406,8 +462,8 @@ void OverlayPainter::paint(const Overlay &o, uint32_t, uint32_t cy, std::vector<
 			std::vector<BarButton> buttons;
 			paint_bar(o, x, y, px, &buttons);
 			const float tag_x = buttons.empty() ? x : buttons.back().x + buttons.back().w + 10 * px;
-			tag_.ensure(o.tag, 14 * px, 0xFFFFFFFF, tag_fill);
-			tag_.draw(tag_x, y + (size - tag_.height) / 2);
+			if (tag_.upload(o.tag))
+				tag_.draw(tag_x, y + (size - tag_.height) / 2);
 			if (bar)
 				*bar = std::move(buttons);
 		}
@@ -488,8 +544,7 @@ void OverlayPainter::paint(const Overlay &o, uint32_t, uint32_t cy, std::vector<
 		}
 
 		// A composition in progress, just above the caret.
-		if (!o.preedit.empty()) {
-			preedit_.ensure(o.preedit, 16 * px, 0xFFFFFFFF, accent);
+		if (o.preedit && preedit_.upload(o.preedit)) {
 			const vec2 a = to_display(o.caret.x, o.caret.y);
 			preedit_.draw(a.x, a.y - preedit_.height - 2 * px);
 		}

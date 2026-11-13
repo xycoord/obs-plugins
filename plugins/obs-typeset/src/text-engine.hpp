@@ -106,6 +106,7 @@ struct RasterParams {
 struct Raster {
 	RasterParams params;
 	uint64_t version = 0; // of the document drawn (set by whoever asked for it)
+	uint32_t source_width = 0, source_height = 0; // the source's size for that document (likewise)
 	bool failed = false;  // couldn't be drawn (out of memory): try again later
 	std::string error;    // why, when it failed
 	int x0 = 0, y0 = 0;

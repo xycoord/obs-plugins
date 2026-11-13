@@ -18,6 +18,7 @@ struct RasterJob {
 	RasterParams params;
 	uint64_t seq = 0;
 	uint64_t version = 0; // of the document
+	uint32_t source_width = 0, source_height = 0; // the source's size for it
 };
 
 // Shared by a source, the worker and OBS's graphics thread.

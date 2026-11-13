@@ -128,6 +128,24 @@ int main()
 		check("undo doesn't go back past it", !m.undo());
 	}
 	{
+		// The strip's alignment and box width undo with the words.
+		EditModel m;
+		m.start("ab", {}, {0, 300});
+		m.set_caret(2, false);
+		type(m, "c");
+		m.set_align(1);
+		m.begin_box_drag();
+		m.set_box_width(320);
+		m.set_box_width(340);
+		check("the strip's changes are kept", m.layout() == EditModel::Layout{1, 340});
+		m.undo();
+		check("one undo takes back a whole grip drag", m.layout() == EditModel::Layout{1, 300} && m.text() == "abc");
+		m.undo();
+		check("the next, the alignment", m.layout() == EditModel::Layout{0, 300} && m.text() == "abc");
+		m.undo();
+		check("then the typing", m.text() == "ab");
+	}
+	{
 		bool cut = false;
 		check("paste drops control characters", clean_paste("a\x01" "b\nc\td\x7f", &cut) == "ab\nc\td" && !cut);
 		check("paste makes every line break a new line",

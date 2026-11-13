@@ -213,6 +213,9 @@ bool point_in_item(obs_sceneitem_t *item, obs_sceneitem_t *group, const vec2 &po
 	vec3_transform(&p, &p, &inv);
 	if (local)
 		*local = p;
+	// In a group, only what the group's own crop leaves showing.
+	if (group && !point_in_item(group, nullptr, pos))
+		return false;
 	obs_sceneitem_crop crop;
 	obs_sceneitem_get_crop(item, &crop);
 	return p.x >= float(crop.left) && p.y >= float(crop.top) && p.x <= float(int(cx) - crop.right) &&

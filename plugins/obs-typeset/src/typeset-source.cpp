@@ -5,21 +5,19 @@
 
 #include <graphics/matrix4.h>
 #include <obs-module.h>
+#include <util/platform.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <mutex>
+#include <thread>
 
 namespace typeset {
 
 const char *const source_id = "typeset_text";
 
-// Text is laid out (for its size, and for editing) on whichever thread OBS
-// updates a source from: its window's, or its graphics thread, where OBS
-// applies changes to video sources. Pango's font maps aren't thread-safe, so
-// that layout has a font map of its own and one lock covers all of it. The
-// rasteriser has its own font map on its own thread.
+// (See the header.)
 std::mutex &layout_lock()
 {
 	static std::mutex mutex;
@@ -33,6 +31,14 @@ PangoContext *layout_context()
 }
 
 namespace {
+
+std::thread::id ui_thread;
+std::atomic<bool> ui_thread_known{false};
+
+bool on_ui_thread()
+{
+	return !ui_thread_known.load() || std::this_thread::get_id() == ui_thread;
+}
 
 // --- Text indices --------------------------------------------------------------------------
 
@@ -80,9 +86,17 @@ struct WritingEdit {
 
 } // namespace
 
+void set_ui_thread()
+{
+	ui_thread = std::this_thread::get_id();
+	ui_thread_known = true;
+}
+
 TextSource::TextSource(obs_data_t *settings, obs_source_t *source) : source_(source)
 {
-	update(settings);
+	// Laid out at once, on whichever thread it's made on, so it has a
+	// layout and a size from the start.
+	update_now(settings);
 }
 
 TextSource::~TextSource()
@@ -112,6 +126,42 @@ void TextSource::update(obs_data_t *settings)
 {
 	if (writing_edit)
 		return; // called from inside an edit's own write (see writing_edit)
+	if (!on_ui_thread()) {
+		queue_update();
+		return;
+	}
+	update_now(settings);
+}
+
+// Passed to the UI thread, which reads the settings as they are when it
+// gets there: updates queued meanwhile come to one, and none applies
+// settings older than another's.
+void TextSource::queue_update()
+{
+	if (update_queued_.exchange(true))
+		return; // one is on its way
+	obs_queue_task(
+		OBS_TASK_UI,
+		[](void *param) {
+			auto *weak = static_cast<obs_weak_source_t *>(param);
+			if (obs_source_t *src = obs_weak_source_get_source(weak)) {
+				if (TextSource *text = TextSource::from(src)) {
+					text->update_queued_ = false; // before reading: a later change queues again
+					obs_data_t *settings = obs_source_get_settings(src);
+					text->update_now(settings);
+					obs_data_release(settings);
+				}
+				obs_source_release(src);
+			}
+			obs_weak_source_release(weak);
+		},
+		obs_source_get_weak_source(source_), false);
+}
+
+void TextSource::update_now(obs_data_t *settings)
+{
+	if (writing_edit)
+		return;
 	std::lock_guard content(content_mutex_);
 	Document doc;
 	const char *text = obs_data_get_string(settings, "text");
@@ -123,8 +173,8 @@ void TextSource::update(obs_data_t *settings)
 	doc.spans = read_spans(settings);
 
 	// The text changed from outside (its properties) and its runs didn't:
-	// they move with the text, and are written back from OBS's UI thread
-	// (this may be its graphics thread, which mustn't write the settings).
+	// they move with the text, and are written back, from a task of their
+	// own (not from inside an update).
 	bool follow = false;
 	{
 		std::lock_guard lock(layout_lock());
@@ -218,10 +268,13 @@ void TextSource::apply(Document doc)
 	// OBS takes a source's size in whole pixels.
 	width_ = uint32_t(std::max(1.0, std::ceil(frame_.width - 1e-3)));
 	height_ = uint32_t(std::max(1.0, std::ceil(frame_.height - 1e-3)));
+	laid_out_ns_ = os_gettime_ns();
 
 	// Published for the rasteriser in the same order as laid out.
 	std::lock_guard doc_lock(doc_mutex_);
 	pending_doc_ = std::move(doc);
+	pending_width_ = width_;
+	pending_height_ = height_;
 	doc_version_++;
 }
 
@@ -235,6 +288,8 @@ void TextSource::request(View &view, const RasterParams &params)
 		job.doc = pending_doc_;
 		view.requested_version = doc_version_;
 		job.version = doc_version_;
+		job.source_width = pending_width_;
+		job.source_height = pending_height_;
 	}
 	job.params = params;
 	job.seq = next_seq_++;
@@ -264,11 +319,12 @@ void TextSource::release(View &view)
 
 void TextSource::retry_later(View &view, const char *why, uint64_t version)
 {
-	// Each failure in a row waits twice as long, from about 3 s to about
-	// a minute, and is logged once for each version of the text.
-	constexpr int first_wait = 180, longest_wait = 3600; // frames
+	// Each failure in a row waits twice as long, from 3 s to a minute (or
+	// until the text changes: see tick()), and is logged once for each
+	// version of the text.
+	constexpr double first_wait = 3, longest_wait = 60; // seconds
 	view.requested = false;
-	view.retry_ticks = std::min(first_wait << std::min(view.failures, 5), longest_wait);
+	view.retry_wait = std::min(first_wait * double(1 << std::min(view.failures, 5)), longest_wait);
 	view.failures++;
 	if (view.failure_logged != version) {
 		view.failure_logged = version;
@@ -278,7 +334,26 @@ void TextSource::retry_later(View &view, const char *why, uint64_t version)
 	}
 }
 
-void TextSource::tick()
+uint32_t TextSource::shown(const std::atomic<uint32_t> &shown, const std::atomic<uint32_t> &now) const
+{
+	constexpr uint64_t longest_ns = 100'000'000; // a slow or failing drawing can't hold the old size longer
+	const uint32_t s = shown.load();
+	if (s && os_gettime_ns() - laid_out_ns_.load() < longest_ns)
+		return s;
+	return now.load();
+}
+
+uint32_t TextSource::width() const
+{
+	return shown(shown_width_, width_);
+}
+
+uint32_t TextSource::height() const
+{
+	return shown(shown_height_, height_);
+}
+
+void TextSource::tick(float seconds)
 {
 	uint64_t version;
 	{
@@ -301,8 +376,14 @@ void TextSource::tick()
 	}
 	for (int i = 0; i < 2; i++) {
 		View &v = views_[i];
-		if (v.retry_ticks > 0) {
-			v.retry_ticks--;
+		if (v.retry_wait > 0 && version != v.requested_version) {
+			// Changed since the drawing that failed (a smaller size, an
+			// effect turned off): drawn again at once.
+			v.retry_wait = 0;
+			v.failures = 0;
+		}
+		if (v.retry_wait > 0) {
+			v.retry_wait -= seconds;
 			v.want = false;
 			continue;
 		}
@@ -310,26 +391,36 @@ void TextSource::tick()
 		// drawn more than once), against what was last asked for.
 		if (v.want) {
 			v.want = false;
-			v.idle_ticks = 0;
+			v.idle = 0;
 			if (!v.requested || version != v.requested_version || !v.wanted.close_to(v.requested_params))
 				request(v, v.wanted);
 		} else if (i == 0) {
 			// Not shown now, but it can be cut to at any moment: kept
-			// drawn for the output, so it's never blank on a cut. At the
-			// scale a window shows it at on the canvas, if one does (the
-			// Studio Mode preview, where it's set up before a cut, or the
-			// multiview), else the scale it was last shown at (at first,
-			// its own size).
+			// drawn for the output, so it's never blank on a cut, at the
+			// scale it was last shown at (at first, its own size), or
+			// larger if a window shows it larger on the canvas (the Studio
+			// Mode preview, where it's set up before a cut). Only ever
+			// larger: the multiview shows scenes as small thumbnails in
+			// canvas units too, and a cut from one of those would start
+			// soft; a drawing too large for a frame is only scaled down.
 			const View &w = views_[1];
-			const RasterParams target = w.on_canvas ? w.canvas_wanted : v.requested_params;
+			RasterParams target = v.requested_params;
+			if (w.on_canvas && (w.canvas_wanted.sx > target.sx || w.canvas_wanted.sy > target.sy)) {
+				const RasterParams grown = w.canvas_wanted;
+				target.sx = std::max(target.sx, grown.sx);
+				target.sy = std::max(target.sy, grown.sy);
+				target.ox = grown.ox;
+				target.oy = grown.oy;
+			}
 			if (!v.requested || version != v.requested_version || !target.close_to(v.requested_params))
 				request(v, target);
-		} else if (i == 1 && (v.texture || v.requested) && ++v.idle_ticks > 120) {
-			// No window has shown it for a while: free its raster, and
-			// any drawing for it not yet uploaded or still being drawn.
+		} else if (i == 1 && (v.texture || v.requested) && (v.idle += seconds) > 2.0) {
+			// No window has shown it for 2 s: free its raster, and any
+			// drawing for it not yet uploaded or still being drawn.
 			obs_enter_graphics();
 			release(v);
 			obs_leave_graphics();
+			v.idle = 0;
 		}
 	}
 	views_[1].on_canvas = false;
@@ -358,6 +449,7 @@ void TextSource::upload_result(View &view)
 			gs_texture_destroy(view.texture);
 		view.texture = nullptr;
 		view.failures = 0;
+		shown_now(view, r);
 		view.drawn = std::move(r);
 		return;
 	}
@@ -380,8 +472,19 @@ void TextSource::upload_result(View &view)
 		view.texture = texture;
 	}
 	view.failures = 0;
+	shown_now(view, r);
 	r.pixels = std::vector<uint8_t>();
 	view.drawn = std::move(r);
+}
+
+// The output now shows this drawing: OBS sizes the source by it (see
+// width()).
+void TextSource::shown_now(const View &view, const Raster &r)
+{
+	if (&view != &views_[0] || !r.source_width || !r.source_height)
+		return;
+	shown_width_ = r.source_width;
+	shown_height_ = r.source_height;
 }
 
 void TextSource::render()
@@ -448,7 +551,7 @@ void TextSource::render()
 		view.wanted.sx = std::max(view.wanted.sx, want.sx);
 		view.wanted.sy = std::max(view.wanted.sy, want.sy);
 	}
-	if (!view.requested && view.retry_ticks == 0)
+	if (!view.requested && view.retry_wait <= 0)
 		request(view, want); // the first time: don't wait a frame
 
 	draw(view);
@@ -528,6 +631,28 @@ void TextSource::set_box_width(int width)
 
 	obs_data_t *settings = obs_data_create();
 	obs_data_set_int(settings, "box_width", width);
+	{
+		WritingEdit writing;
+		obs_source_update(source_, settings);
+	}
+	obs_data_release(settings);
+}
+
+void TextSource::set_align(int align)
+{
+	std::lock_guard content(content_mutex_);
+	Document doc;
+	{
+		std::lock_guard lock(layout_lock());
+		doc = doc_;
+	}
+	align = std::clamp(align, 0, 2);
+	doc.style.align = Align(align);
+	apply(std::move(doc));
+
+	// Still under content_mutex_ (see the header and writing_edit).
+	obs_data_t *settings = obs_data_create();
+	obs_data_set_int(settings, "align", align);
 	{
 		WritingEdit writing;
 		obs_source_update(source_, settings);
@@ -821,9 +946,9 @@ uint32_t get_height(void *data)
 	return static_cast<TextSource *>(data)->height();
 }
 
-void video_tick(void *data, float)
+void video_tick(void *data, float seconds)
 {
-	static_cast<TextSource *>(data)->tick();
+	static_cast<TextSource *>(data)->tick(seconds);
 }
 
 void video_render(void *data, gs_effect_t *)

@@ -26,11 +26,18 @@ extern const char *const source_id;
 
 void register_source();
 
-// Text is laid out for its size and for editing on OBS's threads (its
-// window's, its graphics thread's), all with this one font map and this one
-// lock, as Pango's font maps aren't thread-safe.
+// Text is laid out for its size and for editing on OBS's UI thread (an
+// update OBS makes on its graphics thread is passed there; see update()),
+// with this one font map. The lock is for what other threads read of a
+// layout (the editor's queries come from the UI thread too, but a source can
+// be made, and so laid out, on any thread), as Pango's font maps aren't
+// thread-safe. The rasteriser has a font map of its own on its own thread.
 std::mutex &layout_lock();
 PangoContext *layout_context();
+
+// Says which thread is OBS's UI thread (call once, from it, at load). Until
+// it's said, every thread counts as it.
+void set_ui_thread();
 
 struct Caret {
 	double x = 0, y = 0, height = 0; // source units
@@ -41,11 +48,19 @@ public:
 	TextSource(obs_data_t *settings, obs_source_t *source);
 	~TextSource();
 
-	// OBS callbacks.
+	// OBS callbacks. update() on any thread but the UI thread (OBS applies a
+	// video source's changes on its graphics thread) is passed to the UI
+	// thread, which lays the text out from the settings as they are then,
+	// so the graphics thread never waits for a layout.
 	void update(obs_data_t *settings);
-	uint32_t width() const { return width_.load(); }
-	uint32_t height() const { return height_.load(); }
-	void tick();
+	// The size of the text as the output shows it: while a new version is
+	// being drawn (a frame or two), the size the shown drawing was made
+	// for, so the old drawing isn't placed by the new size (it would jump
+	// when the item isn't anchored at its top left); the new size once
+	// it's shown, or after 100 ms whatever happens.
+	uint32_t width() const;
+	uint32_t height() const;
+	void tick(float seconds);
 	void render();
 
 	// Editing, from OBS's window. Positions are in the source's own units;
@@ -57,8 +72,9 @@ public:
 	Document document() const;
 	void set_content(const std::string &text, const Spans &spans); // text and styled runs together
 	void set_box_width(int width); // the text box's width, while dragging its grip
+	void set_align(int align);     // the whole text's alignment (Align), at once
 	Frame frame() const;
-	Box box() const; // the source's own extent
+	Box box() const; // the source's own extent, as laid out now
 	size_t hit_test(double x, double y, bool nearest_edge = true) const;
 	Caret caret(size_t index) const;
 	std::vector<Box> selection_boxes(size_t from, size_t to) const;
@@ -85,23 +101,34 @@ private:
 	Document doc_;
 	PangoLayout *layout_ = nullptr;
 	Frame frame_;
-	std::atomic<uint32_t> width_{0}, height_{0};
+	std::atomic<uint32_t> width_{0}, height_{0}; // as laid out now
+	std::atomic<uint64_t> laid_out_ns_{0};      // when
+	// The size the output's drawing was made for (0: none yet).
+	std::atomic<uint32_t> shown_width_{0}, shown_height_{0};
+	std::atomic<bool> update_queued_{false}; // an update passed to the UI thread, not yet applied
+
+	void update_now(obs_data_t *settings);
+	void queue_update();
+	uint32_t shown(const std::atomic<uint32_t> &shown, const std::atomic<uint32_t> &now) const;
 
 	// The document as it stands, for the rasteriser, with its version;
 	// guarded by doc_mutex_ (taken inside the layout lock, never around it).
 	std::mutex doc_mutex_;
-	// An edit from the preview (on OBS's UI thread) writes the settings and
-	// lays out at once; OBS's update (on its graphics thread, a frame later)
-	// reads the settings and lays out. One at a time, or an update that
-	// read the text just before an edit would lay out the old text after it.
-	// The edit calls obs_source_update with this held, on purpose (released
-	// first, an update could read the settings between the layout and the
-	// write). libobs defers a video source's update to its graphics thread,
-	// so update() isn't called from inside it; if it ever were, update()
-	// sees it's inside an edit's write and returns without the lock.
+	// An edit from the preview writes the settings and lays out at once;
+	// OBS's update (passed from its graphics thread to the UI thread, a
+	// frame or so later) reads the settings and lays out. One at a time, or
+	// an update that read the text just before an edit would lay out the
+	// old text after it. (Both are on the UI thread now, but a source made
+	// on another thread lays out there.) The edit calls obs_source_update
+	// with this held, on purpose (released first, an update could read the
+	// settings between the layout and the write). libobs defers a video
+	// source's update to its graphics thread, so update() isn't called from
+	// inside it; if it ever were, update() sees it's inside an edit's write
+	// and returns without the lock.
 	std::mutex content_mutex_;
 	Spans superseded_; // runs the settings may still hold, moved since (being written back)
 	Document pending_doc_;
+	uint32_t pending_width_ = 0, pending_height_ = 0; // its size
 	uint64_t doc_version_ = 0;
 
 	// A source can be drawn into the output (the canvas, or a texture a
@@ -118,9 +145,9 @@ private:
 		bool requested = false;
 		RasterParams requested_params;
 		uint64_t requested_version = 0;
-		int idle_ticks = 0;
-		int retry_ticks = 0; // after a failed drawing, frames until it's asked for again
-		int failures = 0;    // failed in a row: each retry waits longer
+		double idle = 0;       // seconds not shown (windows)
+		double retry_wait = 0; // after a failed drawing, seconds until it's asked for again
+		int failures = 0;      // failed in a row: each retry waits longer
 		uint64_t failure_logged = 0; // the text's version a failure was last logged for
 		// Windows only: shown this frame on a canvas (a scene in the Studio
 		// Mode preview or the multiview), at this scale and offset.
@@ -136,6 +163,7 @@ private:
 	void draw(View &view);
 	void release(View &view);
 	void retry_later(View &view, const char *why, uint64_t version);
+	void shown_now(const View &view, const Raster &r);
 	// Source units <-> layout units (Pango's), under the layout lock.
 	double to_layout_x(double x) const { return (x - frame_.text_x) / frame_.text_scale; }
 	double to_layout_y(double y) const { return (y - frame_.text_y) / frame_.text_scale; }

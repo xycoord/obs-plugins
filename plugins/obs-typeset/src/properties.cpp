@@ -184,8 +184,8 @@ bool font_changed(obs_properties_t *props, obs_property_t *, obs_data_t *setting
 		bool installed;
 		{
 			// A font map of its own, so listing every installed family
-			// (slow the first time) never holds up the text's layout,
-			// which OBS's graphics thread waits on.
+			// (slow the first time) never holds the layout lock, which
+			// a text made on another thread may be waiting on.
 			static std::mutex mutex;
 			std::lock_guard lock(mutex);
 			static PangoContext *context = create_context(pango_cairo_font_map_new());

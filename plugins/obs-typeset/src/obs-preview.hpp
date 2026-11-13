@@ -23,8 +23,9 @@ namespace typeset {
 
 // The OBS versions whose preview widget is laid out as preview_display()
 // reads it, and whose Preview Scaling menu has the names scaling() looks for:
-// 28 to 33 (the Qt 6 ones, which this is built for).
-constexpr uint32_t known_obs_first = 28, known_obs_last = 33;
+// 30 to 33. (The plugin needs OBS 30 or later anyway, for its sources'
+// UUIDs; CI runs it on 30 and the latest.)
+constexpr uint32_t known_obs_first = 30, known_obs_last = 33;
 
 Mapping preview_mapping(QWidget *preview);
 vec2 widget_to_canvas(const Mapping &m, QPointF p);

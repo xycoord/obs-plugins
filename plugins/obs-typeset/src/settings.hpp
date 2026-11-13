@@ -17,8 +17,8 @@ Spans read_spans(obs_data_t *settings);
 obs_data_array_t *spans_array(const Spans &spans);
 
 // The size field mirrors the font's size (which is what counts). Set when a
-// source is made and when its font is picked, never from OBS's graphics
-// thread (where updates run), as the dialog may be using the settings.
+// source is made and when its font is picked, never from inside an update,
+// as the dialog may be using the settings.
 void sync_size(obs_data_t *settings);
 
 // A source's style, every value as it stands (defaults included), marked as

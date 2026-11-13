@@ -75,16 +75,20 @@ canvas's, so it isn't resampled at all unless it's rotated. Windows that show th
 (the properties dialog's preview, a source projector) get a drawing of their own, at their size,
 freed again a few seconds after they close. While you drag a handle you may see the previous drawing
 stretched for a frame or two before the sharp one arrives. Nothing is done for a text that hasn't
-changed.
+changed. Laying text out (and loading a font the first time it's used) happens on OBS's UI thread,
+never the thread that renders the output, so a long text or a new font can't drop frames; a change
+from the properties or a script shows a frame or so later for it. The size OBS sees follows the
+drawing it shows, so text that isn't anchored at its top left doesn't jump while you type.
 
 Each text has one drawing for the output and one for windows. A text shown twice in the same frame
 at different sizes (the same source in two places in a scene) is drawn for the larger and scaled down
 for the smaller, which is then a little soft. A text that isn't on screen keeps its drawing on the
 graphics card, at the size it was last shown at, so it's ready the moment it's cut to; in Studio
-Mode, at the size it has in the preview, so a Cut is sharp from its first frame. A window's drawing
+Mode, at the size it has in the preview if that's larger, so a Cut is sharp from its first frame
+(the multiview's small panes never make it smaller). A window's drawing
 is let go a couple of seconds after the window stops showing the text. If a drawing can't be made
-(out of memory), what's shown stays, and it's tried again after a few seconds, then less often, up
-to once a minute, with one line in OBS's log.
+(out of memory), what's shown stays, and it's tried again after 3 seconds, then less often, up to
+once a minute (at once if the text changes), with one line in OBS's log.
 
 A few things in OBS draw a source into a texture of the source's own size first and scale *that*,
 and then the text is as sharp as its font size, no sharper: filters on the source; crop, Scale
@@ -150,7 +154,7 @@ OBS doesn't give plugins a way to take part in its preview, so the editor works 
 - Each edit is added to OBS's undo history (`obs_frontend_add_undo_redo_action`), naming the source
   by its UUID.
 
-All of this is in `src/obs-preview.cpp`, and is known to hold in OBS 28 to 33 (`known_obs_first` and
+All of this is in `src/obs-preview.cpp`, and is known to hold in OBS 30 to 33 (`known_obs_first` and
 `known_obs_last` there); in any other version text isn't edited in the preview (its properties
 work as ever) and OBS's log says why.
 The editing itself (`src/edit-model.cpp`: the text, its styled runs, caret, selection and undo) has
@@ -169,5 +173,5 @@ sits in the preview, and the reading of font style names, on their own, without 
 
 ## Building
 
-Needs Pango (1.50 or later) and Qt 6's development files besides what `install.sh` already needs:
-`sudo apt install libpango1.0-dev qt6-base-dev`.
+Needs OBS 30 or later, Pango (1.50 or later) and Qt 6's development files besides what `install.sh`
+already needs: `sudo apt install libpango1.0-dev qt6-base-dev`.

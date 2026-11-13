@@ -36,7 +36,6 @@ static void frontend_event(enum obs_frontend_event event, void *)
 		typeset::editor_scene_collection(true);
 		break;
 	case OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGED:
-	case OBS_FRONTEND_EVENT_SCENE_COLLECTION_LIST_CHANGED:
 		typeset::editor_scene_collection(false);
 		break;
 	case OBS_FRONTEND_EVENT_EXIT:
@@ -50,6 +49,7 @@ static void frontend_event(enum obs_frontend_event event, void *)
 
 bool obs_module_load(void)
 {
+	typeset::set_ui_thread(); // modules load on OBS's UI thread, where text is laid out
 	typeset::worker_start();
 	typeset::register_source();
 	obs_frontend_add_event_callback(frontend_event, nullptr);

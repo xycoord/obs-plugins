@@ -40,10 +40,11 @@ std::string clean_paste(std::string s, bool *cut)
 	return s;
 }
 
-void EditModel::start(std::string text, Spans spans)
+void EditModel::start(std::string text, Spans spans, Layout layout)
 {
 	text_ = std::move(text);
 	spans_ = std::move(spans);
+	layout_ = layout;
 	caret_ = anchor_ = 0;
 	column = -1;
 	pending_.clear();
@@ -52,10 +53,11 @@ void EditModel::start(std::string text, Spans spans)
 	last_edit_ = EditKind::None;
 }
 
-void EditModel::take(std::string text, Spans spans, size_t caret, size_t anchor)
+void EditModel::take(std::string text, Spans spans, size_t caret, size_t anchor, Layout layout)
 {
 	text_ = std::move(text);
 	spans_ = std::move(spans);
+	layout_ = layout;
 	caret_ = std::min(caret, text_.size());
 	anchor_ = std::min(anchor, text_.size());
 	undo_.clear();
@@ -124,8 +126,33 @@ void EditModel::restore(Snapshot s)
 	spans_ = std::move(s.spans);
 	caret_ = s.caret;
 	anchor_ = s.anchor;
+	layout_ = s.layout;
 	last_edit_ = EditKind::None;
 	pending_.clear();
+}
+
+bool EditModel::set_align(int align)
+{
+	if (align == layout_.align)
+		return false;
+	push_undo();
+	last_edit_ = EditKind::Other;
+	layout_.align = align;
+	return true;
+}
+
+void EditModel::begin_box_drag()
+{
+	push_undo();
+	last_edit_ = EditKind::Other;
+}
+
+bool EditModel::set_box_width(int width)
+{
+	if (width == layout_.box_width)
+		return false;
+	layout_.box_width = width;
+	return true;
 }
 
 bool EditModel::undo()

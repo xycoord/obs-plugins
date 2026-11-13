@@ -49,6 +49,12 @@ bool printable(const QString &text)
 	return true;
 }
 
+// What the editing strip sets on a text: its alignment and box width.
+StripLayout strip_layout(const Document &d)
+{
+	return {int(d.style.align), int(std::lround(d.style.box_width))};
+}
+
 // --- OBS's undo history ------------------------------------------------------------------------
 //
 // An edit in the preview, from starting to finishing, is one step in OBS's
@@ -123,6 +129,7 @@ public:
 	{
 		end_edit();
 		clear_placeholders();
+		pressed_.reset();
 	}
 	void set_collection_changing(bool changing)
 	{
@@ -158,12 +165,13 @@ private:
 	bool saved_input_method_ = false;
 	std::string preedit_; // an input method's composition, not yet in the text
 	bool committed_ = false; // an input method committed text (while it was asked to finish)
+	uint64_t edit_serial_ = 0; // which edit this is, for what outlasts one (the colour dialog)
 	// Dragging the text box's width grip.
 	bool resizing_ = false;
 	QPointF resize_from_pos_;
 	double resize_from_width_ = 0;
 	// What was under the pointer when the button went down (see mouse_event).
-	const obs_sceneitem_t *pressed_item_ = nullptr; // only compared, never used
+	ItemRef pressed_; // referenced until the next press, or a scene change
 	bool pressed_selected_ = false;
 
 	// What the preview's draw callback draws, and where it drew the format
@@ -206,7 +214,7 @@ private:
 	void on_timer();
 
 	void sync_text();
-	void commit() { text_->set_content(model_.text(), model_.spans()); }
+	void commit();
 	BaseStyle base() const;
 	void style(StyleChange change, bool toggle);
 	void step_size(int direction);
@@ -361,6 +369,8 @@ void PreviewEditor::refresh_placeholders()
 	overlay_.placeholders = std::move(found);
 	if (!overlay_.editing)
 		overlay_.mapping = mapping;
+	if (!overlay_.placeholders.empty() && preview_)
+		overlay_.placeholder = placeholder_label(mapping);
 }
 
 void PreviewEditor::clear_placeholders()
@@ -388,11 +398,11 @@ void PreviewEditor::refresh_overlay()
 	const Document doc = text_->document();
 	o.grip = doc.style.box && doc.style.box_width > 0;
 	o.plate = doc.style.plate;
-	o.tag = std::string(obs_module_text("Editing")) + " “" + obs_source_get_name(source_) + "”";
+	std::string tag = std::string(obs_module_text("Editing")) + " “" + obs_source_get_name(source_) + "”";
 	if (const Frame frame = text_->frame(); frame.text_scale < 0.995)
-		o.tag += std::string(" · ") + obs_module_text("ShrunkTo") + " " +
-			 std::to_string(int(std::lround(frame.text_scale * 100))) + "%";
-	o.tag += std::string(" · ") + obs_module_text("EscToFinish");
+		tag += std::string(" · ") + obs_module_text("ShrunkTo") + " " +
+		       std::to_string(int(std::lround(frame.text_scale * 100))) + "%";
+	tag += std::string(" · ") + obs_module_text("EscToFinish");
 
 	// The format bar lights up for what the text has, its own font's weight
 	// and slant included (a Bold font's text shows B lit).
@@ -403,7 +413,8 @@ void PreviewEditor::refresh_overlay()
 	o.bar.size_px = int(std::lround(doc.style.size * model_.size_percent() / 100.0)); // the dialog's units
 	o.bar.colour = model_.colour(doc.style.colour);
 	o.bar.align = int(doc.style.align);
-	o.preedit = preedit_;
+	make_labels(o, tag, preedit_); // laid out here, on the UI thread, not while drawing
+	o.placeholder = placeholder_label(o.mapping);
 	o.blink_from = os_gettime_ns();
 	shown_ = doc;
 	// The input method follows the caret and selection.
@@ -464,8 +475,9 @@ bool PreviewEditor::begin_edit(const ItemRef &hit)
 	resizing_ = dragging_ = false;
 	preedit_.clear();
 	const Document d = text_->document();
-	model_.start(d.text, d.spans);
+	model_.start(d.text, d.spans, strip_layout(d));
 	before_ = undo_state(source_, d);
+	edit_serial_++;
 	watch_scenes(true);
 
 	saved_focus_policy_ = preview_->focusPolicy();
@@ -576,7 +588,24 @@ void PreviewEditor::sync_text()
 		return;
 	const size_t caret = text_->cursor_at_or_before(model_.caret());
 	const size_t anchor = text_->cursor_at_or_before(model_.anchor());
-	model_.take(std::move(now.text), std::move(now.spans), caret, anchor);
+	// OBS's undo step for this edit covers what's done in the preview from
+	// here on, not the change made elsewhere (which has its own).
+	obs_data_release(before_);
+	before_ = undo_state(source_, now);
+	model_.take(std::move(now.text), std::move(now.spans), caret, anchor, strip_layout(now));
+}
+
+// The model written to the text: its words and runs, and the strip's
+// alignment and box width where they differ (an undo of them).
+void PreviewEditor::commit()
+{
+	text_->set_content(model_.text(), model_.spans());
+	const Document d = text_->document();
+	const StripLayout &l = model_.layout();
+	if (l.align != int(d.style.align))
+		text_->set_align(l.align);
+	if (l.box_width > 0 && l.box_width != int(std::lround(d.style.box_width)))
+		text_->set_box_width(l.box_width);
 }
 
 // What the text's own font has.
@@ -746,12 +775,11 @@ void PreviewEditor::bar_action(BarAction action)
 		QTimer::singleShot(0, this, [this] { pick_colour(); });
 		break;
 	case BarAction::Align: {
-		// The whole text's alignment, round left, centre, right.
-		const int now = int(text_->document().style.align);
-		obs_data_t *settings = obs_data_create();
-		obs_data_set_int(settings, "align", (now + 1) % 3);
-		obs_source_update(source_, settings);
-		obs_data_release(settings);
+		// The whole text's alignment, round left, centre, right; at once,
+		// and in the edit's undo.
+		const int next = (model_.layout().align + 1) % 3;
+		if (model_.set_align(next))
+			text_->set_align(next);
 		break;
 	}
 	case BarAction::Clear:
@@ -775,14 +803,15 @@ void PreviewEditor::pick_colour()
 	// It runs an event loop of its own, in which anything can happen: OBS
 	// can even be closing, with this editor gone, when it returns.
 	QPointer<PreviewEditor> self(this);
+	const uint64_t serial = edit_serial_;
 	const QColor picked = QColorDialog::getColor(initial, preview_, obs_module_text("TextColour"),
 						     QColorDialog::ShowAlphaChannel);
 	if (!self)
 		return;
 	if (preview_)
 		preview_->setFocus(Qt::OtherFocusReason);
-	if (!editing() || !picked.isValid())
-		return;
+	if (!editing() || edit_serial_ != serial || !picked.isValid())
+		return; // finished, or another edit started, while it was open
 	sync_text(); // the text may have changed while the dialog was open
 	StyleChange c;
 	c.field = StyleChange::Colour;
@@ -821,7 +850,7 @@ bool PreviewEditor::mouse_event(QMouseEvent *event)
 	// something else selected by the time it arrives.
 	if (type == QEvent::MouseButtonPress && left && !editing()) {
 		const ItemRef hit = item_at(widget_to_canvas(preview_mapping(preview_), pos));
-		pressed_item_ = hit.item();
+		pressed_ = hit;
 		pressed_selected_ = hit && obs_sceneitem_selected(hit.item());
 		return false;
 	}
@@ -835,7 +864,7 @@ bool PreviewEditor::mouse_event(QMouseEvent *event)
 		// OBS selected what it found under the first click (or it was
 		// selected already): if that isn't this, the preview isn't laid
 		// out as assumed.
-		const bool was_selected = hit.item() == pressed_item_ && pressed_selected_;
+		const bool was_selected = hit.item() == pressed_.item() && pressed_selected_;
 		if (!was_selected && !obs_sceneitem_selected(hit.item()) &&
 		    !(hit.group() && obs_sceneitem_selected(hit.group()))) {
 			blog(LOG_INFO, "[obs-typeset] the text double-clicked isn't the one OBS selected; not editing");
@@ -889,7 +918,9 @@ bool PreviewEditor::mouse_event(QMouseEvent *event)
 			const double dx = (pos.x() - resize_from_pos_.x()) * map.dpr / map.scale;
 			const double dy = (pos.y() - resize_from_pos_.y()) * map.dpr / map.scale;
 			const double along = len2 > 0 ? (dx * ax + dy * ay) / len2 : 0;
-			text_->set_box_width(int(std::lround(resize_from_width_ + along)));
+			const int width = std::clamp(int(std::lround(resize_from_width_ + along)), 1, 16384);
+			if (model_.set_box_width(width))
+				text_->set_box_width(width);
 			refresh_overlay();
 			return true;
 		}
@@ -902,6 +933,8 @@ bool PreviewEditor::mouse_event(QMouseEvent *event)
 		resizing_ = true;
 		resize_from_pos_ = pos;
 		resize_from_width_ = text_->document().style.box_width;
+		sync_text();
+		model_.begin_box_drag(); // one undo step for the whole drag
 		return true;
 	}
 	if (type == QEvent::MouseMove && !dragging_ && on_grip(pos)) {
@@ -983,7 +1016,8 @@ void PreviewEditor::input_method(QInputMethodEvent *event)
 	// What's being composed (CJK, dead keys) is shown beside the caret in
 	// the preview until it's committed.
 	preedit_ = event->preeditString().toStdString();
-	const std::string commit_text = event->commitString().toStdString();
+	// (Cleaned as a paste is: an input method can send a line break as \r.)
+	const std::string commit_text = clean_paste(event->commitString().toStdString());
 	if (!commit_text.empty())
 		committed_ = true;
 	if (event->replacementLength() > 0 && !model_.has_selection()) {
@@ -1107,12 +1141,18 @@ bool PreviewEditor::eventFilter(QObject *obj, QEvent *event)
 		return true;
 	}
 	case QEvent::FocusOut: {
-		// Switching windows or opening a menu keeps the edit going.
+		// Switching windows or opening a menu keeps the edit going; while
+		// another of OBS's windows has the keyboard, its hotkeys work.
 		const Qt::FocusReason reason = static_cast<QFocusEvent *>(event)->reason();
 		if (reason != Qt::ActiveWindowFocusReason && reason != Qt::PopupFocusReason)
 			end_edit();
+		else if (reason == Qt::ActiveWindowFocusReason)
+			restore_hotkeys();
 		return false;
 	}
+	case QEvent::FocusIn:
+		suspend_hotkeys(); // back to typing
+		return false;
 	case QEvent::Resize:
 		refresh_overlay();
 		return false;
@@ -1149,6 +1189,9 @@ void PreviewEditor::attach_display()
 	if (previous)
 		obs_display_remove_draw_callback(previous, draw, draw_hook());
 	if (display) {
+		// (Removed first, in case OBS kept this display across a hide and
+		// it has the callback still: it's never there twice.)
+		obs_display_remove_draw_callback(display, draw, draw_hook());
 		obs_display_add_draw_callback(display, draw, draw_hook());
 	} else if (!warned_display_ && preview_ && preview_->isVisible()) { // hidden, it has none yet
 		warned_display_ = true;
