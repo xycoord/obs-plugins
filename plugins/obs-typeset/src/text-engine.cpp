@@ -603,11 +603,13 @@ static bool adds_alike(cairo_t *cr, const std::vector<cairo_glyph_t> &glyphs, bo
 	const int w = cairo_image_surface_get_width(target), h = cairo_image_surface_get_height(target);
 	const int left = std::max(0, int(std::floor(x0)) - 1), top = std::max(0, int(std::floor(y0)) - 1);
 	const int right = std::min(w, int(std::ceil(x1)) + 1), bottom = std::min(h, int(std::ceil(y1)) + 1);
+	if (right <= left || bottom <= top)
+		return true; // all off the surface
 	cairo_surface_flush(target);
 	const uint8_t *data = cairo_image_surface_get_data(target);
 	const int stride = cairo_image_surface_get_stride(target);
 	for (int row = top; row < bottom; row++)
-		if (right > left && any_set(data + size_t(row) * size_t(stride) + left, size_t(right - left)))
+		if (any_set(data + size_t(row) * size_t(stride) + left, size_t(right - left)))
 			return false;
 	return true;
 }
