@@ -4,8 +4,10 @@
 #include <obs-module.h>
 #include <util/platform.h>
 
+#include <QApplication>
 #include <QClipboard>
 #include <QGuiApplication>
+#include <QThread>
 
 #include <algorithm>
 #include <cmath>
@@ -76,7 +78,7 @@ Style read_style(obs_data_t *settings)
 		s.face_style = face_style ? face_style : "";
 		const long long size = obs_data_get_int(font, "size");
 		if (size > 0)
-			s.size = double(size);
+			s.size = double(std::min<long long>(size, 4096));
 		s.font_flags = uint32_t(obs_data_get_int(font, "flags"));
 		obs_data_release(font);
 	}
@@ -178,6 +180,52 @@ obs_data_t *only_style(obs_data_t *data)
 	return out;
 }
 
+Spans read_spans(obs_data_t *settings)
+{
+	Spans spans;
+	obs_data_array_t *array = obs_data_get_array(settings, "spans");
+	const size_t n = array ? obs_data_array_count(array) : 0;
+	for (size_t i = 0; i < n; i++) {
+		obs_data_t *o = obs_data_array_item(array, i);
+		Span sp;
+		sp.start = size_t(std::max<long long>(0, obs_data_get_int(o, "start")));
+		sp.end = size_t(std::max<long long>(0, obs_data_get_int(o, "end")));
+		sp.bold = obs_data_get_bool(o, "bold") ? 1 : -1;
+		sp.italic = obs_data_get_bool(o, "italic") ? 1 : -1;
+		sp.underline = obs_data_get_bool(o, "underline") ? 1 : -1;
+		sp.has_colour = obs_data_has_user_value(o, "colour");
+		sp.colour = uint32_t(obs_data_get_int(o, "colour"));
+		sp.size = int(std::clamp<long long>(obs_data_get_int(o, "size"), 0, 1000));
+		spans.push_back(sp);
+		obs_data_release(o);
+	}
+	obs_data_array_release(array);
+	return spans;
+}
+
+obs_data_array_t *spans_array(const Spans &spans)
+{
+	obs_data_array_t *array = obs_data_array_create();
+	for (const Span &sp : spans) {
+		obs_data_t *o = obs_data_create();
+		obs_data_set_int(o, "start", (long long)sp.start);
+		obs_data_set_int(o, "end", (long long)sp.end);
+		if (sp.bold > 0)
+			obs_data_set_bool(o, "bold", true);
+		if (sp.italic > 0)
+			obs_data_set_bool(o, "italic", true);
+		if (sp.underline > 0)
+			obs_data_set_bool(o, "underline", true);
+		if (sp.has_colour)
+			obs_data_set_int(o, "colour", sp.colour);
+		if (sp.size)
+			obs_data_set_int(o, "size", sp.size);
+		obs_data_array_push_back(array, o);
+		obs_data_release(o);
+	}
+	return array;
+}
+
 std::string default_style_path()
 {
 	char *path = obs_module_config_path("default-style.json");
@@ -262,6 +310,7 @@ void sync_size(obs_data_t *settings)
 
 void TextSource::update(obs_data_t *settings)
 {
+	std::lock_guard content(content_mutex_);
 	Document doc;
 	const char *text = obs_data_get_string(settings, "text");
 	// Made valid UTF-8, which editing's index arithmetic relies on.
@@ -269,6 +318,50 @@ void TextSource::update(obs_data_t *settings)
 	doc.text = valid;
 	g_free(valid);
 	doc.style = read_style(settings);
+	doc.spans = read_spans(settings);
+
+	// The text changed from outside (its properties) and its runs didn't:
+	// they move with the text, and are written back from OBS's UI thread
+	// (this may be its graphics thread, which mustn't write the settings).
+	bool follow = false;
+	{
+		std::lock_guard lock(layout_lock());
+		if (layout_ && doc.text != doc_.text && doc.spans == doc_.spans && !doc.spans.empty()) {
+			follow_text(doc.spans, doc_.text, doc.text);
+			follow = true;
+		}
+	}
+	normalise(doc.spans, doc.text);
+	if (follow) {
+		struct Task {
+			obs_weak_source_t *source;
+			Spans spans;
+			std::string text;
+		};
+		auto *task = new Task{obs_source_get_weak_source(source_), doc.spans, doc.text};
+		obs_queue_task(
+			OBS_TASK_UI,
+			[](void *param) {
+				auto *t = static_cast<Task *>(param);
+				if (obs_source_t *src = obs_weak_source_get_source(t->source)) {
+					obs_data_t *settings = obs_source_get_settings(src);
+					// Only if the text is still the one they were moved for.
+					if (t->text == obs_data_get_string(settings, "text")) {
+						obs_data_t *data = obs_data_create();
+						obs_data_array_t *array = spans_array(t->spans);
+						obs_data_set_array(data, "spans", array);
+						obs_data_array_release(array);
+						obs_source_update(src, data);
+						obs_data_release(data);
+					}
+					obs_data_release(settings);
+					obs_source_release(src);
+				}
+				obs_weak_source_release(t->source);
+				delete t;
+			},
+			task, false);
+	}
 	apply(std::move(doc));
 }
 
@@ -506,6 +599,7 @@ Document TextSource::document() const
 
 void TextSource::set_text(const std::string &text)
 {
+	std::lock_guard content(content_mutex_);
 	// OBS applies an update to a video source on its next frame; an edit
 	// has to be laid out now, for the caret. The update that follows finds
 	// the text already as it is.
@@ -525,6 +619,7 @@ void TextSource::set_text(const std::string &text)
 
 void TextSource::set_box_width(int width)
 {
+	std::lock_guard content(content_mutex_);
 	Document doc;
 	{
 		std::lock_guard lock(layout_lock());
@@ -543,6 +638,29 @@ Frame TextSource::frame() const
 {
 	std::lock_guard lock(layout_lock());
 	return frame_;
+}
+
+void TextSource::set_content(const std::string &text, const Spans &spans)
+{
+	std::lock_guard content(content_mutex_);
+	Document doc;
+	{
+		std::lock_guard lock(layout_lock());
+		doc = doc_;
+	}
+	doc.text = text;
+	doc.spans = spans;
+	normalise(doc.spans, doc.text);
+	const Spans normalised = doc.spans;
+	apply(std::move(doc));
+
+	obs_data_t *settings = obs_data_create();
+	obs_data_set_string(settings, "text", text.c_str());
+	obs_data_array_t *array = spans_array(normalised);
+	obs_data_set_array(settings, "spans", array);
+	obs_data_array_release(array);
+	obs_source_update(source_, settings);
+	obs_data_release(settings);
 }
 
 Box TextSource::box() const
@@ -1067,10 +1185,17 @@ bool size_changed(obs_properties_t *, obs_property_t *, obs_data_t *settings)
 	return false;
 }
 
+// The clipboard is Qt's, usable only on its UI thread (obs-websocket can
+// press a button from another).
+bool on_ui_thread()
+{
+	return qApp && QThread::currentThread() == qApp->thread();
+}
+
 bool copy_style(obs_properties_t *, obs_property_t *, void *data)
 {
 	auto *text = static_cast<TextSource *>(data);
-	if (!text)
+	if (!text || !on_ui_thread())
 		return false;
 	obs_data_t *settings = obs_source_get_settings(text->source());
 	obs_data_t *style = style_of(settings);
@@ -1080,10 +1205,12 @@ bool copy_style(obs_properties_t *, obs_property_t *, void *data)
 	return false;
 }
 
-bool paste_style(obs_properties_t *, obs_property_t *, void *data)
+bool group_toggled(obs_properties_t *props, obs_property_t *group, obs_data_t *settings);
+
+bool paste_style(obs_properties_t *props, obs_property_t *, void *data)
 {
 	auto *text = static_cast<TextSource *>(data);
-	if (!text)
+	if (!text || !on_ui_thread())
 		return false;
 	const QByteArray json = QGuiApplication::clipboard()->text().toUtf8();
 	obs_data_t *pasted = json.isEmpty() ? nullptr : obs_data_create_from_json(json.constData());
@@ -1095,6 +1222,13 @@ bool paste_style(obs_properties_t *, obs_property_t *, void *data)
 	obs_source_update(text->source(), style);
 	obs_data_release(style);
 	obs_data_release(pasted);
+	// OBS rebuilds the dialog without asking the groups again: they're
+	// filled (or emptied) for the pasted style here.
+	obs_data_t *settings = obs_source_get_settings(text->source());
+	for (obs_property_t *p = obs_properties_first(props); p; obs_property_next(&p))
+		if (obs_property_get_type(p) == OBS_PROPERTY_GROUP && obs_property_group_type(p) == OBS_GROUP_CHECKABLE)
+			group_toggled(props, p, settings);
+	obs_data_release(settings);
 	return true;
 }
 
@@ -1145,6 +1279,26 @@ obs_properties_t *get_properties(void *data)
 	obs_property_text_set_info_type(p, OBS_TEXT_INFO_WARNING);
 	obs_property_text_set_info_word_wrap(p, true);
 	obs_property_set_visible(p, false);
+
+	// Only when some of the text has a style of its own (set while editing
+	// in the preview).
+	const bool styled = text && !text->document().spans.empty();
+	p = obs_properties_add_text(props, "word_styles", obs_module_text("WordStyles"), OBS_TEXT_INFO);
+	obs_property_text_set_info_word_wrap(p, true);
+	obs_property_set_visible(p, styled);
+	p = obs_properties_add_button2(
+		props, "clear_word_styles", obs_module_text("ClearWordStyles"),
+		[](obs_properties_t *props, obs_property_t *, void *data) {
+			auto *t = static_cast<TextSource *>(data);
+			if (!t)
+				return false;
+			t->set_content(t->text(), {});
+			obs_property_set_visible(obs_properties_get(props, "word_styles"), false);
+			obs_property_set_visible(obs_properties_get(props, "clear_word_styles"), false);
+			return true;
+		},
+		text);
+	obs_property_set_visible(p, styled);
 
 	for (const Group &g : groups) {
 		p = obs_properties_add_group(props, g.name, obs_module_text(g.label), OBS_GROUP_CHECKABLE,

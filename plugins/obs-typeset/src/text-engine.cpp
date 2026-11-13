@@ -45,7 +45,7 @@ static std::string pango_style_words(const std::string &style)
 	return out;
 }
 
-static PangoFontDescription *font_description(const Style &style)
+PangoFontDescription *font_description(const Style &style)
 {
 	// Each word of the style name is read on its own, so one Pango doesn't
 	// know ("Display", "Text") doesn't lose the others ("Bold").
@@ -58,9 +58,17 @@ static PangoFontDescription *font_description(const Style &style)
 		i = end + 1;
 		if (word.empty())
 			continue;
+		// Only what the word says: parsing fills in "normal" for the rest,
+		// which mustn't undo an earlier word ("Bold Italic").
 		PangoFontDescription *w = pango_font_description_from_string(("Sans, " + word).c_str());
-		pango_font_description_unset_fields(w, PangoFontMask(PANGO_FONT_MASK_FAMILY | PANGO_FONT_MASK_SIZE));
-		pango_font_description_merge(desc, w, TRUE);
+		if (pango_font_description_get_weight(w) != PANGO_WEIGHT_NORMAL)
+			pango_font_description_set_weight(desc, pango_font_description_get_weight(w));
+		if (pango_font_description_get_style(w) != PANGO_STYLE_NORMAL)
+			pango_font_description_set_style(desc, pango_font_description_get_style(w));
+		if (pango_font_description_get_stretch(w) != PANGO_STRETCH_NORMAL)
+			pango_font_description_set_stretch(desc, pango_font_description_get_stretch(w));
+		if (pango_font_description_get_variant(w) != PANGO_VARIANT_NORMAL)
+			pango_font_description_set_variant(desc, pango_font_description_get_variant(w));
 		pango_font_description_free(w);
 	}
 	pango_font_description_set_family(desc, style.family.empty() ? "Sans" : style.family.c_str());
@@ -90,6 +98,9 @@ PangoLayout *create_layout(PangoContext *context, const Document &doc)
 
 	PangoFontDescription *desc = font_description(style);
 	pango_layout_set_font_description(layout, desc);
+	// Bold in a run is bolder than the base, whatever the base is.
+	const int base_weight = pango_font_description_get_weight(desc);
+	const PangoWeight bold = base_weight < 600 ? PANGO_WEIGHT_BOLD : PANGO_WEIGHT_HEAVY;
 	pango_font_description_free(desc);
 
 	switch (style.align) {
@@ -134,6 +145,34 @@ PangoLayout *create_layout(PangoContext *context, const Document &doc)
 	}
 	if (style.tabular)
 		pango_attr_list_insert(attrs, pango_attr_font_features_new("tnum 1"));
+
+	// Styled runs, over the base.
+	auto add = [&](PangoAttribute *a, const Span &sp) {
+		a->start_index = guint(sp.start);
+		a->end_index = guint(sp.end);
+		pango_attr_list_insert(attrs, a);
+	};
+	for (const Span &sp : doc.spans) {
+		if (sp.start >= sp.end || sp.end > doc.text.size())
+			continue;
+		if (sp.bold > 0)
+			add(pango_attr_weight_new(bold), sp);
+		if (sp.italic > 0)
+			add(pango_attr_style_new(PANGO_STYLE_ITALIC), sp);
+		if (sp.underline > 0)
+			add(pango_attr_underline_new(PANGO_UNDERLINE_SINGLE), sp);
+		if (sp.has_colour) {
+			const uint32_t c = sp.colour;
+			add(pango_attr_foreground_new(guint16((c & 0xFF) * 257), guint16(((c >> 8) & 0xFF) * 257),
+						      guint16(((c >> 16) & 0xFF) * 257)),
+			    sp);
+			add(pango_attr_foreground_alpha_new(guint16(((c >> 24) & 0xFF) * 257)), sp);
+		}
+		if (sp.size > 0)
+			add(pango_attr_size_new_absolute(int(std::lround(std::clamp(style.size, 1.0, 4096.0) * sp.size /
+									    100.0 * PANGO_SCALE))),
+			    sp);
+	}
 	pango_layout_set_attributes(layout, attrs);
 	pango_attr_list_unref(attrs);
 

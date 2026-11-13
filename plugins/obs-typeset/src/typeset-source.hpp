@@ -49,6 +49,7 @@ public:
 	std::string text() const;
 	Document document() const;
 	void set_text(const std::string &text);
+	void set_content(const std::string &text, const Spans &spans); // text and styled runs together
 	void set_box_width(int width); // the text box's width, while dragging its grip
 	Frame frame() const;
 	Box box() const; // the source's own extent
@@ -82,6 +83,11 @@ private:
 	// The document as it stands, for the rasteriser, with its version;
 	// guarded by doc_mutex_ (taken inside the layout lock, never around it).
 	std::mutex doc_mutex_;
+	// An edit from the preview (on OBS's UI thread) writes the settings and
+	// lays out at once; OBS's update (on its graphics thread, a frame later)
+	// reads the settings and lays out. One at a time, or an update that
+	// read the text just before an edit would lay out the old text after it.
+	std::mutex content_mutex_;
 	Document pending_doc_;
 	uint64_t doc_version_ = 0;
 

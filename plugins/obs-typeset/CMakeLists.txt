@@ -10,6 +10,7 @@ pkg_check_modules(PANGOCAIRO REQUIRED IMPORTED_TARGET pangocairo>=1.50)
 add_library(obs-typeset MODULE
 	src/plugin.cpp
 	src/text-engine.cpp
+	src/rich-text.cpp
 	src/typeset-source.cpp
 	src/raster-worker.cpp
 	src/preview-editor.cpp)

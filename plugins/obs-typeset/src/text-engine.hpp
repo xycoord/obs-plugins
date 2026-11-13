@@ -9,6 +9,8 @@
 // scales together.
 #pragma once
 
+#include "rich-text.hpp"
+
 #include <pango/pangocairo.h>
 
 #include <cstdint>
@@ -59,6 +61,7 @@ struct Style {
 struct Document {
 	std::string text; // UTF-8
 	Style style;
+	Spans spans; // parts styled differently from the rest (see rich-text.hpp)
 
 	bool operator==(const Document &) const = default;
 };
@@ -67,6 +70,7 @@ struct Document {
 // that lays out text needs its own font map: Pango's aren't thread-safe.
 PangoContext *create_context(PangoFontMap *map);
 PangoLayout *create_layout(PangoContext *context, const Document &doc);
+PangoFontDescription *font_description(const Style &style); // the base font, for a style
 
 struct Box {
 	double x = 0, y = 0, w = 0, h = 0;

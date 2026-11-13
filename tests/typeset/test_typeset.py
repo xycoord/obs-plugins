@@ -436,10 +436,81 @@ def test_features(out):
         check(not warnings, "no warnings from obs-typeset", "; ".join(warnings))
 
 
+# --- 4. Styled words ----------------------------------------------------------------------------
+
+def test_rich(out):
+    print("-- styled words")
+    sources = [text_source("Title", "Hello world", 160)]
+    items = [item("Title", 2, 200, 200)]
+    with ObsSession(collection(sources, items)) as obs:
+        time.sleep(1)
+        x0, y0, sx, sy = canvas_on_screen(obs.screen())
+        to_screen = lambda cx, cy: (x0 + cx * sx, y0 + cy * sy)  # noqa: E731
+        t = obs.request("GetSceneItemTransform", sceneName="Scene", sceneItemId=2)["sceneItemTransform"]
+        plain_width = t["sourceWidth"]
+
+        def spans():
+            return [(s["start"], s["end"], s.get("bold", False), s.get("italic", False), s.get("size", 0))
+                    for s in obs.settings("Title").get("spans", [])]
+
+        # Double-click "world", Ctrl+B: it's bold, and the text is wider.
+        obs.click(*to_screen(200 + t["width"] * 0.75, 200 + t["height"] / 2), repeat=2)
+        obs.key("ctrl+b")
+        time.sleep(0.5)
+        check(spans() == [(6, 11, True, False, 0)], "Ctrl+B makes the selected word bold", repr(spans()))
+        t2 = obs.request("GetSceneItemTransform", sceneName="Scene", sceneItemId=2)["sceneItemTransform"]
+        check(t2["sourceWidth"] > plain_width, "and the bold word is wider",
+              "%d -> %d" % (plain_width, t2["sourceWidth"]))
+        save(out, "rich-bold.png", obs.screen())
+
+        # Typing at its end carries the bold on; Ctrl+I with no selection
+        # makes what's typed next italic too.
+        obs.key("End")
+        obs.key("ctrl+i")
+        obs.type("!")
+        check(obs.settings("Title")["text"] == "Hello world!" and spans() == [(6, 11, True, False, 0),
+                                                                          (11, 12, True, True, 0)],
+              "typing after a bold word continues it; Ctrl+I first makes it italic too", repr(spans()))
+
+        # Ctrl+Z undoes the typing, then the bold.
+        obs.key("ctrl+z", "ctrl+z")
+        check(obs.settings("Title")["text"] == "Hello world" and spans() == [],
+              "Ctrl+Z undoes the styles too", "%r %r" % (obs.settings("Title")["text"], spans()))
+
+        # Bigger: Ctrl+Shift+> on the selection.
+        obs.key("ctrl+a", "ctrl+shift+greater", "ctrl+shift+greater")
+        check(spans() == [(0, 11, False, False, 120)], "Ctrl+Shift+> makes the selection bigger", repr(spans()))
+        obs.key("ctrl+space")
+        check(spans() == [], "Ctrl+Space puts the selection back to the text's own style", repr(spans()))
+
+        # The format bar above the frame: its B button (the first of seven
+        # 26-pixel buttons, right-aligned 7 pixels past the text's right end).
+        obs.key("ctrl+a")
+        t3 = obs.request("GetSceneItemTransform", sceneName="Scene", sceneItemId=2)["sceneItemTransform"]
+        right, top = to_screen(200 + t3["width"], 200)
+        bar_width = 7 * 26 + 8 * 2
+        obs.click(right + 7 - bar_width + 13, top - 7 - 4 - 13)
+        save(out, "rich-bar.png", obs.screen())
+        check(spans() == [(0, 11, True, False, 0)], "the format bar's B makes the selection bold", repr(spans()))
+        obs.key("ctrl+space")
+
+        # Changed from the properties, before a styled word: the style stays
+        # on the word.
+        obs.key("ctrl+a", "ctrl+b", "Escape")
+        obs.request("SetInputSettings", inputName="Title", inputSettings={"text": "Oh Hello world"})
+        time.sleep(1.5)
+        # ("Oh " is new, before the bold text: it isn't bold itself.)
+        check(spans() and spans()[0][:2] == (3, 14), "the styles follow the text when it's changed elsewhere",
+              repr(spans()))
+        warnings = [line for line in obs.log().splitlines() if "[obs-typeset]" in line and "editing" not in line
+                    and "] drew " not in line]
+        check(not warnings, "no warnings from obs-typeset", "; ".join(warnings))
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", help="keep the frames and screenshots in this folder")
-    parser.add_argument("tests", nargs="*", default=["scaling", "editing", "features"])
+    parser.add_argument("tests", nargs="*", default=["scaling", "editing", "features", "rich"])
     args = parser.parse_args()
     if args.out:
         os.makedirs(args.out, exist_ok=True)

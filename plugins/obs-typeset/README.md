@@ -23,7 +23,7 @@ Everything else is in groups that show their settings only when ticked:
 | **Outline** | Colour and width. Drawn outside the letters, so it never thins them. |
 | **Shadow** | Colour, opacity, offset and blur. With no offset, it's a glow. On by default. |
 | **Background** | A plate behind the text: colour, opacity, padding, rounded corners. For lower thirds and messages over busy visuals. |
-| **Adjust spacing and case** | Line and letter spacing; UPPERCASE, lowercase or Title Case (the text stays as you typed it); even-width numbers, so set times line up. |
+| **Adjust spacing and case** | Line and letter spacing; UPPERCASE, lowercase or capitals at the start of each word (the text stays as you typed it); even-width numbers, so set times line up. |
 
 In the **Style** group, **Copy style** and **Paste style** copy everything but the words from one
 Typeset Text to another; **Use this style for new text** makes new ones start with it.
@@ -32,6 +32,25 @@ Every size here (the font's, the box, outline, shadow, padding) is in the text's
 the scene scales it, so the whole design scales together. If a text's font isn't installed on the
 computer (a scene collection moved from another machine), its properties say so, and which font
 is shown instead.
+
+## Styling words
+
+Part of the text can have a style of its own: a band's name in bold, a time in another colour. While
+editing in the preview, select the words, then:
+
+| | |
+|---|---|
+| Ctrl+B, Ctrl+I, Ctrl+U | bold, italic, underline (on and off) |
+| Ctrl+Shift+> and < (or Ctrl+] and [) | bigger, smaller, a tenth of the text's size at a time |
+| Ctrl+Space | back to the text's own style |
+
+or use the format bar above the text (the same, and a colour). With nothing selected, a style goes on
+what you type next. Bold is always bolder than the text around it (a SemiBold text's bold is Black).
+
+The properties are the style of the rest of the text: change the font there and the bold words stay
+bold, in the new font. A note in the properties says when some words have a style of their own, with
+a button to clear them. Words typed after a styled word continue its style; text changed in the
+properties keeps its styles where it's unchanged.
 
 ## Resizing and font size
 
@@ -83,6 +102,10 @@ caret, selection and frame are drawn in the preview only, never into the output,
 on the stream, the recording or a projector. The text itself changes live, as you type, as any
 change in OBS does; in Studio Mode, editing is in the preview's scene.
 
+The properties dialog keeps what it had when it opened: with it open, words typed in the preview are
+undone by its **Cancel** (as any change made elsewhere would be). Edits in the preview aren't in OBS's
+own undo history (Edit, Undo): OBS has no way for a plugin to add to it.
+
 A Typeset Text with no words shows where it is with a dashed frame and "Double-click to type", in
 the preview only.
 
@@ -113,7 +136,8 @@ OBS doesn't give plugins a way to take part in its preview, so the editor works 
 text scaled in a scene comes out identical to text at the matching font size; and, using the mouse
 and keyboard on OBS's window, that editing in the preview works, never shows in the output, isn't
 interrupted by OBS's shortcuts or hotkeys, and works in Studio Mode; and the text box's sizes.
-`capture.py` there takes a fixed set of screenshots for reviewing the design.
+`capture.py` there takes a fixed set of screenshots for reviewing the design. `unit/run.sh` tests the
+styled runs and the reading of font style names on their own, without OBS.
 
 ## Building
 

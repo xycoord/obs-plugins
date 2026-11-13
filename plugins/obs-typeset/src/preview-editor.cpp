@@ -1,5 +1,6 @@
 #include "preview-editor.hpp"
 
+#include "rich-text.hpp"
 #include "typeset-source.hpp"
 
 #include <graphics/matrix4.h>
@@ -10,6 +11,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QClipboard>
+#include <QColorDialog>
 #include <QGuiApplication>
 #include <QInputMethodEvent>
 #include <QKeyEvent>
@@ -172,7 +174,8 @@ config_t *hotkey_config()
 {
 	using getter = config_t *(*)(void);
 	static const auto user = reinterpret_cast<getter>(dlsym(RTLD_DEFAULT, "obs_frontend_get_user_config"));
-	return user ? user() : obs_frontend_get_global_config();
+	static const auto global = reinterpret_cast<getter>(dlsym(RTLD_DEFAULT, "obs_frontend_get_global_config"));
+	return user ? user() : global ? global() : nullptr;
 }
 
 void restore_hotkeys()
@@ -287,6 +290,11 @@ struct Label {
 		width = tw + 2 * pad;
 		height = th + pad;
 		cairo_surface_t *surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height);
+		if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
+			cairo_surface_destroy(surface);
+			g_object_unref(layout);
+			return;
+		}
 		cairo_t *cr = cairo_create(surface);
 		auto rgba = [&](uint32_t c) {
 			cairo_set_source_rgba(cr, (c >> 24) / 255.0, ((c >> 16) & 0xFF) / 255.0, ((c >> 8) & 0xFF) / 255.0,
@@ -345,6 +353,7 @@ struct Label {
 
 struct Snapshot {
 	std::string text;
+	Spans spans;
 	size_t caret = 0, anchor = 0;
 };
 
@@ -353,6 +362,36 @@ enum class EditKind { None, Typing, Deleting, Other };
 struct Quad {
 	vec2 p[4]; // in order round the edge
 };
+
+// The format bar above the text being edited: bold, italic, underline,
+// smaller, bigger, colour, clear. In display pixels.
+enum class BarAction { Bold, Italic, Underline, Smaller, Bigger, Colour, Clear };
+struct BarButton {
+	BarAction action;
+	float x = 0, y = 0, w = 0, h = 0;
+	bool active = false;
+	uint32_t swatch = 0; // the colour button's colour, 0xAABBGGRR
+};
+const char *bar_glyph(BarAction a)
+{
+	switch (a) {
+	case BarAction::Bold:
+		return "B";
+	case BarAction::Italic:
+		return "I";
+	case BarAction::Underline:
+		return "U";
+	case BarAction::Smaller:
+		return "A\u2212";
+	case BarAction::Bigger:
+		return "A+";
+	case BarAction::Colour:
+		return "";
+	case BarAction::Clear:
+		return "\u00d7";
+	}
+	return "";
+}
 
 class PreviewEditor : public QObject {
 public:
@@ -380,7 +419,9 @@ private:
 	obs_source_t *source_ = nullptr; // referenced
 	TextSource *text_ = nullptr;
 	std::string doc_;
-	Document shown_; // as the overlay was last drawn for
+	Spans spans_;                      // the text's styled runs
+	std::vector<StyleChange> pending_; // styles for what's typed next (Ctrl+B with no selection)
+	Document shown_;                   // as the overlay was last drawn for
 	size_t caret_ = 0, anchor_ = 0;
 	double column_x_ = -1; // the column Up and Down keep to
 	bool dragging_ = false;
@@ -398,6 +439,7 @@ private:
 	// scene-item references in it are the overlay's own.
 	std::mutex overlay_mutex_;
 	obs_display_t *display_ = nullptr;
+	obs_display_t *forgotten_ = nullptr; // let go when the preview hid; only compared
 	struct Target {
 		obs_sceneitem_t *item = nullptr, *group = nullptr;
 	};
@@ -412,17 +454,38 @@ private:
 		bool grip = false;       // the text box's width grip
 		bool plate = false;      // a background plate behind the text
 		std::string tag;         // what the tag says
+		std::vector<BarButton> bar;
+		std::string preedit;
 		uint64_t blink_from = 0;
 		std::vector<Target> placeholders; // empty texts
 	} overlay_;
 	Label editing_label_, placeholder_label_; // graphics thread only
+	Label bar_labels_[7];
+	std::vector<BarButton> bar_; // as last drawn, for clicks (display pixels)
+	void bar_action(BarAction action);
 	std::string editing_label_text_;
 	// Dragging the text box's width grip.
 	bool resizing_ = false;
-	double resize_from_x_ = 0, resize_from_width_ = 0;
+	QPointF resize_from_pos_;
+	double resize_from_width_ = 0;
 	bool on_grip(QPointF widget_pos);
+	std::string preedit_; // an input method's composition, not yet in the text
+	Label preedit_label_;
+	std::string preedit_label_text_;
 
 	bool editing() const { return item_ != nullptr; }
+	static void source_updated(void *param, calldata_t *)
+	{
+		QMetaObject::invokeMethod(
+			static_cast<PreviewEditor *>(param),
+			[e = static_cast<PreviewEditor *>(param)] {
+				if (e->editing() && !(e->text_->document() == e->shown_)) {
+					e->sync_text();
+					e->refresh_overlay();
+				}
+			},
+			Qt::QueuedConnection);
+	}
 	bool begin_edit(const Hit &hit);
 	bool still_editable();
 	vec3 to_source(QPointF widget_pos, bool *inside = nullptr);
@@ -437,6 +500,9 @@ private:
 	size_t sel_to() const { return std::max(caret_, anchor_); }
 	void undo();
 	void redo();
+	void restore(Snapshot s);
+	void commit();
+	void style(StyleChange change, bool toggle);
 
 	Hit item_at(QPointF pos);
 	void select_only(obs_sceneitem_t *item);
@@ -497,6 +563,9 @@ PreviewEditor::~PreviewEditor()
 	obs_enter_graphics();
 	editing_label_.destroy();
 	placeholder_label_.destroy();
+	for (Label &l : bar_labels_)
+		l.destroy();
+	preedit_label_.destroy();
 	obs_leave_graphics();
 	if (preview_)
 		preview_->removeEventFilter(this);
@@ -531,7 +600,7 @@ void PreviewEditor::on_timer()
 		attach_display();
 	}
 	if (editing()) {
-		if (!still_editable()) {
+		if (!still_editable() || !scaled_to_window(preview_)) {
 			end_edit();
 		} else if (!(text_->document() == shown_)) {
 			// Changed from its properties: draw the caret for it.
@@ -632,7 +701,12 @@ bool PreviewEditor::begin_edit(const Hit &hit)
 		obs_sceneitem_addref(group_);
 	source_ = obs_source_get_ref(source);
 	text_ = text;
-	doc_ = text_->text();
+	resizing_ = dragging_ = false;
+	preedit_.clear();
+	const Document d = text_->document();
+	doc_ = d.text;
+	spans_ = d.spans;
+	pending_.clear();
 	caret_ = anchor_ = 0;
 	column_x_ = -1;
 	undo_.clear();
@@ -649,6 +723,9 @@ bool PreviewEditor::begin_edit(const Hit &hit)
 	preview_->setCursor(Qt::IBeamCursor);
 
 	obs_hotkey_enable_background_press(false);
+	// Changes from the dialog (font, box) redraw the caret and frame at
+	// once; OBS signals them on its graphics thread, so they're passed on.
+	signal_handler_connect(obs_source_get_signal_handler(source_), "update", source_updated, this);
 	blog(LOG_INFO, "[obs-typeset] editing '%s' in the preview", obs_source_get_name(source));
 	refresh_placeholders(); // it isn't one while it's being edited
 	return true;
@@ -659,6 +736,9 @@ void PreviewEditor::end_edit()
 	if (!editing())
 		return;
 	dragging_ = false;
+	resizing_ = false;
+	swallow_release_ = false;
+	preedit_.clear();
 	Target old;
 	{
 		std::lock_guard lock(overlay_mutex_);
@@ -666,8 +746,10 @@ void PreviewEditor::end_edit()
 		overlay_.target = Target();
 		overlay_.editing = false;
 		overlay_.selection.clear();
+		overlay_.bar.clear();
 	}
 	release(old); // outside the lock (see attach_display)
+	bar_.clear();
 	if (preview_) {
 		preview_->setAttribute(Qt::WA_InputMethodEnabled, saved_input_method_);
 		preview_->setFocusPolicy(saved_focus_policy_);
@@ -675,6 +757,7 @@ void PreviewEditor::end_edit()
 		QGuiApplication::inputMethod()->update(Qt::ImEnabled);
 	}
 	restore_hotkeys();
+	signal_handler_disconnect(obs_source_get_signal_handler(source_), "update", source_updated, this);
 	obs_sceneitem_release(item_);
 	if (group_)
 		obs_sceneitem_release(group_);
@@ -693,10 +776,11 @@ void PreviewEditor::end_edit()
 // key: take it as it is, keeping the caret where it can be, on a character.
 void PreviewEditor::sync_text()
 {
-	std::string now = text_->text();
-	if (now == doc_)
+	Document now = text_->document();
+	if (now.text == doc_ && now.spans == spans_)
 		return;
-	doc_ = std::move(now);
+	doc_ = std::move(now.text);
+	spans_ = std::move(now.spans);
 	caret_ = text_->cursor_at_or_before(caret_);
 	anchor_ = text_->cursor_at_or_before(anchor_);
 	undo_.clear();
@@ -710,6 +794,7 @@ void PreviewEditor::set_caret(size_t caret, bool extend)
 	if (!extend)
 		anchor_ = caret_;
 	last_edit_ = EditKind::None;
+	pending_.clear();
 }
 
 void PreviewEditor::replace(size_t from, size_t to, const std::string &with, EditKind kind)
@@ -721,7 +806,7 @@ void PreviewEditor::replace(size_t from, size_t to, const std::string &with, Edi
 	// Runs of typing, or of deleting, undo together, a word at a time.
 	const bool word_break = kind == EditKind::Typing && (with == " " || with == "\n");
 	if (kind == EditKind::Other || kind != last_edit_ || undo_.empty() || word_break)
-		undo_.push_back({doc_, caret_, anchor_});
+		undo_.push_back({doc_, spans_, caret_, anchor_});
 	constexpr size_t undo_limit = 200;
 	if (undo_.size() > undo_limit)
 		undo_.erase(undo_.begin());
@@ -729,9 +814,56 @@ void PreviewEditor::replace(size_t from, size_t to, const std::string &with, Edi
 	last_edit_ = kind;
 
 	doc_.replace(from, to - from, with);
+	edit(spans_, from, to, with.size());
+	// Styles chosen with nothing selected go on what's typed.
+	for (const StyleChange &c : pending_)
+		apply(spans_, from, from + with.size(), c, doc_);
 	caret_ = anchor_ = from + with.size();
 	column_x_ = -1;
-	text_->set_text(doc_);
+	commit();
+}
+
+void PreviewEditor::commit()
+{
+	text_->set_content(doc_, spans_);
+}
+
+void PreviewEditor::restore(Snapshot s)
+{
+	doc_ = std::move(s.text);
+	spans_ = std::move(s.spans);
+	caret_ = s.caret;
+	anchor_ = s.anchor;
+	last_edit_ = EditKind::None;
+	pending_.clear();
+	commit();
+}
+
+// Bold, italic and so on: on the selection, or, with nothing selected, on
+// what's typed next. Toggled ones go off if the whole selection has them.
+void PreviewEditor::style(StyleChange change, bool toggle)
+{
+	if (!has_selection()) {
+		if (toggle) {
+			auto same = std::find_if(pending_.begin(), pending_.end(),
+						 [&](const StyleChange &c) { return c.field == change.field; });
+			const bool on_here = all_on(spans_, caret_ > 0 ? caret_ - 1 : 0, caret_, change.field);
+			if (same != pending_.end()) {
+				pending_.erase(same);
+				return;
+			}
+			change.value = on_here ? -1 : 1;
+		}
+		pending_.push_back(change);
+		return;
+	}
+	if (toggle)
+		change.value = all_on(spans_, sel_from(), sel_to(), change.field) ? -1 : 1;
+	undo_.push_back({doc_, spans_, caret_, anchor_});
+	redo_.clear();
+	last_edit_ = EditKind::Other;
+	apply(spans_, sel_from(), sel_to(), change, doc_);
+	commit();
 }
 
 void PreviewEditor::replace_selection(const std::string &s, EditKind kind)
@@ -744,28 +876,20 @@ void PreviewEditor::undo()
 {
 	if (undo_.empty())
 		return;
-	redo_.push_back({doc_, caret_, anchor_});
+	redo_.push_back({doc_, spans_, caret_, anchor_});
 	Snapshot s = std::move(undo_.back());
 	undo_.pop_back();
-	doc_ = std::move(s.text);
-	caret_ = s.caret;
-	anchor_ = s.anchor;
-	last_edit_ = EditKind::None;
-	text_->set_text(doc_);
+	restore(std::move(s));
 }
 
 void PreviewEditor::redo()
 {
 	if (redo_.empty())
 		return;
-	undo_.push_back({doc_, caret_, anchor_});
+	undo_.push_back({doc_, spans_, caret_, anchor_});
 	Snapshot s = std::move(redo_.back());
 	redo_.pop_back();
-	doc_ = std::move(s.text);
-	caret_ = s.caret;
-	anchor_ = s.anchor;
-	last_edit_ = EditKind::None;
-	text_->set_text(doc_);
+	restore(std::move(s));
 }
 
 // Printable text from a key: every code point (not UTF-16 unit, so emoji
@@ -808,6 +932,35 @@ bool PreviewEditor::key_press(QKeyEvent *event)
 			s.end());
 		if (!s.empty())
 			replace(sel_from(), sel_to(), s, EditKind::Other);
+	} else if (event->matches(QKeySequence::Bold) || event->matches(QKeySequence::Italic) ||
+		   event->matches(QKeySequence::Underline)) {
+		StyleChange c;
+		c.field = event->matches(QKeySequence::Bold)     ? StyleChange::Bold
+			  : event->matches(QKeySequence::Italic) ? StyleChange::Italic
+								 : StyleChange::Underline;
+		style(c, true);
+	} else if (word && (event->key() == Qt::Key_Greater || event->key() == Qt::Key_Less ||
+			    event->key() == Qt::Key_BracketRight || event->key() == Qt::Key_BracketLeft)) {
+		// Bigger or smaller: the selection, a tenth of the base size at a time.
+		if (has_selection()) {
+			const bool up = event->key() == Qt::Key_Greater || event->key() == Qt::Key_BracketRight;
+			const Span at = style_at(spans_, sel_from());
+			StyleChange c;
+			c.field = StyleChange::Size;
+			const int now = at.size ? at.size : 100;
+			c.value = std::clamp(now + (up ? 10 : -10), 10, 1000);
+			if (c.value == 100)
+				c.value = 0;
+			style(c, false);
+		}
+	} else if (word && event->key() == Qt::Key_Space) {
+		// Back to the text's own style.
+		StyleChange c;
+		c.field = StyleChange::Clear;
+		if (has_selection())
+			style(c, false);
+		else
+			pending_.clear();
 	} else if (event->matches(QKeySequence::Undo)) {
 		undo();
 	} else if (event->matches(QKeySequence::Redo)) {
@@ -891,16 +1044,20 @@ bool PreviewEditor::edit_selected()
 	if (obs_scene_t *scene = obs_scene_from_source(scene_source)) {
 		each_item(scene, [&](obs_sceneitem_t *item, obs_sceneitem_t *group) {
 			if (obs_sceneitem_selected(item) && TextSource::from(obs_sceneitem_get_source(item))) {
+				obs_sceneitem_addref(item); // inside the enumeration
+				if (hit.item)
+					obs_sceneitem_release(hit.item);
 				hit = {item, group};
 				count++;
 			}
 		});
-		if (count == 1) // referenced while the scene still is
-			obs_sceneitem_addref(hit.item);
 	}
 	obs_source_release(scene_source);
-	if (count != 1)
+	if (count != 1) {
+		if (hit.item)
+			obs_sceneitem_release(hit.item);
 		return false;
+	}
 	struct Release {
 		obs_sceneitem_t *i;
 		~Release() { obs_sceneitem_release(i); }
@@ -918,6 +1075,60 @@ bool PreviewEditor::edit_selected()
 	caret_ = doc_.size();
 	refresh_overlay();
 	return true;
+}
+
+void PreviewEditor::bar_action(BarAction action)
+{
+	sync_text();
+	StyleChange c;
+	switch (action) {
+	case BarAction::Bold:
+	case BarAction::Italic:
+	case BarAction::Underline:
+		c.field = action == BarAction::Bold     ? StyleChange::Bold
+			  : action == BarAction::Italic ? StyleChange::Italic
+							: StyleChange::Underline;
+		style(c, true);
+		break;
+	case BarAction::Smaller:
+	case BarAction::Bigger: {
+		if (!has_selection())
+			break;
+		const Span at = style_at(spans_, sel_from());
+		c.field = StyleChange::Size;
+		const int now = at.size ? at.size : 100;
+		c.value = std::clamp(now + (action == BarAction::Bigger ? 10 : -10), 10, 1000);
+		if (c.value == 100)
+			c.value = 0;
+		style(c, false);
+		break;
+	}
+	case BarAction::Colour: {
+		const Span at = style_at(spans_, has_selection() ? sel_from() : caret_ > 0 ? caret_ - 1 : 0);
+		const uint32_t now = at.has_colour ? at.colour : text_->document().style.colour;
+		const QColor initial(now & 0xFF, (now >> 8) & 0xFF, (now >> 16) & 0xFF, (now >> 24) & 0xFF);
+		// The colour dialog takes the focus for a while; editing carries on.
+		const QColor picked = QColorDialog::getColor(initial, preview_, obs_module_text("TextColour"),
+							     QColorDialog::ShowAlphaChannel);
+		if (preview_)
+			preview_->setFocus(Qt::OtherFocusReason);
+		if (!editing() || !picked.isValid())
+			break;
+		c.field = StyleChange::Colour;
+		c.colour = uint32_t(picked.red()) | uint32_t(picked.green()) << 8 | uint32_t(picked.blue()) << 16 |
+			   uint32_t(picked.alpha()) << 24;
+		style(c, false);
+		break;
+	}
+	case BarAction::Clear:
+		c.field = StyleChange::Clear;
+		if (has_selection())
+			style(c, false);
+		else
+			pending_.clear();
+		break;
+	}
+	refresh_overlay();
 }
 
 // Whether a point is on the text box's width grip (a little generous: it's
@@ -947,12 +1158,15 @@ Hit PreviewEditor::item_at(QPointF pos)
 	if (obs_scene_t *scene = obs_scene_from_source(scene_source)) {
 		each_item(scene, [&](obs_sceneitem_t *item, obs_sceneitem_t *group) {
 			if (!obs_sceneitem_locked(item) && !(group && obs_sceneitem_locked(group)) &&
-			    point_in_item(item, group, canvas))
+			    point_in_item(item, group, canvas)) {
+				// Referenced here, inside the scene's enumeration; the
+				// one it replaces (lower down) let go.
+				obs_sceneitem_addref(item);
+				if (hit.item)
+					obs_sceneitem_release(hit.item);
 				hit = {item, group};
+			}
 		});
-		// Referenced while the scene still is.
-		if (hit.item)
-			obs_sceneitem_addref(hit.item);
 	}
 	obs_source_release(scene_source);
 	return hit;
@@ -1051,10 +1265,32 @@ bool PreviewEditor::mouse_event(QMouseEvent *event)
 	bool inside = false;
 	const vec3 local = to_source(pos, &inside);
 
+	// The format bar.
+	if (type == QEvent::MouseButtonPress && event->button() == Qt::LeftButton) {
+		const QPointF d = pos * preview_mapping(preview_).dpr;
+		for (const BarButton &b : bar_) {
+			if (d.x() >= b.x && d.x() <= b.x + b.w && d.y() >= b.y && d.y() <= b.y + b.h) {
+				swallow_release_ = true;
+				bar_action(b.action);
+				return true;
+			}
+		}
+	}
+
 	// The text box's width grip.
 	if (resizing_) {
 		if (type == QEvent::MouseMove) {
-			text_->set_box_width(int(std::lround(resize_from_width_ + (local.x - resize_from_x_))));
+			// How far the pointer has moved along the text's own x axis, in
+			// its own units (not through its transform, which moves as the
+			// box grows when the item isn't anchored at its left).
+			const Mapping map = preview_mapping(preview_);
+			matrix4 m;
+			item_to_canvas(item_, group_, &m);
+			const double ax = m.x.x, ay = m.x.y, len2 = ax * ax + ay * ay;
+			const double dx = (pos.x() - resize_from_pos_.x()) * map.dpr / map.scale;
+			const double dy = (pos.y() - resize_from_pos_.y()) * map.dpr / map.scale;
+			const double along = len2 > 0 ? (dx * ax + dy * ay) / len2 : 0;
+			text_->set_box_width(int(std::lround(resize_from_width_ + along)));
 			refresh_overlay();
 			return true;
 		}
@@ -1065,7 +1301,7 @@ bool PreviewEditor::mouse_event(QMouseEvent *event)
 	}
 	if (type == QEvent::MouseButtonPress && event->button() == Qt::LeftButton && on_grip(pos)) {
 		resizing_ = true;
-		resize_from_x_ = local.x;
+		resize_from_pos_ = pos;
 		resize_from_width_ = text_->document().style.box_width;
 		return true;
 	}
@@ -1151,6 +1387,9 @@ bool PreviewEditor::mouse_event(QMouseEvent *event)
 void PreviewEditor::input_method(QInputMethodEvent *event)
 {
 	sync_text();
+	// What's being composed (CJK, dead keys) is shown beside the caret in
+	// the preview until it's committed.
+	preedit_ = event->preeditString().toStdString();
 	const std::string commit = event->commitString().toStdString();
 	if (event->replacementLength() > 0 && !has_selection()) {
 		// The input method replaces text round the caret (counted in
@@ -1310,7 +1549,12 @@ void PreviewEditor::attach_display()
 		return;
 	if (previous)
 		obs_display_remove_draw_callback(previous, draw, this);
-	if (display) {
+	if (display && display == forgotten_) {
+		// The same display as before the preview hid: OBS kept it, and
+		// it still has this callback.
+		forgotten_ = nullptr;
+	} else if (display) {
+		forgotten_ = nullptr;
 		obs_display_add_draw_callback(display, draw, this);
 	} else if (!warned_display_) {
 		warned_display_ = true;
@@ -1322,6 +1566,8 @@ void PreviewEditor::attach_display()
 void PreviewEditor::forget_display()
 {
 	std::lock_guard lock(overlay_mutex_);
+	if (display_)
+		forgotten_ = display_;
 	display_ = nullptr;
 }
 
@@ -1362,6 +1608,53 @@ void PreviewEditor::refresh_overlay()
 		o.tag += shrunk;
 	}
 	o.tag += std::string(" \u00b7 ") + obs_module_text("EscToFinish");
+
+	// The format bar, above the frame's right end (below it when there's no
+	// room above), showing what's on for the selection or what's typed next.
+	{
+		matrix4 m;
+		item_to_canvas(item_, group_, &m);
+		const Box b = o.box;
+		float top = 1e9f, bottom = -1e9f, right = -1e9f;
+		for (int i = 0; i < 4; i++) {
+			vec3 p;
+			vec3_set(&p, float(i == 1 || i == 2 ? b.w : 0), float(i >= 2 ? b.h : 0), 0.0f);
+			vec3_transform(&p, &p, &m);
+			const float x = float(o.mapping.x + p.x * o.mapping.scale), y = float(o.mapping.y + p.y * o.mapping.scale);
+			top = std::min(top, y);
+			bottom = std::max(bottom, y);
+			right = std::max(right, x);
+		}
+		const float px = float(std::max(1.0, std::round(o.mapping.dpr)));
+		const float size = 26 * px, gap = 2 * px, margin = 7 * px;
+		const BarAction actions[] = {BarAction::Bold,    BarAction::Italic, BarAction::Underline, BarAction::Smaller,
+					     BarAction::Bigger,  BarAction::Colour, BarAction::Clear};
+		const float width = 7 * size + 6 * gap + 2 * gap; // a little space between the groups
+		float y = top - margin - size - 4 * px;
+		if (y < 2)
+			y = bottom + margin + 4 * px;
+		float x = right + margin - width;
+		auto on = [&](StyleChange::Field f) {
+			for (const StyleChange &c : pending_)
+				if (c.field == f)
+					return c.value > 0;
+			return has_selection() ? all_on(spans_, sel_from(), sel_to(), f)
+					       : caret_ > 0 && all_on(spans_, caret_ - 1, caret_, f);
+		};
+		const Span here = style_at(spans_, has_selection() ? sel_from() : caret_ > 0 ? caret_ - 1 : 0);
+		for (BarAction a : actions) {
+			BarButton btn{a, x, y, size, size};
+			btn.active = (a == BarAction::Bold && on(StyleChange::Bold)) ||
+				     (a == BarAction::Italic && on(StyleChange::Italic)) ||
+				     (a == BarAction::Underline && on(StyleChange::Underline));
+			if (a == BarAction::Colour)
+				btn.swatch = here.has_colour ? here.colour : doc.style.colour;
+			o.bar.push_back(btn);
+			x += size + gap + (a == BarAction::Underline || a == BarAction::Bigger ? gap : 0);
+		}
+	}
+	bar_ = o.bar;
+	o.preedit = preedit_;
 	o.blink_from = os_gettime_ns();
 	shown_ = text_->document();
 
@@ -1541,6 +1834,38 @@ void PreviewEditor::draw_overlay(uint32_t cx, uint32_t cy)
 		const float above = top - editing_label_.height - 3 * px;
 		editing_label_.draw(std::max(left, 2.0f), above >= 2 ? above : bottom + 3 * px);
 
+		// The format bar.
+		if (!o.bar.empty()) {
+			std::vector<Quad> fills, actives, swatch, swatch_edge;
+			for (const BarButton &b : o.bar) {
+				Quad q;
+				vec2_set(&q.p[0], b.x, b.y);
+				vec2_set(&q.p[1], b.x + b.w, b.y);
+				vec2_set(&q.p[2], b.x + b.w, b.y + b.h);
+				vec2_set(&q.p[3], b.x, b.y + b.h);
+				(b.active ? actives : fills).push_back(q);
+				if (b.action == BarAction::Colour) {
+					const Quad inner = grown(q, -6 * px);
+					swatch_edge.push_back(grown(inner, 1 * px));
+					swatch.push_back(inner);
+				}
+			}
+			fill(fills, tag_fill);
+			fill(actives, accent);
+			fill(swatch_edge, 0xFFFFFFFF);
+			for (const BarButton &b : o.bar) {
+				if (b.action == BarAction::Colour) {
+					const uint32_t c = b.swatch;
+					fill(swatch, (c & 0xFF) << 24 | ((c >> 8) & 0xFF) << 16 | ((c >> 16) & 0xFF) << 8 | 0xFF);
+					continue;
+				}
+				Label &l = bar_labels_[int(b.action)];
+				if (!l.texture)
+					l.make(bar_glyph(b.action), 13 * px, 0xFFFFFFFF, 0);
+				l.draw(b.x + (b.w - l.width) / 2, b.y + (b.h - l.height) / 2);
+			}
+		}
+
 		// The text box's width grip, on the frame's right edge.
 		if (o.grip) {
 			const vec2 a = to_display(o.box.w, o.box.h * 0.5);
@@ -1600,6 +1925,17 @@ void PreviewEditor::draw_overlay(uint32_t cx, uint32_t cy)
 			gs_set_scissor_rect(nullptr);
 		}
 		(void)cx;
+
+		// A composition in progress, just above the caret.
+		if (!o.preedit.empty()) {
+			if (!preedit_label_.texture || preedit_label_text_ != o.preedit) {
+				preedit_label_.destroy();
+				preedit_label_.make(o.preedit.c_str(), 16 * px, 0xFFFFFFFF, accent);
+				preedit_label_text_ = o.preedit;
+			}
+			const vec2 a = to_display(o.caret.x, o.caret.y);
+			preedit_label_.draw(a.x, a.y - preedit_label_.height - 2 * px);
+		}
 
 		// The caret blinks, and stays solid for a moment after each key.
 		const uint64_t since = (os_gettime_ns() - o.blink_from) / 1000000ULL;
