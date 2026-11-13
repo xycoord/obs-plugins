@@ -130,9 +130,8 @@ struct Raster {
 	// - coverage (bytes 1 or 2): how much of each pixel the text covers,
 	//   and with 2, how much its shadow does, to be drawn in fill_colour
 	//   and shadow_colour (0xAABBGGRR), the text over its shadow. The colour
-	//   form's picture (but for a part-covered row at a letter's edge, which
-	//   Cairo draws a little differently into each) from a quarter or half
-	//   the data, for text in one colour with no outline or plate.
+	//   form's picture from a quarter or half the data, for text in one
+	//   colour with no outline or plate.
 	int bytes = 4;
 	uint32_t fill_colour = 0, shadow_colour = 0;
 	std::vector<uint8_t> pixels;
@@ -152,6 +151,11 @@ void find_parts(Raster &r);
 // reduced (the text then blurs a little, only when drawn that large).
 constexpr int max_raster_side = 8192;
 constexpr double max_raster_pixels = 32.0 * 1024 * 1024;
+
+// Draws a layout as pango_cairo_show_layout() does (at the current point,
+// in the current source), but with every letter's antialiased edges whole,
+// which Cairo can otherwise cut a part-covered row or column from.
+void show_layout(cairo_t *cr, PangoLayout *layout);
 
 // Draws the document at the given scale. A raster comes out empty when
 // there's no ink, and failed when memory couldn't be had for it.

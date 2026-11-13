@@ -2,7 +2,11 @@
 // text-engine.cpp): Pango and Cairo, no OBS. Built by run.sh with Pango.
 #include "text-engine.hpp"
 
+#include <obs.h>
+
+#include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstdio>
 #include <vector>
 #include <string>
@@ -256,6 +260,119 @@ int main()
 		Document seethrough = shadowed;
 		seethrough.style.colour = 0x80FFFFFF;
 		compare(seethrough, 1.0, "coverage form: see-through text over its shadow, as in colour");
+
+
+		// Letters' antialiased edges are whole in both forms: each pixel
+		// as much as a drawing that adds every glyph's image whole (Cairo
+		// does that into A8 with ADD; drawn any other way, it once cut off
+		// a part-covered row or column at a letter's edge outside where it
+		// reckoned the glyphs were). Large text, a second run (bold) and a
+		// third (italic), at every eighth of a pixel each way.
+		auto whole = [&](const Document &d, double scale, const char *what) {
+			PangoLayout *layout = create_layout(context, d);
+			const Frame f = frame_of(layout, d);
+			double worst_colour = 0, worst_coverage = 0;
+			bool ok = true;
+			for (int i = 0; i < 8 && ok; i++)
+				for (int j = 0; j < 8 && ok; j++) {
+					RasterParams p;
+					p.sx = p.sy = scale;
+					p.ox = i / 8.0;
+					p.oy = j / 8.0;
+					const Raster colour = rasterise(layout, d, p), cov = rasterise(layout, d, p, true);
+					cairo_surface_t *ref = cairo_image_surface_create(CAIRO_FORMAT_A8, colour.width, colour.height);
+					cairo_t *cr = cairo_create(ref);
+					cairo_translate(cr, p.ox - colour.x0, p.oy - colour.y0);
+					cairo_scale(cr, p.sx, p.sy);
+					cairo_translate(cr, f.text_x, f.text_y);
+					cairo_scale(cr, f.text_scale, f.text_scale);
+					cairo_set_operator(cr, CAIRO_OPERATOR_ADD);
+					pango_cairo_show_layout(cr, layout);
+					cairo_destroy(cr);
+					cairo_surface_flush(ref);
+					const uint8_t *rd = cairo_image_surface_get_data(ref);
+					const int rs = cairo_image_surface_get_stride(ref);
+					ok = colour.bytes == 4 && cov.bytes == 1 && cov.x0 == colour.x0 && cov.y0 == colour.y0 &&
+					     cov.height == colour.height && cov.width >= colour.width;
+					for (int y = 0; ok && y < colour.height; y++)
+						for (int x = 0; x < colour.width; x++) {
+							const int want = rd[size_t(y) * size_t(rs) + size_t(x)];
+							const int a = colour.pixels[(size_t(y) * size_t(colour.width) + size_t(x)) * 4 + 3];
+							const int c = cov.pixels[size_t(y) * size_t(cov.width) + size_t(x)];
+							worst_colour = std::max(worst_colour, double(std::abs(a - want)));
+							worst_coverage = std::max(worst_coverage, double(std::abs(c - want)));
+						}
+					cairo_surface_destroy(ref);
+				}
+			g_object_unref(layout);
+			check(what, ok && worst_colour <= 2 && worst_coverage <= 2,
+			      "largest difference " + std::to_string(worst_colour) + " (colour form), " +
+				      std::to_string(worst_coverage) + " (coverage form)");
+		};
+		Document big = text_doc("Typeset 19:30 jumpy");
+		big.style.family = "DejaVu Sans";
+		big.style.size = 120;
+		big.style.colour = 0xFF40C0F0;
+		Span bold(8, 13);
+		bold.bold = 1;
+		Span italic(14, 19);
+		italic.italic = 1;
+		big.spans = {bold, italic};
+		whole(big, 1.0, "letters' edges are whole in both forms, any part of a pixel across or down");
+		whole(big, 0.37, "and drawn small");
+		Document small = big;
+		small.style.size = 17;
+		whole(small, 1.7, "and a small size scaled up");
+
+		// Otherwise it's drawn as Pango's own renderer draws it: colours,
+		// see-through runs, underlines, strikethrough, a second line. Letters
+		// spaced well apart, so that Cairo draws Pango's whole too.
+		{
+			Document d = text_doc("Live tonight\nDoors 19:30");
+			d.style.size = 40;
+			d.style.letter_spacing = 60;
+			d.style.colour = 0xFF40C0F0;
+			Span red(0, 4);
+			red.has_colour = true;
+			red.colour = 0x800000FF;
+			red.underline = 1;
+			Span bold(13, 18);
+			bold.bold = 1;
+			d.spans = {red, bold};
+			d.style.font_flags = OBS_FONT_STRIKEOUT;
+			PangoLayout *layout = create_layout(context, d);
+			PangoRectangle ink;
+			pango_layout_get_pixel_extents(layout, &ink, nullptr);
+			const int w = ink.x + ink.width + 20, h = ink.y + ink.height + 20;
+			auto draw_with = [&](bool pango) {
+				cairo_surface_t *s = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w, h);
+				cairo_t *cr = cairo_create(s);
+				cairo_translate(cr, 5.3, 6.7);
+				cairo_set_source_rgba(cr, 0.94, 0.75, 0.25, 1);
+				if (pango)
+					pango_cairo_show_layout(cr, layout);
+				else
+					show_layout(cr, layout);
+				cairo_destroy(cr);
+				cairo_surface_flush(s);
+				return s;
+			};
+			cairo_surface_t *a = draw_with(true), *b = draw_with(false);
+			const uint8_t *ad = cairo_image_surface_get_data(a), *bd = cairo_image_surface_get_data(b);
+			const int stride = cairo_image_surface_get_stride(a);
+			int worst = 0;
+			long inked = 0;
+			for (int y = 0; y < h; y++)
+				for (int x = 0; x < w * 4; x++) {
+					worst = std::max(worst, std::abs(ad[y * stride + x] - bd[y * stride + x]));
+					inked += x % 4 == 3 && bd[y * stride + x] > 0;
+				}
+			check("drawn as Pango draws it (colours, see-through, underline, strikethrough, lines)",
+			      worst <= 1 && inked > 1000, "largest difference " + std::to_string(worst));
+			cairo_surface_destroy(a);
+			cairo_surface_destroy(b);
+			g_object_unref(layout);
+		}
 
 		Document outlined = shadowed;
 		outlined.style.outline = true;
