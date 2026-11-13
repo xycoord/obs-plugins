@@ -19,6 +19,7 @@ struct Key {
 const Key style_keys[] = {
 	{"font", Kind::Object},         {"colour", Kind::Int},          {"align", Kind::Int},
 	{"box", Kind::Bool},            {"box_width", Kind::Int},       {"box_height", Kind::Int},
+	{"balance", Kind::Bool},        {"avoid_orphans", Kind::Bool},
 	{"overflow", Kind::Int},        {"valign", Kind::Int},          {"typography", Kind::Bool},
 	{"line_spacing", Kind::Double}, {"letter_spacing", Kind::Int},  {"text_case", Kind::Int},
 	{"tabular", Kind::Bool},        {"outline", Kind::Bool},        {"outline_colour", Kind::Int},
@@ -145,7 +146,9 @@ Style read_style(obs_data_t *settings)
 		obs_data_release(font);
 	}
 	s.colour = uint32_t(obs_data_get_int(settings, "colour"));
-	s.align = Align(std::clamp<long long>(obs_data_get_int(settings, "align"), 0, 2));
+	s.align = Align(std::clamp<long long>(obs_data_get_int(settings, "align"), 0, 3));
+	s.balance = obs_data_get_bool(settings, "balance");
+	s.avoid_orphans = obs_data_get_bool(settings, "avoid_orphans");
 
 	// Every value kept within what the dialog allows, whatever set it (a
 	// pasted style, a script).

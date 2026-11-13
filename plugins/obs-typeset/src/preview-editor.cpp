@@ -53,7 +53,8 @@ bool printable(const QString &text)
 // What the editing strip sets on a text: its alignment and box width.
 StripLayout strip_layout(const Document &d)
 {
-	return {int(d.style.align), int(std::lround(d.style.box_width)), d.style.line_spacing};
+	return {int(d.style.align), int(std::lround(d.style.box_width)), d.style.line_spacing, d.style.balance,
+		d.style.avoid_orphans};
 }
 
 // --- OBS's undo history ------------------------------------------------------------------------
@@ -73,6 +74,9 @@ obs_data_t *undo_state(obs_source_t *source, const Document &doc)
 	obs_data_array_release(spans);
 	obs_data_set_int(settings, "box_width", (long long)std::lround(doc.style.box_width));
 	obs_data_set_int(settings, "align", int(doc.style.align));
+	obs_data_set_double(settings, "line_spacing", doc.style.line_spacing);
+	obs_data_set_bool(settings, "balance", doc.style.balance);
+	obs_data_set_bool(settings, "avoid_orphans", doc.style.avoid_orphans);
 	obs_data_t *state = obs_data_create();
 	obs_data_set_string(state, "uuid", obs_source_get_uuid(source));
 	obs_data_set_obj(state, "settings", settings);
@@ -632,6 +636,8 @@ void PreviewEditor::commit()
 		text_->set_box_width(l.box_width);
 	if (std::fabs(l.line_spacing - d.style.line_spacing) > 1e-9)
 		text_->set_line_spacing(l.line_spacing);
+	if (l.balance != d.style.balance || l.avoid_orphans != d.style.avoid_orphans)
+		text_->set_wrap_options(l.balance, l.avoid_orphans);
 }
 
 // What the text's own font has.
@@ -848,6 +854,10 @@ void PreviewEditor::make_bar()
 		if (model_.set_line_spacing(spacing, new_step))
 			text_->set_line_spacing(spacing);
 	});
+	a.wrap_options = then([this](bool balance, bool avoid_orphans) {
+		if (model_.set_wrap_options(balance, avoid_orphans))
+			text_->set_wrap_options(balance, avoid_orphans);
+	});
 	a.clear = then([this] {
 		StyleChange c;
 		c.field = StyleChange::Clear;
@@ -899,6 +909,9 @@ void PreviewEditor::bar_state()
 	if (own)
 		st.tracking = doc.style.letter_spacing;
 	st.line_spacing = model_.layout().line_spacing;
+	st.balance = model_.layout().balance;
+	st.avoid_orphans = model_.layout().avoid_orphans;
+	st.wraps = doc.style.box && doc.style.box_width > 0 && doc.style.overflow == Overflow::Wrap;
 	bar_->set_state(st);
 }
 

@@ -2,7 +2,9 @@
 // text-engine.cpp): Pango and Cairo, no OBS. Built by run.sh with Pango.
 #include "text-engine.hpp"
 
+#include <cmath>
 #include <cstdio>
+#include <vector>
 #include <string>
 
 using namespace typeset;
@@ -49,6 +51,47 @@ static size_t backspace(PangoContext *context, const std::string &text)
 	const size_t at = backspace_index(layout, text.size());
 	g_object_unref(layout);
 	return at;
+}
+
+// A wrapped text's lines: their widths (px) and texts.
+struct Lines {
+	std::vector<double> widths;
+	std::vector<std::string> texts;
+};
+static Lines lines_of(PangoContext *context, const Document &d)
+{
+	PangoLayout *layout = create_layout(context, d);
+	Lines out;
+	for (int i = 0; i < pango_layout_get_line_count(layout); i++) {
+		PangoLayoutLine *line = pango_layout_get_line_readonly(layout, i);
+		PangoRectangle ink, logical;
+		pango_layout_line_get_extents(line, &ink, &logical);
+		out.widths.push_back(logical.width / double(PANGO_SCALE));
+		out.texts.push_back(d.text.substr(size_t(line->start_index), size_t(line->length)));
+	}
+	g_object_unref(layout);
+	return out;
+}
+
+static Document boxed(const std::string &text, double width)
+{
+	Document d = text_doc(text);
+	d.style.box = true;
+	d.style.box_width = width;
+	d.style.overflow = Overflow::Wrap;
+	return d;
+}
+
+static size_t words(std::string s)
+{
+	size_t n = 0;
+	bool in = false;
+	for (char c : s) {
+		const bool letter = c != ' ' && c != '\n';
+		n += letter && !in;
+		in = letter;
+	}
+	return n;
 }
 
 int main()
@@ -107,6 +150,50 @@ int main()
 	check("Backspace after an emoji sequence takes all of it",
 	      backspace(context, "a\xf0\x9f\x91\xa9\xe2\x80\x8d\xf0\x9f\x91\xa7") == 1);
 	check("Backspace at the start stays there", backspace(context, "") == 0);
+
+	// Wrapping: balanced lines, no lone last word, justified.
+	{
+		const std::string title = "The Grove presents an evening of live music tonight";
+		Document d = boxed(title, 900);
+		const Lines ragged = lines_of(context, d);
+		d.style.balance = true;
+		const Lines even = lines_of(context, d);
+		auto spread = [](const Lines &l) {
+			double lo = 1e9, hi = 0;
+			for (double w : l.widths) {
+				lo = std::min(lo, w);
+				hi = std::max(hi, w);
+			}
+			return hi - lo;
+		};
+		check("balanced lines keep their number", even.widths.size() == ragged.widths.size(),
+		      std::to_string(ragged.widths.size()) + " -> " + std::to_string(even.widths.size()));
+		check("balanced lines are more even", spread(even) < spread(ragged) * 0.6,
+		      std::to_string(spread(ragged)) + " -> " + std::to_string(spread(even)));
+
+		// A width that leaves "tonight" alone on the last line.
+		double alone = 0;
+		for (double w = 400; w < 1400 && alone == 0; w += 10) {
+			const Lines l = lines_of(context, boxed(title, w));
+			if (l.texts.size() > 1 && words(l.texts.back()) == 1)
+				alone = w;
+		}
+		check("(a width found with a lone last word)", alone > 0);
+		if (alone > 0) {
+			Document o = boxed(title, alone);
+			o.style.avoid_orphans = true;
+			const Lines l = lines_of(context, o);
+			check("no lone last word", words(l.texts.back()) >= 2, l.texts.back());
+			check("and no more lines", l.texts.size() == lines_of(context, boxed(title, alone)).texts.size());
+		}
+
+		Document j = boxed(title, 700);
+		j.style.align = Align::Justified;
+		const Lines just = lines_of(context, j);
+		check("justified lines fill the box (not the last)",
+		      just.widths.size() > 1 && std::fabs(just.widths[0] - 700) < 2,
+		      just.widths.empty() ? "" : std::to_string(just.widths[0]));
+	}
 
 	g_object_unref(context);
 	g_object_unref(map);

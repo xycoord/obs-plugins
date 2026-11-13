@@ -44,6 +44,7 @@ struct StripLayout {
 	int align = 0;
 	int box_width = 0;
 	double line_spacing = 1.0; // the whole text's leading
+	bool balance = false, avoid_orphans = false; // its wrapping
 	bool operator==(const StripLayout &) const = default;
 };
 
@@ -95,6 +96,7 @@ public:
 	// text's leading. A slider's drag is one undo step: new_step at its start.
 	bool set_tracking(double percent, bool new_step);
 	bool set_line_spacing(double spacing, bool new_step);
+	bool set_wrap_options(bool balance, bool avoid_orphans);
 	bool toggle_script(int which);         // 1 superscript, 2 subscript: on, or off if it has it
 	// The alignment (one undo step), and the box's width (one undo step per
 	// drag of its grip: begin_box_drag() marks the start).

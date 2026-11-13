@@ -20,7 +20,7 @@ Everything else is in groups you tick to turn on; a group's settings show only w
 
 | Group | For |
 |---|---|
-| **Text box** | A fixed width, so the text stays put when the words change. Text that's too long wraps onto more lines, or shrinks to fit (for band names of any length: the font size itself isn't changed). An optional height, with vertical alignment. While editing in the preview, a blue grip on the frame's right edge drags its width. |
+| **Text box** | A fixed width, so the text stays put when the words change. Text that's too long wraps onto more lines, or shrinks to fit (for band names of any length: the font size itself isn't changed). Wrapped lines can be balanced (as even in length as they can be) and kept from ending in a lone word. An optional height, with vertical alignment. While editing in the preview, a grip on the frame's right edge drags its width. |
 | **Outline** | Colour and width. Drawn outside the letters, so it never thins them. |
 | **Shadow** | Colour, opacity, offset, blur and spread (how far it reaches past the letters before it softens, so it holds behind thin type). With no offset, it's a glow. On by default. |
 | **Background** | A plate behind the text: colour, opacity, padding, rounded corners. For lower thirds and messages over busy visuals. |
@@ -44,19 +44,21 @@ text, made of OBS's own controls in OBS's theme:
   them), at any size in the text's own pixels. Type a size and press Enter (nothing changes on the
   canvas until you do; Esc puts it back), or pick a common one from the list, or the text's own size
   ("96 — current": the size set in its properties), which puts the words back to it and leaves
-  their other styles. Once you've
-  clicked into it, Up and Down or the mouse wheel step it a tenth at a time (a run of steps is one
-  undo); a stray scroll over the bar does nothing. A selection of several sizes shows its smallest
+  their other styles. Once you've clicked into it, Up and Down or the mouse wheel step it a tenth at
+  a time (a run of steps is one undo); a stray scroll over the bar does nothing. A selection of several sizes shows its smallest
   and a plus ("96+"), with the range in the tooltip.
 - **Italic**, **Underline**, **Superscript** and **Subscript** (the font's own superscript size and
-  height), lit for what the selection has.
-- **Colour**, and **Clear formatting** (the eraser), which puts the selection back to the text's own
-  style.
-- **Spacing**: a small pop-up with letter spacing (tracking) for the selection and line spacing
-  (leading) for the whole text, each a slider and a field (type a value and press Enter). A drag of a
-  slider is one undo.
-- After a line, the whole text's **Alignment**: left, centre and right, the text's own lit. It's the
-  one control that's for all of the text, not the selection.
+  height), lit for what the selection has; **Colour**; **Clear formatting** (the eraser), which puts
+  the selection back to the text's own style; and **Spacing**, a small pop-up with letter spacing
+  (tracking) for the selection and line spacing (leading) for the whole text, each a slider and a
+  field.
+- After a line, the **Paragraph** button (its icon is the alignment), for the whole text: a pop-up with
+  its alignment (left, centre, right or justified) and, for text in a text box that wraps, **Balance
+  lines** (the lines as even in length as they can be, so a title doesn't end in a short line) and
+  **Avoid orphans** (no paragraph ends in one word alone). These two are in the text box's
+  properties too.
+
+A drag of a slider is one undo; a value typed in a field applies on Enter.
 
 Each has a tooltip naming its shortcut:
 

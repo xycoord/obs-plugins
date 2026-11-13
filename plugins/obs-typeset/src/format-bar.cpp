@@ -12,6 +12,7 @@
 #include <QMenu>
 #include <QBitmap>
 #include <QAbstractItemView>
+#include <QCheckBox>
 #include <QFrame>
 #include <QGridLayout>
 #include <QLabel>
@@ -69,9 +70,10 @@ QIcon align_icon(QWidget *w, int align)
 {
 	return drawn_icon(w, [align](QPainter &p, QColor c) {
 		p.setPen(QPen(c, 1.6, Qt::SolidLine, Qt::RoundCap));
-		const int widths[] = {14, 9, 12, 7};
+		// Ragged lines, or for justified, full lines and a shorter last one.
+		const int ragged[] = {14, 9, 12, 7}, justified[] = {14, 14, 14, 8};
 		for (int i = 0; i < 4; i++) {
-			const int lw = widths[i];
+			const int lw = align == 3 ? justified[i] : ragged[i];
 			const int x = align == 1 ? (20 - lw) / 2 : align == 2 ? 17 - lw : 3;
 			p.drawLine(QPointF(x, 4.5 + i * 3.7), QPointF(x + lw, 4.5 + i * 3.7));
 		}
@@ -366,14 +368,14 @@ FormatBar::FormatBar(QWidget *parent, Actions actions)
 			actions_.clear();
 		then_back();
 	});
+	// Spacing: letters (the selection's) and lines (the text's), together.
+	tracking_ = button(tip("Bar.Spacing"), false);
+	tracking_->setIcon(spacing_icon(this));
+	QObject::connect(tracking_, &QToolButton::clicked, this, [this] { show_popup(tracking_popup_, tracking_); });
 
-	spacing_ = button(tip("Bar.Spacing"), false);
-	spacing_->setIcon(spacing_icon(this));
-	QObject::connect(spacing_, &QToolButton::clicked, this, [this] { show_spacing(); });
-	make_spacing_popup();
-
-	// Everything before acts on the selection (or what's typed next);
-	// alignment, after a line, on the whole text.
+	// Everything before acts on the selection (or what's typed next), but
+	// line spacing; the paragraph, after a line, on the whole text: its icon
+	// is its alignment.
 	auto *line = new QFrame(this);
 	line->setFrameShape(QFrame::VLine);
 	line->setFrameShadow(QFrame::Plain);
@@ -384,20 +386,9 @@ FormatBar::FormatBar(QWidget *parent, Actions actions)
 	row->addSpacing((group_gap - gap) / 2);
 	row->addWidget(line);
 	row->addSpacing((group_gap - gap) / 2);
-	// Alignment: left, centre and right, the text's own lit, as slide tools
-	// show it (all three in sight, one click each).
-	const char *names[] = {"Align.Left", "Align.Centre", "Align.Right"};
-	for (int i = 0; i < 3; i++) {
-		QToolButton *b = button(tip(names[i]) + " \u2014 " + tip("Bar.Align"), true);
-		b->setIcon(align_icon(this, i));
-		QObject::connect(b, &QToolButton::clicked, this, [this, i, then_back] {
-			if (!updating_ && actions_.align)
-				actions_.align(i);
-			set_state(state_); // lit as the text is, whatever the click did to the button
-			then_back();
-		});
-		aligns_[i] = b;
-	}
+	paragraph_ = button(tip("Bar.Paragraph"), false);
+	QObject::connect(paragraph_, &QToolButton::clicked, this, [this] { show_popup(paragraph_popup_, paragraph_); });
+	make_popups();
 
 	// A style that's on shows in the theme's accent, as plainly as a
 	// pressed button in OBS's own toolbars (the editor sets the theme's own:
@@ -408,11 +399,11 @@ FormatBar::FormatBar(QWidget *parent, Actions actions)
 	// way), the buttons square at it, and the line a little shorter.
 	int h = 0;
 	for (QWidget *w : std::initializer_list<QWidget *>{family_, weight_, size_, italic_, underline_, super_, sub_,
-							    colour_, clear_, aligns_[0]})
+							    colour_, clear_, tracking_, paragraph_})
 		h = std::max(h, w->sizeHint().height());
 	for (QWidget *w : std::initializer_list<QWidget *>{family_, weight_, size_})
 		w->setFixedHeight(h);
-	for (QToolButton *b : {italic_, underline_, super_, sub_, colour_, clear_, spacing_, aligns_[0], aligns_[1], aligns_[2]})
+	for (QToolButton *b : {italic_, underline_, super_, sub_, tracking_, colour_, clear_, paragraph_})
 		b->setFixedSize(h, h);
 	line->setFixedHeight(h - 2 * gap);
 
@@ -514,8 +505,19 @@ void FormatBar::set_state(const State &s)
 	super_->setChecked(s.script == 1);
 	sub_->setChecked(s.script == 2);
 	colour_->setIcon(colour_icon(this, s.colour));
-	for (int i = 0; i < 3; i++)
+	paragraph_->setIcon(align_icon(this, s.align));
+	for (int i = 0; i < 4; i++)
 		aligns_[i]->setChecked(s.align == i);
+	{
+		const QSignalBlocker b1(balance_), b2(orphans_);
+		balance_->setChecked(s.balance);
+		orphans_->setChecked(s.avoid_orphans);
+	}
+	// Justified, balanced and lone words act only on text that wraps.
+	aligns_[3]->setEnabled(s.wraps || s.align == 3);
+	balance_->setEnabled(s.wraps);
+	orphans_->setEnabled(s.wraps);
+	wrap_note_->setVisible(!s.wraps);
 	{
 		const QSignalBlocker b1(tracking_slider_), b2(leading_slider_);
 		tracking_slider_->setValue(int(std::lround(s.tracking)));
@@ -561,25 +563,28 @@ void FormatBar::step_size_field(int dir)
 	size_->lineEdit()->selectAll();
 }
 
-// Spacing's pop-up: letter spacing for the selection, leading for the
-// whole text, each a slider and a field (type a value, Enter).
-void FormatBar::make_spacing_popup()
+// The pop-ups: letter spacing for the selection; the paragraph (alignment,
+// leading and wrapping) for the whole text. A slider and a field for each
+// number (type a value, Enter).
+void FormatBar::make_popups()
 {
-	spacing_popup_ = new QFrame(this, Qt::Popup);
-	spacing_popup_->setFrameShape(QFrame::StyledPanel);
-	auto *grid = new QGridLayout(spacing_popup_);
-	grid->setContentsMargins(10, 8, 10, 8);
-	grid->setHorizontalSpacing(8);
-	auto row = [&](int r, const QIcon &icon, const char *tooltip, int min, int max, QSlider **slider,
-		       QLineEdit **field, std::function<void(double, bool)> FormatBar::Actions::*act, double scale) {
-		auto *label = new QLabel(spacing_popup_);
+	auto popup = [this] {
+		auto *p = new QFrame(this, Qt::Popup);
+		p->setFrameShape(QFrame::StyledPanel);
+		p->installEventFilter(this);
+		return p;
+	};
+	auto number = [this](QWidget *parent, QGridLayout *grid, int r, const QIcon &icon, const char *tooltip, int min,
+			     int max, QSlider **slider, QLineEdit **field,
+			     std::function<void(double, bool)> FormatBar::Actions::*act, double scale) {
+		auto *label = new QLabel(parent);
 		label->setPixmap(icon.pixmap(QSize(20, 20)));
 		label->setToolTip(tip(tooltip));
-		*slider = new QSlider(Qt::Horizontal, spacing_popup_);
+		*slider = new QSlider(Qt::Horizontal, parent);
 		(*slider)->setRange(min, max);
 		(*slider)->setMinimumWidth(160);
 		(*slider)->setToolTip(tip(tooltip));
-		*field = new QLineEdit(spacing_popup_);
+		*field = new QLineEdit(parent);
 		(*field)->setFixedWidth(64);
 		(*field)->setAlignment(Qt::AlignRight);
 		(*field)->setToolTip(tip(tooltip));
@@ -606,25 +611,81 @@ void FormatBar::make_spacing_popup()
 		});
 		f->installEventFilter(this);
 	};
-	row(0, tracking_icon(this), "Bar.Tracking", -20, 100, &tracking_slider_, &tracking_field_,
-	    &FormatBar::Actions::tracking, 1.0);
-	row(1, spacing_icon(this), "Bar.Leading", 50, 300, &leading_slider_, &leading_field_,
-	    &FormatBar::Actions::line_spacing, 100.0);
-	spacing_popup_->installEventFilter(this);
+
+	tracking_popup_ = popup();
+	auto *tg = new QGridLayout(tracking_popup_);
+	tg->setContentsMargins(10, 8, 10, 8);
+	tg->setHorizontalSpacing(8);
+	number(tracking_popup_, tg, 0, tracking_icon(this), "Bar.Tracking", -20, 100, &tracking_slider_,
+	       &tracking_field_, &FormatBar::Actions::tracking, 1.0);
+	number(tracking_popup_, tg, 1, spacing_icon(this), "Bar.Leading", 50, 300, &leading_slider_, &leading_field_,
+	       &FormatBar::Actions::line_spacing, 100.0);
+
+	paragraph_popup_ = popup();
+	auto *pg = new QGridLayout(paragraph_popup_);
+	pg->setContentsMargins(10, 8, 10, 8);
+	pg->setHorizontalSpacing(8);
+	pg->setVerticalSpacing(8);
+	// Alignment: four buttons, the text's own lit.
+	auto *aligns = new QHBoxLayout();
+	aligns->setSpacing(4);
+	const char *names[] = {"Align.Left", "Align.Centre", "Align.Right", "Align.Justified"};
+	for (int i = 0; i < 4; i++) {
+		auto *b = new QToolButton(paragraph_popup_);
+		b->setAutoRaise(true);
+		b->setCheckable(true);
+		b->setFocusPolicy(Qt::NoFocus);
+		b->setIconSize(QSize(20, 20));
+		b->setIcon(align_icon(this, i));
+		b->setToolTip(tip(names[i]));
+		QObject::connect(b, &QToolButton::clicked, this, [this, i] {
+			if (!updating_ && actions_.align)
+				actions_.align(i);
+			set_state(state_); // lit as the text is, whatever the click did to the button
+		});
+		aligns->addWidget(b);
+		aligns_[i] = b;
+	}
+	aligns->addStretch();
+	pg->addLayout(aligns, 0, 0, 1, 3);
+	balance_ = new QCheckBox(tip("Box.Balance"), paragraph_popup_);
+	balance_->setToolTip(tip("Box.Balance.Help"));
+	orphans_ = new QCheckBox(tip("Box.AvoidOrphans"), paragraph_popup_);
+	orphans_->setToolTip(tip("Box.AvoidOrphans.Help"));
+	for (QCheckBox *c : {balance_, orphans_}) {
+		c->setFocusPolicy(Qt::NoFocus);
+		QObject::connect(c, &QCheckBox::toggled, this, [this] {
+			if (!updating_ && actions_.wrap_options)
+				actions_.wrap_options(balance_->isChecked(), orphans_->isChecked());
+		});
+	}
+	pg->addWidget(balance_, 1, 0, 1, 3);
+	pg->addWidget(orphans_, 2, 0, 1, 3);
+	wrap_note_ = new QLabel(tip("Bar.WrapNote"), paragraph_popup_);
+	wrap_note_->setWordWrap(true);
+	wrap_note_->setMaximumWidth(260);
+	wrap_note_->setStyleSheet("color: palette(mid);");
+	pg->addWidget(wrap_note_, 3, 0, 1, 3);
+	// Lit buttons in the pop-up as in the bar.
+	paragraph_popup_->setStyleSheet(styleSheet());
 }
 
-void FormatBar::show_spacing()
+void FormatBar::show_popup(QFrame *popup, QToolButton *under)
 {
-	spacing_popup_->adjustSize();
-	spacing_popup_->move(spacing_->mapToGlobal(QPoint(0, spacing_->height() + 4)));
-	spacing_popup_->show();
+	popup->setPalette(palette());
+	popup->setStyleSheet(styleSheet());
+	popup->adjustSize();
+	popup->move(under->mapToGlobal(QPoint(0, under->height() + 4)));
+	popup->show();
 	if (getenv("TYPESET_DEBUG")) {
 		auto c = [](const QWidget *w) {
 			const QPoint g = w->mapToGlobal(w->rect().center());
 			return QString("%1,%2").arg(g.x()).arg(g.y());
 		};
-		blog(LOG_INFO, "[obs-typeset] bar spacing tracking=%s leading=%s",
-		     c(tracking_field_).toUtf8().constData(), c(leading_field_).toUtf8().constData());
+		blog(LOG_INFO, "[obs-typeset] bar popup tracking=%s leading=%s centre=%s justified=%s balance=%s",
+		     c(tracking_field_).toUtf8().constData(), c(leading_field_).toUtf8().constData(),
+		     c(aligns_[1]).toUtf8().constData(), c(aligns_[3]).toUtf8().constData(),
+		     c(balance_).toUtf8().constData());
 	}
 }
 
@@ -653,10 +714,10 @@ void FormatBar::log_geometry() const
 		return QString("%1,%2").arg(g.x()).arg(g.y());
 	};
 	const QString line = QString("typeface=%1 weight=%2 size=%3 italic=%4 underline=%5 super=%6 sub=%7 "
-				     "colour=%8 align=%9 clear=%10 centre=%11 spacing=%12")
+				     "colour=%8 paragraph=%9 clear=%10 tracking=%11")
 				     .arg(c(family_), c(weight_), c(size_), c(italic_), c(underline_), c(super_), c(sub_),
-					  c(colour_), c(aligns_[0]), c(clear_))
-				     .arg(c(aligns_[1]), c(spacing_));
+					  c(colour_), c(paragraph_), c(clear_))
+				     .arg(c(tracking_));
 	blog(LOG_INFO, "[obs-typeset] bar %s", line.toUtf8().constData());
 }
 
@@ -714,7 +775,7 @@ bool FormatBar::eventFilter(QObject *obj, QEvent *event)
 			if (!size_->hasFocus() && !size_->lineEdit()->hasFocus())
 				show_size();
 		});
-	if (obj == spacing_popup_ && event->type() == QEvent::Hide) {
+	if ((obj == tracking_popup_ || obj == paragraph_popup_) && event->type() == QEvent::Hide) {
 		if (actions_.back_to_text)
 			actions_.back_to_text();
 		return false;

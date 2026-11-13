@@ -25,6 +25,12 @@ bool valign_shown(obs_data_t *settings)
 	return obs_data_get_bool(settings, "box") && obs_data_get_int(settings, "box_height") > 0;
 }
 
+// Balancing and lone last words mean something only for text that wraps.
+bool wrap_options_shown(obs_data_t *settings)
+{
+	return obs_data_get_bool(settings, "box") && obs_data_get_int(settings, "overflow") == int(Overflow::Wrap);
+}
+
 void fill_box(obs_properties_t *g, obs_data_t *settings)
 {
 	obs_property_t *p = obs_properties_add_int(g, "box_width", obs_module_text("Box.Width"), 1, 16384, 1);
@@ -44,6 +50,23 @@ void fill_box(obs_properties_t *g, obs_data_t *settings)
 				    OBS_COMBO_FORMAT_INT);
 	obs_property_list_add_int(p, obs_module_text("Box.Overflow.Wrap"), int(Overflow::Wrap));
 	obs_property_list_add_int(p, obs_module_text("Box.Overflow.Shrink"), int(Overflow::Shrink));
+	obs_property_set_modified_callback(p, [](obs_properties_t *props, obs_property_t *, obs_data_t *s) {
+		bool changed = false;
+		for (const char *name : {"balance", "avoid_orphans"}) {
+			obs_property_t *o = obs_properties_get(props, name);
+			if (o && obs_property_visible(o) != wrap_options_shown(s)) {
+				obs_property_set_visible(o, wrap_options_shown(s));
+				changed = true;
+			}
+		}
+		return changed;
+	});
+	p = obs_properties_add_bool(g, "balance", obs_module_text("Box.Balance"));
+	obs_property_set_long_description(p, obs_module_text("Box.Balance.Help"));
+	obs_property_set_visible(p, settings && wrap_options_shown(settings));
+	p = obs_properties_add_bool(g, "avoid_orphans", obs_module_text("Box.AvoidOrphans"));
+	obs_property_set_long_description(p, obs_module_text("Box.AvoidOrphans.Help"));
+	obs_property_set_visible(p, settings && wrap_options_shown(settings));
 	p = obs_properties_add_list(g, "valign", obs_module_text("Box.VAlign"), OBS_COMBO_TYPE_LIST,
 				    OBS_COMBO_FORMAT_INT);
 	obs_property_list_add_int(p, obs_module_text("Box.VAlign.Top"), int(VAlign::Top));
@@ -137,6 +160,8 @@ bool show_group(obs_property_t *group, obs_data_t *settings)
 		bool show = about == pname ? !on : on;
 		if (strcmp(pname, "valign") == 0)
 			show = valign_shown(settings);
+		if (strcmp(pname, "balance") == 0 || strcmp(pname, "avoid_orphans") == 0)
+			show = wrap_options_shown(settings);
 		if (obs_property_visible(p) != show) {
 			obs_property_set_visible(p, show);
 			changed = true;
@@ -300,6 +325,7 @@ obs_properties_t *source_properties(void *data)
 	obs_property_list_add_int(p, obs_module_text("Align.Left"), int(Align::Left));
 	obs_property_list_add_int(p, obs_module_text("Align.Centre"), int(Align::Centre));
 	obs_property_list_add_int(p, obs_module_text("Align.Right"), int(Align::Right));
+	obs_property_list_add_int(p, obs_module_text("Align.Justified"), int(Align::Justified));
 
 	// Shown only when the font isn't on this computer (see font_changed).
 	p = obs_properties_add_text(props, "font_missing", "", OBS_TEXT_INFO);

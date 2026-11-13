@@ -102,10 +102,10 @@ def bar_button(obs, name):
     return int(x), int(y)
 
 
-def spacing_field(obs, name):
-    """Where a field in the format bar's Spacing pop-up is on the screen."""
-    lines = [line for line in obs.log().splitlines() if "[obs-typeset] bar spacing " in line]
-    fields = dict(f.split("=") for f in lines[-1].split("] bar spacing ", 1)[1].split())
+def popup_field(obs, name):
+    """Where a control in one of the format bar's pop-ups is on the screen."""
+    lines = [line for line in obs.log().splitlines() if "[obs-typeset] bar popup " in line]
+    fields = dict(f.split("=") for f in lines[-1].split("] bar popup ", 1)[1].split())
     x, y = fields[name].split(",")
     return int(x), int(y)
 
@@ -525,16 +525,17 @@ def test_rich(out):
         check(sizes == [125.0], "a size typed in the size list", repr(sizes))
         obs.key("ctrl+z")
 
-        # Spacing: letter spacing for the selection, leading for the text.
-        obs.click(*bar_button(obs, "spacing"))
+        # Spacing: letter spacing for the selection, leading for the whole
+        # text, from the same pop-up.
+        obs.click(*bar_button(obs, "tracking"))
         time.sleep(0.3)
-        obs.click(*spacing_field(obs, "tracking"))
+        obs.click(*popup_field(obs, "tracking"))
         obs.key("ctrl+a")
         obs.type("10")
         obs.key("Return")
         tracking = [s.get("tracking") for s in obs.settings("Title").get("spans", [])]
         check(tracking == [10.0], "letter spacing for the selection, from the Spacing pop-up", repr(tracking))
-        obs.click(*spacing_field(obs, "leading"))
+        obs.click(*popup_field(obs, "leading"))
         obs.key("ctrl+a")
         obs.type("1.5")
         obs.key("Return")
@@ -606,14 +607,17 @@ def test_history(out):
         check(text() == "After all" and bool(obs.settings("Title").get("spans")),
               "and Redo puts it back, styles too", "%r" % text())
 
-        # The format bar's centre button: at once, in the same undo step as
+        # The paragraph pop-up's centre button: at once, in the same undo step as
         # the edit's words.
         tw, th = size("Title")
         obs.click(*to_screen(200 + tw * 0.5, 200 + th / 2), repeat=2)
         obs.key("End")
         obs.type("!")
         time.sleep(0.3)
-        obs.click(*bar_button(obs, "centre"))
+        obs.click(*bar_button(obs, "paragraph"))
+        time.sleep(0.3)
+        obs.click(*popup_field(obs, "centre"))
+        obs.key("Escape")  # the pop-up closed
         obs.key("Escape")
         align = lambda: obs.settings("Title").get("align", 0)  # noqa: E731
         check(align() == 1 and text() == "After all!", "the bar's alignment button aligns the text",

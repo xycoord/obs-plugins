@@ -418,6 +418,17 @@ bool EditModel::set_line_spacing(double spacing, bool new_step)
 	return true;
 }
 
+bool EditModel::set_wrap_options(bool balance, bool avoid_orphans)
+{
+	if (balance == layout_.balance && avoid_orphans == layout_.avoid_orphans)
+		return false;
+	push_undo();
+	last_edit_ = EditKind::Other;
+	layout_.balance = balance;
+	layout_.avoid_orphans = avoid_orphans;
+	return true;
+}
+
 namespace {
 
 double tracking_key(const Span &s)

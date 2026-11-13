@@ -18,7 +18,9 @@
 
 class QComboBox;
 class QFontComboBox;
+class QCheckBox;
 class QFrame;
+class QLabel;
 class QLineEdit;
 class QSlider;
 class QToolButton;
@@ -42,6 +44,8 @@ public:
 		bool tracking_mixed = false;
 		double tracking = 0;       // the selection's letter spacing, percent of the size
 		double line_spacing = 1.0; // the whole text's leading
+		bool balance = false, avoid_orphans = false;
+		bool wraps = false; // in a text box that wraps (justified, balance and lone words mean something)
 	};
 	enum class Toggle { Italic, Underline, Superscript, Subscript };
 	struct Actions {
@@ -57,6 +61,7 @@ public:
 		// A slider's drag is one undo step: new_step at its start.
 		std::function<void(double, bool)> tracking;
 		std::function<void(double, bool)> line_spacing;
+		std::function<void(bool, bool)> wrap_options; // balance, avoid a lone last word
 		std::function<void()> back_to_text; // the keyboard back to the preview
 	};
 
@@ -83,14 +88,18 @@ private:
 	QComboBox *weight_;
 	QComboBox *size_;
 	QToolButton *italic_, *underline_, *super_, *sub_, *colour_, *clear_;
-	QToolButton *aligns_[3]; // left, centre, right
-	QToolButton *spacing_;
-	QFrame *spacing_popup_;
+	QToolButton *tracking_, *paragraph_;
+	// Spacing's pop-up (letters: the selection's; lines: the text's); the
+	// paragraph's (the whole text: alignment, wrapping).
+	QFrame *tracking_popup_, *paragraph_popup_;
+	QToolButton *aligns_[4]; // left, centre, right, justified
 	QSlider *tracking_slider_, *leading_slider_;
 	QLineEdit *tracking_field_, *leading_field_;
+	QCheckBox *balance_, *orphans_;
+	QLabel *wrap_note_;
 	bool new_step_ = true;
-	void make_spacing_popup();
-	void show_spacing();
+	void make_popups();
+	void show_popup(QFrame *popup, QToolButton *under);
 	State state_;
 	int listed_base_ = -1; // the base size the list was made with
 	bool select_on_release_ = false;

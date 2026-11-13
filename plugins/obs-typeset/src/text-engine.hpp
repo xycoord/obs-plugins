@@ -19,7 +19,7 @@
 
 namespace typeset {
 
-enum class Align { Left = 0, Centre = 1, Right = 2 };
+enum class Align { Left = 0, Centre = 1, Right = 2, Justified = 3 };
 enum class VAlign { Top = 0, Middle = 1, Bottom = 2 };
 enum class Overflow { Wrap = 0, Shrink = 1 };
 enum class Case { AsTyped = 0, Upper = 1, Lower = 2, Title = 3 };
@@ -43,6 +43,12 @@ struct Style {
 	double letter_spacing = 0.0; // percent of the font size
 	Case text_case = Case::AsTyped;
 	bool tabular = false; // figures all the same width
+
+	// Wrapping in a text box: lines made as even in length as they can be
+	// (as CSS's text-wrap: balance), and a paragraph's last line kept from
+	// being one word alone.
+	bool balance = false;
+	bool avoid_orphans = false;
 
 	// Effects.
 	bool outline = false;

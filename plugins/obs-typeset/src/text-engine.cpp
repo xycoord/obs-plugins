@@ -138,6 +138,74 @@ static bool wraps(const Style &s)
 	return s.box && s.box_width > 0 && s.overflow == Overflow::Wrap;
 }
 
+// Whether any paragraph of more than one line ends in a line of one word.
+static bool has_orphan(PangoLayout *layout, const std::string &text)
+{
+	const int n = pango_layout_get_line_count(layout);
+	for (int i = 1; i < n; i++) {
+		PangoLayoutLine *line = pango_layout_get_line_readonly(layout, i);
+		PangoLayoutLine *next = i + 1 < n ? pango_layout_get_line_readonly(layout, i + 1) : nullptr;
+		const bool last_of_paragraph = !next || next->is_paragraph_start;
+		if (!last_of_paragraph || line->is_paragraph_start)
+			continue;
+		std::string words = text.substr(size_t(line->start_index), size_t(line->length));
+		while (!words.empty() && (words.back() == ' ' || words.back() == '\n'))
+			words.pop_back();
+		while (!words.empty() && words.front() == ' ')
+			words.erase(words.begin());
+		if (!words.empty() && words.find(' ') == std::string::npos)
+			return true;
+	}
+	return false;
+}
+
+// The wrapping width narrowed within the box, keeping the number of lines:
+// as narrow as it goes (balanced lines), and/or until no paragraph ends in
+// one word alone. frame_of() places the narrower block in the box as the
+// alignment says. A few layouts of a title's few words: well under a
+// millisecond.
+static void tune_wrap(PangoLayout *layout, const Document &doc)
+{
+	const Style &s = doc.style;
+	const int full = int(std::lround(s.box_width * PANGO_SCALE));
+	auto lines_at = [&](int w) {
+		pango_layout_set_width(layout, w);
+		return pango_layout_get_line_count(layout);
+	};
+	const int n = lines_at(full);
+	if (n < 2)
+		return;
+	int width = full;
+	if (s.balance) {
+		// The narrowest width with no more lines: lines as even as they go.
+		int lo = full / (n + 1), hi = full;
+		for (int i = 0; i < 14 && hi - lo > PANGO_SCALE / 2; i++) {
+			const int mid = lo + (hi - lo) / 2;
+			if (lines_at(mid) <= n)
+				hi = mid;
+			else
+				lo = mid;
+		}
+		width = hi;
+	}
+	if (s.avoid_orphans) {
+		lines_at(width);
+		if (has_orphan(layout, doc.text)) {
+			// Narrower a little at a time, until a word comes down to join
+			// the last one, the lines no more than before.
+			for (int w = width - full / 50; w > full / 2; w -= full / 50) {
+				if (lines_at(w) > n)
+					break;
+				if (!has_orphan(layout, doc.text)) {
+					width = w;
+					break;
+				}
+			}
+		}
+	}
+	pango_layout_set_width(layout, width);
+}
+
 PangoLayout *create_layout(PangoContext *context, const Document &doc)
 {
 	PangoLayout *layout = pango_layout_new(context);
@@ -154,6 +222,10 @@ PangoLayout *create_layout(PangoContext *context, const Document &doc)
 		break;
 	case Align::Right:
 		pango_layout_set_alignment(layout, PANGO_ALIGN_RIGHT);
+		break;
+	case Align::Justified: // each wrapped line to the box's full width (not a paragraph's last)
+		pango_layout_set_alignment(layout, PANGO_ALIGN_LEFT);
+		pango_layout_set_justify(layout, TRUE);
 		break;
 	default:
 		pango_layout_set_alignment(layout, PANGO_ALIGN_LEFT);
@@ -242,6 +314,8 @@ PangoLayout *create_layout(PangoContext *context, const Document &doc)
 	pango_attr_list_unref(attrs);
 
 	pango_layout_set_text(layout, doc.text.c_str(), int(doc.text.size()));
+	if (wraps(style) && (style.balance || style.avoid_orphans))
+		tune_wrap(layout, doc);
 	return layout;
 }
 
@@ -301,9 +375,11 @@ Frame frame_of(PangoLayout *layout, const Document &doc)
 		inner_w = std::max(inner_w, s.size * 0.3);
 	const double inner_h = fixed_h ? s.box_height : block_h;
 
-	// Wrapped, Pango places each line within the box's width itself.
+	// Wrapped, Pango places each line within its wrapping width itself; that
+	// width is the box's, or narrower (balanced lines), placed in the box as
+	// the alignment says.
 	if (wraps(s))
-		f.text_x = 0;
+		f.text_x = (s.box_width - double(pango_layout_get_width(layout)) / PANGO_SCALE) * fraction(s.align);
 	else
 		f.text_x = (inner_w - block_w) * fraction(s.align) - logical.x * f.text_scale;
 	f.text_y = (fixed_h ? (inner_h - block_h) * fraction(s.valign) : 0.0) - logical.y * f.text_scale;

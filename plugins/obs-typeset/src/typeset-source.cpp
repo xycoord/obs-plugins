@@ -646,7 +646,7 @@ void TextSource::set_align(int align)
 		std::lock_guard lock(layout_lock());
 		doc = doc_;
 	}
-	align = std::clamp(align, 0, 2);
+	align = std::clamp(align, 0, 3);
 	doc.style.align = Align(align);
 	apply(std::move(doc));
 
@@ -677,6 +677,29 @@ void TextSource::set_line_spacing(double spacing)
 	obs_data_t *settings = obs_data_create();
 	obs_data_set_bool(settings, "typography", true);
 	obs_data_set_double(settings, "line_spacing", spacing);
+	{
+		WritingEdit writing;
+		obs_source_update(source_, settings);
+	}
+	obs_data_release(settings);
+}
+
+void TextSource::set_wrap_options(bool balance, bool avoid_orphans)
+{
+	std::lock_guard content(content_mutex_);
+	Document doc;
+	{
+		std::lock_guard lock(layout_lock());
+		doc = doc_;
+	}
+	doc.style.balance = balance;
+	doc.style.avoid_orphans = avoid_orphans;
+	apply(std::move(doc));
+
+	// Still under content_mutex_ (see the header and writing_edit).
+	obs_data_t *settings = obs_data_create();
+	obs_data_set_bool(settings, "balance", balance);
+	obs_data_set_bool(settings, "avoid_orphans", avoid_orphans);
 	{
 		WritingEdit writing;
 		obs_source_update(source_, settings);
