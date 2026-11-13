@@ -10,11 +10,13 @@
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QMenu>
+#include <QBitmap>
 #include <QFrame>
 #include <QPainter>
 #include <QPainterPath>
 #include <QRegion>
-#include <QSpinBox>
+#include <QIntValidator>
+#include <QWheelEvent>
 #include <QToolButton>
 
 #include <algorithm>
@@ -25,20 +27,19 @@ namespace typeset {
 
 namespace {
 
-// Steps of a tenth of the size (at least a pixel), as the shortcuts step.
-class SizeBox : public QSpinBox {
-public:
-	std::function<void(int)> stepped;
-	using QSpinBox::QSpinBox;
-	void stepBy(int steps) override
-	{
-		if (stepped)
-			stepped(steps > 0 ? 1 : -1);
-	}
+// The sizes the size list offers (the text's own pixels); any other can be
+// typed.
+constexpr int preset_sizes[] = {12, 16, 20, 24, 32, 40, 48, 64, 72, 96, 120, 144, 192, 240, 288, 384};
 
-protected:
-	StepEnabled stepEnabled() const override { return StepUpEnabled | StepDownEnabled; }
-};
+// A size typed: its number, whatever's round it ("140 px"); 0 if none.
+int typed_size(const QString &text)
+{
+	QString digits;
+	for (QChar c : text)
+		if (c.isDigit())
+			digits += c;
+	return std::clamp(digits.toInt(), 0, 4096);
+}
 
 // Icons drawn in the theme's own text colour, so they suit any OBS theme.
 QIcon drawn_icon(QWidget *w, const std::function<void(QPainter &, QColor)> &draw)
@@ -66,62 +67,89 @@ QIcon align_icon(QWidget *w, int align)
 	});
 }
 
-QIcon text_icon(QWidget *w, const QString &text, bool bold, bool italic, bool underline)
+// Each drawn as lines on a 20-pixel square, centred on (10, 10) by its own
+// shape (a letter drawn as text sits where its font puts it, off centre).
+QPen stroke(QColor c, qreal width = 1.7)
 {
-	return drawn_icon(w, [&](QPainter &p, QColor c) {
-		QFont f = w->font();
-		f.setPixelSize(14);
-		f.setBold(bold);
-		f.setItalic(italic);
-		f.setUnderline(underline);
-		p.setFont(f);
-		p.setPen(c);
-		p.drawText(QRect(0, 0, 20, 20), Qt::AlignCenter, text);
+	return QPen(c, width, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+}
+
+// An I with serifs, slanted: plainly a letter, not a slash.
+QIcon italic_icon(QWidget *w)
+{
+	return drawn_icon(w, [](QPainter &p, QColor c) {
+		p.setPen(stroke(c));
+		p.drawLine(QPointF(9.5, 4), QPointF(15, 4));      // top serif
+		p.drawLine(QPointF(5, 16), QPointF(10.5, 16));    // bottom serif
+		p.drawLine(QPointF(12.25, 4), QPointF(7.75, 16)); // the stem
 	});
 }
 
-// x with a small 2 raised or lowered.
+QIcon underline_icon(QWidget *w)
+{
+	return drawn_icon(w, [](QPainter &p, QColor c) {
+		p.setPen(stroke(c));
+		QPainterPath u;
+		u.moveTo(6, 3);
+		u.lineTo(6, 9.5);
+		u.arcTo(QRectF(6, 5.5, 8, 8), 180, 180); // the bowl, 4 across
+		u.lineTo(14, 3);
+		p.drawPath(u);
+		p.drawLine(QPointF(5, 17), QPointF(15, 17));
+	});
+}
+
+// An x with a small 2 raised or lowered, the pair centred.
 QIcon script_icon(QWidget *w, bool super)
 {
-	return drawn_icon(w, [&](QPainter &p, QColor c) {
-		QFont f = w->font();
-		f.setPixelSize(13);
-		p.setFont(f);
-		p.setPen(c);
-		p.drawText(QRect(1, 2, 12, 17), Qt::AlignCenter, "x");
-		f.setPixelSize(9);
-		p.setFont(f);
-		p.drawText(QRect(11, super ? 1 : 9, 8, 10), Qt::AlignCenter, "2");
+	return drawn_icon(w, [super](QPainter &p, QColor c) {
+		p.setPen(stroke(c));
+		const qreal top = super ? 7.5 : 4.5; // the x, 6 square
+		p.drawLine(QPointF(3.5, top), QPointF(9.5, top + 6));
+		p.drawLine(QPointF(9.5, top), QPointF(3.5, top + 6));
+		// The 2, 5 wide and 6 high, beside the x's top or bottom.
+		const qreal x = 11.5, y = super ? 3 : 11;
+		p.setPen(stroke(c, 1.4));
+		QPainterPath two;
+		two.moveTo(x, y + 1.6);
+		two.cubicTo(x + 0.3, y - 0.4, x + 5, y - 0.4, x + 5, y + 1.8);
+		two.cubicTo(x + 5, y + 3.2, x + 1.5, y + 4.2, x, y + 6);
+		two.lineTo(x + 5.2, y + 6);
+		p.drawPath(two);
 	});
 }
 
 // The colour: an A over a bar of it, as slide tools show it.
 QIcon colour_icon(QWidget *w, uint32_t abgr)
 {
-	return drawn_icon(w, [&](QPainter &p, QColor c) {
-		QFont f = w->font();
-		f.setPixelSize(13);
-		f.setBold(true);
-		p.setFont(f);
-		p.setPen(c);
-		p.drawText(QRect(0, 0, 20, 15), Qt::AlignCenter, "A");
+	return drawn_icon(w, [abgr](QPainter &p, QColor c) {
+		p.setPen(stroke(c));
+		QPainterPath a;
+		a.moveTo(5.5, 13.5);
+		a.lineTo(10, 2.5);
+		a.lineTo(14.5, 13.5);
+		p.drawPath(a);
+		p.drawLine(QPointF(7.2, 9.5), QPointF(12.8, 9.5));
 		const QColor fill(abgr & 0xFF, (abgr >> 8) & 0xFF, (abgr >> 16) & 0xFF);
 		p.setPen(QPen(c, 0.8));
 		p.setBrush(fill);
-		p.drawRect(QRectF(3.5, 15, 13, 3.5));
+		p.drawRoundedRect(QRectF(3.5, 15.5, 13, 3), 1, 1);
 	});
 }
 
-// Clear formatting: a T with a small cross, the usual sign for it.
+// Clear formatting: an eraser, rubbing out.
 QIcon clear_icon(QWidget *w)
 {
 	return drawn_icon(w, [](QPainter &p, QColor c) {
-		p.setPen(QPen(c, 1.8, Qt::SolidLine, Qt::RoundCap));
-		p.drawLine(QPointF(4, 4), QPointF(13, 4));
-		p.drawLine(QPointF(8.5, 4), QPointF(8.5, 16));
-		p.setPen(QPen(c, 1.5, Qt::SolidLine, Qt::RoundCap));
-		p.drawLine(QPointF(12.5, 12), QPointF(17.5, 17));
-		p.drawLine(QPointF(17.5, 12), QPointF(12.5, 17));
+		p.setPen(stroke(c, 1.5));
+		p.setBrush(Qt::NoBrush);
+		// The eraser, tilted: its body and the band across it.
+		QPolygonF body;
+		body << QPointF(4, 12.5) << QPointF(11, 5.5) << QPointF(16, 10.5) << QPointF(9, 17.5);
+		p.drawPolygon(body);
+		p.drawLine(QPointF(7.5, 9), QPointF(12.5, 14));
+		// What it has rubbed out: a line under it.
+		p.drawLine(QPointF(9, 17.5), QPointF(16.5, 17.5));
 	});
 }
 
@@ -192,26 +220,27 @@ FormatBar::FormatBar(QWidget *parent, Actions actions)
 			actions_.back_to_text();
 	});
 
-	auto *size = new SizeBox(this);
-	size_ = size;
-	size->setRange(1, 4096);
-	size->setSuffix(" px");
-	size->setToolTip(tip("Bar.Size", "Ctrl+Shift+> / <"));
-	size->setFocusPolicy(Qt::ClickFocus);
-	size->setKeyboardTracking(false); // typed sizes apply on Enter, not per digit
-	size->stepped = [this](int dir) {
-		if (actions_.step_size)
-			actions_.step_size(dir);
+	// The size: a list like the typeface's (Word's size box): type any size,
+	// or pick a common one; scrolling over it steps it, as the shortcuts do.
+	size_ = new QComboBox(this);
+	size_->setEditable(true);
+	size_->setInsertPolicy(QComboBox::NoInsert);
+	size_->setToolTip(tip("Bar.Size", "Ctrl+Shift+> / <"));
+	size_->setFocusPolicy(Qt::ClickFocus);
+	size_->lineEdit()->setValidator(new QIntValidator(1, 4096, size_));
+	for (int px : preset_sizes)
+		size_->addItem(QString::number(px), px);
+	auto apply_size = [this] {
+		const int px = typed_size(size_->currentText());
+		if (!updating_ && px > 0 && px != state_.size_px && actions_.size_px)
+			actions_.size_px(px);
+		if (actions_.back_to_text)
+			actions_.back_to_text();
 	};
-	QObject::connect(size, &QSpinBox::editingFinished, this, [this] {
-		if (!updating_ && size_->hasFocus()) {
-			if (actions_.size_px && size_->value() != state_.size_px)
-				actions_.size_px(size_->value());
-			if (actions_.back_to_text)
-				actions_.back_to_text();
-		}
-	});
-	row->addWidget(size);
+	QObject::connect(size_, QOverload<int>::of(&QComboBox::activated), this, apply_size);
+	QObject::connect(size_->lineEdit(), &QLineEdit::returnPressed, this, apply_size);
+	size_->installEventFilter(this);
+	row->addWidget(size_);
 	row->addWidget(weight_); // typeface, size, then weight
 	row->addSpacing(group_gap);
 
@@ -232,10 +261,10 @@ FormatBar::FormatBar(QWidget *parent, Actions actions)
 		};
 	};
 	italic_ = button(tip("Bar.Italic", "Ctrl+I"), true);
-	italic_->setIcon(text_icon(this, "I", false, true, false));
+	italic_->setIcon(italic_icon(this));
 	QObject::connect(italic_, &QToolButton::clicked, this, toggle(Toggle::Italic));
 	underline_ = button(tip("Bar.Underline", "Ctrl+U"), true);
-	underline_->setIcon(text_icon(this, "U", false, false, true));
+	underline_->setIcon(underline_icon(this));
 	QObject::connect(underline_, &QToolButton::clicked, this, toggle(Toggle::Underline));
 	super_ = button(tip("Bar.Superscript", "Ctrl+Shift+="), true);
 	super_->setIcon(script_icon(this, true));
@@ -262,9 +291,11 @@ FormatBar::FormatBar(QWidget *parent, Actions actions)
 	line->setFrameShadow(QFrame::Plain);
 	line->setFixedWidth(1);
 	line->setStyleSheet("color: palette(mid);");
-	row->addSpacing(group_gap / 2);
+	// (Either side of it, the gap and a little: a line takes no room of its
+	// own, so the two together are a group's gap.)
+	row->addSpacing((group_gap - gap) / 2);
 	row->addWidget(line);
-	row->addSpacing(group_gap / 2);
+	row->addSpacing((group_gap - gap) / 2);
 	align_ = button(tip("Bar.Align"), false);
 	align_->setPopupMode(QToolButton::InstantPopup);
 	auto *menu = new QMenu(align_);
@@ -282,9 +313,10 @@ FormatBar::FormatBar(QWidget *parent, Actions actions)
 	// pressed button in OBS's own toolbars.
 	// (Only the colour: the shape is the theme's own, as on its buttons.)
 	// (The theme gives lists and number fields a margin inside their own
-	// height, which would draw them shorter than the buttons beside them.)
+	// size, which would draw them shorter than the buttons beside them and
+	// add to the gaps beside them only.)
 	setStyleSheet("QToolButton:checked { background: palette(highlight); color: palette(highlighted-text); }"
-		      "QComboBox, QAbstractSpinBox { margin-top: 0px; margin-bottom: 0px; }");
+		      "QComboBox, QToolButton { margin: 0px; }");
 
 	// Every control the same height (OBS's theme sizes each kind its own
 	// way), the buttons square at it, and the line a little shorter.
@@ -309,7 +341,7 @@ FormatBar::FormatBar(QWidget *parent, Actions actions)
 // The bar's own shape: a rounded panel in the theme's window colour with a
 // hairline edge, its corners as round as OBS's controls'. Cut to that shape
 // with a mask (no compositor is needed for it).
-constexpr int bar_radius = 6;
+constexpr int bar_radius = 10; // the controls' own (about 4) plus the margin: the corners nest
 
 void FormatBar::paintEvent(QPaintEvent *)
 {
@@ -322,9 +354,16 @@ void FormatBar::paintEvent(QPaintEvent *)
 
 void FormatBar::resizeEvent(QResizeEvent *event)
 {
-	QPainterPath path;
-	path.addRoundedRect(QRectF(rect()), bar_radius, bar_radius);
-	setMask(QRegion(path.toFillPolygon().toPolygon()));
+	// The shape cut to the pixel from the same rounded rectangle that's
+	// painted (a polygon of it would cut the corners off flat).
+	QBitmap shape(size());
+	shape.fill(Qt::color0);
+	QPainter p(&shape);
+	p.setPen(Qt::NoPen);
+	p.setBrush(Qt::color1);
+	p.drawRoundedRect(QRectF(rect()), bar_radius, bar_radius);
+	p.end();
+	setMask(shape);
 	QWidget::resizeEvent(event);
 }
 
@@ -362,10 +401,9 @@ void FormatBar::set_state(const State &s)
 		weight_->setCurrentIndex(weight_->count() - 1);
 	}
 
-	if (!size_->hasFocus()) {
-		size_->setSpecialValueText(s.size_px > 0 ? QString() : QString(" "));
-		size_->setMinimum(s.size_px > 0 ? 1 : 0);
-		size_->setValue(s.size_px);
+	if (!size_->hasFocus() && !size_->lineEdit()->hasFocus()) {
+		size_->setCurrentIndex(size_->findData(s.size_px)); // -1 if it isn't one of the list's
+		size_->setEditText(s.size_px > 0 ? QString::number(s.size_px) : QString()); // blank if mixed
 	}
 	italic_->setChecked(s.italic);
 	underline_->setChecked(s.underline);
@@ -417,6 +455,12 @@ bool FormatBar::eventFilter(QObject *obj, QEvent *event)
 		return true;
 	if (obj == weight_->lineEdit() && event->type() == QEvent::MouseButtonRelease) {
 		weight_->showPopup();
+		return true;
+	}
+	if (obj == size_ && event->type() == QEvent::Wheel) {
+		const int dy = static_cast<QWheelEvent *>(event)->angleDelta().y();
+		if (dy != 0 && actions_.step_size)
+			actions_.step_size(dy > 0 ? 1 : -1);
 		return true;
 	}
 	if (event->type() == QEvent::ShortcutOverride) {

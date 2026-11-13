@@ -18,7 +18,6 @@
 
 class QComboBox;
 class QFontComboBox;
-class QSpinBox;
 class QToolButton;
 
 namespace typeset {
@@ -69,7 +68,7 @@ private:
 	Actions actions_;
 	QFontComboBox *family_;
 	QComboBox *weight_;
-	QSpinBox *size_;
+	QComboBox *size_;
 	QToolButton *italic_, *underline_, *super_, *sub_, *colour_, *align_, *clear_;
 	State state_;
 	bool updating_ = false;
