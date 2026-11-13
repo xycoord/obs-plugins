@@ -5,38 +5,17 @@ Linux.
 
 | Plugin | What it is |
 |---|---|
-| [obs-invert](plugins/obs-invert) | **Invert**: swaps light and dark. By default it keeps each colour's hue and flips its tone (perceived lightness, CIELAB L*, the way Google's HCT makes dark themes), so a logo supplied on white goes onto black with the same contrast between its parts: the white background turns black, black text turns white, a dark navy becomes a light blue, a red stays a red and a pale badge becomes a dark one. **JPEG clean-up** clears the specks a JPEG leaves around text, repairs the colour JPEG smears along edges (which inverting would turn into dark bands) and takes cream or off-white paper as background too. **Transparent background** lets the logo go over visuals: edges blend into what's behind, shadows and glows fade to transparent, solid parts stay solid however dark, and over black it looks exactly the same as without. |
+| [obs-invert](plugins/obs-invert) | **Invert**: swaps light and dark. With **Keep hue** (the default) it flips each colour's tone, its perceived lightness (CIELAB L\*, the way Google's HCT makes dark themes), and keeps its hue, so a logo made for white goes onto black with the same contrast between its parts: white turns black, black text turns white, a dark navy becomes a light blue, a red stays a red and a pale badge becomes a dark one. Transparency in the source is kept. Without Keep hue it's a plain inversion. |
 | [obs-shaderfilter](plugins/obs-shaderfilter) | A filter that applies a shader to a source, with a library of 150+ effects (blur, bloom, film grain, glitch, distortion, colour). A submodule: [xycoord/obs-shaderfilter](https://github.com/xycoord/obs-shaderfilter). |
 
-### Using Invert on a logo
+### Using Invert
 
-Add it to the logo's image source (Filters, then +, then Invert). The defaults suit a logo on white
-going onto black. For a logo over visuals, tick **Transparent background**; if a dark box is left where
-the background was, raise **JPEG clean-up** until the background is fully black.
+Add it to a source (Filters, then +, then Invert). Anything with its own transparency, such as a logo
+PNG, stays transparent, with the same edges.
 
-- Anything that ends up black becomes see-through, including white text cut out of a shape.
-- Shadows, glows and other soft parts fade to transparent; solid parts stay solid however dark.
-  **Fade shadows and glows** sets how far (100% by default). If a textured or grainy part of a logo turns
-  see-through, lower it; 0% keeps every part solid.
-
-The defaults are automatic and suit most logos. If one doesn't come out right, look at it over the
-visuals and adjust for what you see:
-
-| You see | Change |
-|---|---|
-| Part of the background is left as a dark box, or the logo goes too | **Background**: pick the paper's colour (the logo may touch the image's edges) |
-| Black specks or blotches around text (JPEG noise) | Raise **JPEG clean-up** (12–18%). Above 8% it clears only specks, not pale parts of the logo |
-| Dark rims or grey halos round the edges of a soft or enlarged logo | Raise **Edge softness** (1.5–2.5 px) |
-| Thin lines or small text too faint, or see-through | **Thin lines and small text**: Solid |
-| Thin lines or small text too strong, with a hard outline, on a blurred logo | **Thin lines and small text**: Faint |
-| Light grey shapes or text in the logo come out see-through | Untick **Dark greys can be shadows** |
-| A textured or grainy part turns see-through | Lower **Fade shadows and glows** |
-
-- How each pixel's transparency is worked out is described at the top of
-  [invert.effect](plugins/obs-invert/data/invert.effect); it was tuned on a suite of synthetic logos with
-  known ideals (crisp, JPEG, blurred, cream paper, already transparent).
-- The filter works on the image at its own size every frame: scale very large logo files (print
-  artwork thousands of pixels across) down to about projector size first.
+For a photo of a poster or a logo, to go white on black, add Colour Correction after it (filters run
+from the top of the list down): saturation right down to remove colour, contrast up until the paper
+is black, then gamma to set where the middle falls.
 
 ## Installing
 
@@ -88,8 +67,8 @@ every plugin, then loads each plugin's test scene and checks OBS reports no erro
 example a shader that doesn't compile). `@DATA@` in a scene file stands for the plugin's installed
 data folder. On a machine without a display, run it as `xvfb-run -a tests/smoke.sh`.
 
-[tests/invert-suite](tests/invert-suite) measures the Invert filter's transparent background against
-synthetic logos with exact ideals.
+[tests/invert-check](tests/invert-check) checks the Invert filter against a reference of its
+inversion through OBS's renderer, and compares inversions by how well they keep contrast.
 
 CI builds, installs and smoke-tests everything against Ubuntu 24.04's OBS and against the latest OBS
 from the official PPA.

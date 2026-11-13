@@ -1,7 +1,8 @@
-"""Tone inversion, as the Invert filter does it: each colour's tone (CIELAB L*, which depends only
-on luminance, as in Google's HCT) becomes 100 - L*, keeping its OKLab hue and chroma; where that
-colour is outside sRGB, chroma is reduced at the same tone. On gamma-encoded sRGB.
-ok_invert is the older OKLab-lightness flip, kept for comparison."""
+"""Reference for the Invert filter, in numpy. tone_invert is what it does with "Keep hue" on: each
+colour's tone (CIELAB L*, which depends only on luminance, as in Google's HCT) becomes 100 - L*,
+keeping its OKLab hue and chroma; where that colour is outside sRGB, chroma is reduced at the same
+tone. On gamma-encoded sRGB. ok_invert (flipping OKLab L) and hsl_invert (flipping HSL lightness,
+what the filter did first) are for comparison."""
 import numpy as np
 def to_lin(c): c=np.clip(np.asarray(c,float),0,1); return np.where(c<=0.04045,c/12.92,((c+0.055)/1.055)**2.4)
 def to_enc(c): c=np.clip(c,0,1); return np.where(c<=0.0031308,c*12.92,1.055*c**(1/2.4)-0.055)

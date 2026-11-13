@@ -126,7 +126,8 @@ for name in "${names[@]}"; do
 		log = open(sys.argv[2], errors="replace").read()
 		for src in scene.get("sources", []):
 		    for f in src.get("filters", []):
-		        if f"- filter: '{f['name']}' ({f['id']})" not in log:
+		        ids = {f["id"], f.get("versioned_id", f["id"])}
+		        if not any(f"- filter: '{f['name']}' ({i})" in log for i in ids):
 		            print(f"{src['name']}: {f['name']} ({f['id']})")
 	EOF
 	)
