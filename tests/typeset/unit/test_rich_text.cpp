@@ -119,6 +119,29 @@ int main()
 	apply(u, 0, 4, bold(), utf); // would end inside "é"
 	expect("runs end on a character boundary", u, "[0,3)b");
 
+	// Overlapping runs from outside (a script, a hand-edited scene): the
+	// first keeps its bytes; later ones start after the furthest end so far.
+	{
+		const std::string ten = "0123456789ab";
+		Span a{0, 10};
+		a.bold = 1;
+		Span b{2, 4};
+		b.italic = 1;
+		Span c{5, 8};
+		c.underline = 1;
+		Spans o{a, b, c};
+		normalise(o, ten);
+		expect("runs inside an earlier run are dropped", o, "[0,10)b");
+		Span d{8, 12};
+		d.italic = 1;
+		o = {a, b, d};
+		normalise(o, ten);
+		expect("a run reaching past an earlier one keeps the rest", o, "[0,10)b [10,12)i");
+		o = {a, b, c};
+		edit(o, 11, 11, 1); // through edit too
+		expect("edit untangles overlaps as well", o, "[0,10)b");
+	}
+
 	printf("%s\n", failed ? "FAILED" : "all passed");
 	return failed ? 1 : 0;
 }

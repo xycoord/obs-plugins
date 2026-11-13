@@ -66,15 +66,14 @@ void run(Worker *w)
 			}
 			raster = rasterise(cached, job->doc, job->params);
 			if (raster.failed)
-				blog(LOG_WARNING, "[obs-typeset] couldn't draw text at %.2fx%.2f: out of memory; "
-						  "trying again shortly",
-				     job->params.sx, job->params.sy);
+				raster.error = "out of memory";
 		} catch (const std::exception &e) {
-			// Out of memory, most likely: the text isn't shown, and OBS
-			// carries on.
-			blog(LOG_WARNING, "[obs-typeset] couldn't draw text: %s", e.what());
+			// Out of memory, most likely (GLib and Pango abort on theirs;
+			// these are the plugin's own allocations). The source keeps
+			// what it shows, asks again later, and says why in the log.
 			raster = Raster();
-			raster.failed = true; // the source keeps what it shows, and asks again later
+			raster.failed = true;
+			raster.error = e.what();
 		}
 		// TYPESET_DEBUG=1 in OBS's environment logs every drawing (for the
 		// tests, which check that nothing is drawn when nothing changes).
@@ -85,7 +84,7 @@ void run(Worker *w)
 
 		raster.version = job->version;
 		std::lock_guard lock(slot->mutex);
-		if (job->seq > slot->result_seq) {
+		if (job->seq > slot->result_seq && job->seq > slot->discard_through) {
 			slot->result = std::move(raster);
 			slot->result_seq = job->seq;
 		}

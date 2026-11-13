@@ -29,6 +29,19 @@ void merge(Spans &spans)
 	spans.swap(out);
 }
 
+// Sorted by start, and overlaps taken out: where runs overlap, the one that
+// starts first keeps the bytes, and a later one starts after the furthest end
+// so far (one wholly inside an earlier run goes; merge drops it).
+void untangle(Spans &spans)
+{
+	std::stable_sort(spans.begin(), spans.end(), [](const Span &a, const Span &b) { return a.start < b.start; });
+	size_t furthest = 0;
+	for (Span &s : spans) {
+		s.start = std::max(s.start, furthest);
+		furthest = std::max(furthest, s.end);
+	}
+}
+
 // Split runs so none crosses `at`.
 void split_at(Spans &spans, size_t at)
 {
@@ -85,10 +98,7 @@ void normalise(Spans &spans, const std::string &text)
 		if (s.size < 0)
 			s.size = 0;
 	}
-	std::stable_sort(spans.begin(), spans.end(), [](const Span &a, const Span &b) { return a.start < b.start; });
-	// Overlaps: the later run starts where the earlier ends.
-	for (size_t i = 1; i < spans.size(); i++)
-		spans[i].start = std::max(spans[i].start, spans[i - 1].end);
+	untangle(spans);
 	merge(spans);
 }
 
@@ -121,9 +131,7 @@ void edit(Spans &spans, size_t from, size_t to, size_t inserted)
 		inherit.end = from + inserted;
 		out.push_back(inherit);
 	}
-	std::stable_sort(out.begin(), out.end(), [](const Span &a, const Span &b) { return a.start < b.start; });
-	for (size_t i = 1; i < out.size(); i++)
-		out[i].start = std::max(out[i].start, out[i - 1].end);
+	untangle(out);
 	spans.swap(out);
 	merge(spans);
 }

@@ -54,7 +54,7 @@ smaller step each part from its own size.
 
 The properties are the style of the rest of the text: change the font there and the bold words stay
 bold, in the new font. A note in the properties says when some words have a style of their own, with
-a button to clear them. Words typed after a styled word continue its style; text changed in the
+a button to clear them. (Styles set by a script that overlap are tidied up: the earlier one keeps the overlap.) Words typed after a styled word continue its style; text changed in the
 properties keeps its styles where it's unchanged.
 
 ## Resizing and font size
@@ -80,7 +80,11 @@ changed.
 Each text has one drawing for the output and one for windows. A text shown twice in the same frame
 at different sizes (the same source in two places in a scene) is drawn for the larger and scaled down
 for the smaller, which is then a little soft. A text that isn't on screen keeps its drawing on the
-graphics card, so it's ready the moment it's cut to.
+graphics card, at the size it was last shown at, so it's ready the moment it's cut to; in Studio
+Mode, at the size it has in the preview, so a Cut is sharp from its first frame. A window's drawing
+is let go a couple of seconds after the window stops showing the text. If a drawing can't be made
+(out of memory), what's shown stays, and it's tried again after a few seconds, then less often, up
+to once a minute, with one line in OBS's log.
 
 A few things in OBS draw a source into a texture of the source's own size first and scale *that*,
 and then the text is as sharp as its font size, no sharper: filters on the source; crop, Scale
@@ -102,7 +106,7 @@ naming it ("Editing “Title” · Esc to finish"), in the preview only; then:
 | Click, drag | place the caret, select (Shift+click extends) |
 | Double-click, triple-click | select a word, a whole line |
 | Arrows, Home, End | move; Ctrl moves by word (or to the very start or end); Shift selects |
-| Backspace, Delete | delete; Ctrl deletes a word |
+| Backspace, Delete | delete (a letter with its accent, or an emoji, as one; in Indic scripts Backspace takes off just the vowel sign); Ctrl deletes a word |
 | Return | a new line |
 | Ctrl+A, Ctrl+C, Ctrl+X, Ctrl+V | select all, copy, cut, paste (always as plain text, up to 20,000 characters) |
 | Ctrl+Z, Ctrl+Shift+Z | undo, redo (a word at a time) |

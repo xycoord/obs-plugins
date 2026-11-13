@@ -26,6 +26,7 @@ struct RasterSlot {
 	std::optional<RasterJob> job;  // waiting to be drawn
 	std::optional<Raster> result;  // drawn, waiting to be uploaded
 	uint64_t result_seq = 0;
+	uint64_t discard_through = 0; // drawings asked for up to here aren't wanted any more
 	bool queued = false;
 };
 

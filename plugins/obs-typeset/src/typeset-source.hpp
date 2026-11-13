@@ -96,8 +96,9 @@ private:
 	// read the text just before an edit would lay out the old text after it.
 	// The edit calls obs_source_update with this held, on purpose (released
 	// first, an update could read the settings between the layout and the
-	// write): that relies on libobs deferring a video source's update to its
-	// graphics thread, so update() is never called from inside it, here.
+	// write). libobs defers a video source's update to its graphics thread,
+	// so update() isn't called from inside it; if it ever were, update()
+	// sees it's inside an edit's write and returns without the lock.
 	std::mutex content_mutex_;
 	Spans superseded_; // runs the settings may still hold, moved since (being written back)
 	Document pending_doc_;
@@ -119,6 +120,12 @@ private:
 		uint64_t requested_version = 0;
 		int idle_ticks = 0;
 		int retry_ticks = 0; // after a failed drawing, frames until it's asked for again
+		int failures = 0;    // failed in a row: each retry waits longer
+		uint64_t failure_logged = 0; // the text's version a failure was last logged for
+		// Windows only: shown this frame on a canvas (a scene in the Studio
+		// Mode preview or the multiview), at this scale and offset.
+		bool on_canvas = false;
+		RasterParams canvas_wanted;
 	};
 	View views_[2]; // output, windows
 	uint64_t next_seq_ = 1;
@@ -128,6 +135,7 @@ private:
 	void upload_result(View &view);
 	void draw(View &view);
 	void release(View &view);
+	void retry_later(View &view, const char *why, uint64_t version);
 	// Source units <-> layout units (Pango's), under the layout lock.
 	double to_layout_x(double x) const { return (x - frame_.text_x) / frame_.text_scale; }
 	double to_layout_y(double y) const { return (y - frame_.text_y) / frame_.text_scale; }

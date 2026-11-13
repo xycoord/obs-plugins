@@ -66,6 +66,18 @@ int pango_units(double v)
 	return int(std::lround(std::clamp(v, -1e6, 1e6) * PANGO_SCALE));
 }
 
+// Set while an edit from the preview writes its settings (under
+// content_mutex_): libobs defers a video source's update to its graphics
+// thread, but if it ever called update() straight from obs_source_update,
+// update() would find this set and stop, instead of waiting on the lock this
+// thread holds. The edit has been laid out already, so there's nothing to do.
+thread_local bool writing_edit = false;
+
+struct WritingEdit {
+	WritingEdit() { writing_edit = true; }
+	~WritingEdit() { writing_edit = false; }
+};
+
 } // namespace
 
 TextSource::TextSource(obs_data_t *settings, obs_source_t *source) : source_(source)
@@ -98,6 +110,8 @@ TextSource *TextSource::from(obs_source_t *source)
 
 void TextSource::update(obs_data_t *settings)
 {
+	if (writing_edit)
+		return; // called from inside an edit's own write (see writing_edit)
 	std::lock_guard content(content_mutex_);
 	Document doc;
 	const char *text = obs_data_get_string(settings, "text");
@@ -235,7 +249,33 @@ void TextSource::release(View &view)
 		gs_texture_destroy(view.texture);
 	view.texture = nullptr;
 	view.requested = false;
-	view.texture_seq = 0;
+	// Nothing asked for so far is wanted now: a drawing waiting to be
+	// uploaded is dropped, and one still being drawn is dropped when it's
+	// done, so neither sits in memory (nor shows the next time).
+	const uint64_t asked = next_seq_ - 1;
+	{
+		std::lock_guard lock(view.slot->mutex);
+		view.slot->result.reset();
+		view.slot->job.reset();
+		view.slot->discard_through = asked;
+	}
+	view.texture_seq = std::max(view.texture_seq, asked);
+}
+
+void TextSource::retry_later(View &view, const char *why, uint64_t version)
+{
+	// Each failure in a row waits twice as long, from about 3 s to about
+	// a minute, and is logged once for each version of the text.
+	constexpr int first_wait = 180, longest_wait = 3600; // frames
+	view.requested = false;
+	view.retry_ticks = std::min(first_wait << std::min(view.failures, 5), longest_wait);
+	view.failures++;
+	if (view.failure_logged != version) {
+		view.failure_logged = version;
+		blog(LOG_WARNING, "[obs-typeset] '%s': couldn't draw the text (%s); showing what was drawn before "
+				  "and trying again shortly",
+		     obs_source_get_name(source_), why && *why ? why : "unknown");
+	}
 }
 
 void TextSource::tick()
@@ -273,18 +313,26 @@ void TextSource::tick()
 			v.idle_ticks = 0;
 			if (!v.requested || version != v.requested_version || !v.wanted.close_to(v.requested_params))
 				request(v, v.wanted);
-		} else if (i == 0 && (!v.requested || version != v.requested_version)) {
+		} else if (i == 0) {
 			// Not shown now, but it can be cut to at any moment: kept
-			// drawn for the output, at the scale it was last shown at
-			// (at first, its own size), so it's never blank on a cut.
-			request(v, v.requested ? v.requested_params : RasterParams());
-		} else if (i == 1 && v.texture && ++v.idle_ticks > 120) {
-			// No window has shown it for a while: free its raster.
+			// drawn for the output, so it's never blank on a cut. At the
+			// scale a window shows it at on the canvas, if one does (the
+			// Studio Mode preview, where it's set up before a cut, or the
+			// multiview), else the scale it was last shown at (at first,
+			// its own size).
+			const View &w = views_[1];
+			const RasterParams target = w.on_canvas ? w.canvas_wanted : v.requested_params;
+			if (!v.requested || version != v.requested_version || !target.close_to(v.requested_params))
+				request(v, target);
+		} else if (i == 1 && (v.texture || v.requested) && ++v.idle_ticks > 120) {
+			// No window has shown it for a while: free its raster, and
+			// any drawing for it not yet uploaded or still being drawn.
 			obs_enter_graphics();
 			release(v);
 			obs_leave_graphics();
 		}
 	}
+	views_[1].on_canvas = false;
 }
 
 void TextSource::upload_result(View &view)
@@ -302,33 +350,36 @@ void TextSource::upload_result(View &view)
 
 	Raster &r = *result;
 	if (r.failed) {
-		// Keep what's shown; ask again in a few seconds.
-		view.requested = false;
-		view.retry_ticks = 180;
+		retry_later(view, r.error.c_str(), r.version); // keeping what's shown
 		return;
 	}
-	if (r.width <= 0 || r.height <= 0 || r.pixels.empty()) {
+	if (r.width <= 0 || r.height <= 0 || r.pixels.empty()) { // nothing to draw
 		if (view.texture)
 			gs_texture_destroy(view.texture);
 		view.texture = nullptr;
+		view.failures = 0;
 		view.drawn = std::move(r);
 		return;
 	}
-	if (view.texture && (int(gs_texture_get_width(view.texture)) != r.width ||
-			     int(gs_texture_get_height(view.texture)) != r.height)) {
-		gs_texture_destroy(view.texture);
-		view.texture = nullptr;
-	}
-	if (view.texture) {
+	if (view.texture && int(gs_texture_get_width(view.texture)) == r.width &&
+	    int(gs_texture_get_height(view.texture)) == r.height) {
 		gs_texture_set_image(view.texture, r.pixels.data(), uint32_t(r.width) * 4, false);
 	} else {
+		// The new texture made before the old one goes, so if it can't be
+		// (out of video memory) the text still shows as it was.
 		const uint8_t *data = r.pixels.data();
-		view.texture =
+		gs_texture_t *texture =
 			gs_texture_create(uint32_t(r.width), uint32_t(r.height), GS_BGRA, 1, &data, GS_DYNAMIC);
-		if (!view.texture)
-			blog(LOG_WARNING, "[obs-typeset] '%s': couldn't make a %dx%d texture",
-			     obs_source_get_name(source_), r.width, r.height);
+		if (!texture) {
+			const std::string why = "no " + std::to_string(r.width) + "x" + std::to_string(r.height) + " texture";
+			retry_later(view, why.c_str(), r.version);
+			return;
+		}
+		if (view.texture)
+			gs_texture_destroy(view.texture);
+		view.texture = texture;
 	}
+	view.failures = 0;
 	r.pixels = std::vector<uint8_t>();
 	view.drawn = std::move(r);
 }
@@ -365,11 +416,27 @@ void TextSource::render()
 		// shape.)
 		want.sx = double(viewport.cx) / width();
 		want.sy = double(viewport.cy) / height();
-	} else if (!window && axis_aligned) {
-		// Unrotated and unmirrored, the raster's pixels can sit exactly on
-		// the canvas's, so the texture is drawn with no resampling at all.
-		want.ox = double(m.t.x) - std::floor(double(m.t.x));
-		want.oy = double(m.t.y) - std::floor(double(m.t.y));
+	} else {
+		if (axis_aligned) {
+			// Unrotated and unmirrored, the raster's pixels can sit
+			// exactly on the canvas's, so the texture is drawn with no
+			// resampling at all.
+			want.ox = double(m.t.x) - std::floor(double(m.t.x));
+			want.oy = double(m.t.y) - std::floor(double(m.t.y));
+		}
+		if (window && want.sx > 1e-4 && want.sy > 1e-4 && std::isfinite(want.sx) && std::isfinite(want.sy)) {
+			// A window showing a scene (the Studio Mode preview, the
+			// multiview): the matrix is in canvas units, so this is the
+			// scale the output would draw it at (see tick()).
+			RasterParams &c = views_[1].canvas_wanted;
+			if (!views_[1].on_canvas) {
+				c = want;
+				views_[1].on_canvas = true;
+			} else {
+				c.sx = std::max(c.sx, want.sx);
+				c.sy = std::max(c.sy, want.sy);
+			}
+		}
 	}
 	if (!(want.sx > 1e-4) || !(want.sy > 1e-4) || !std::isfinite(want.sx) || !std::isfinite(want.sy))
 		return;
@@ -457,12 +524,14 @@ void TextSource::set_box_width(int width)
 	doc.style.box_width = width;
 	apply(std::move(doc));
 
-	// Still under content_mutex_ (see the header): OBS defers a video
-	// source's update to its graphics thread, so this doesn't call update().
+	// Still under content_mutex_ (see the header and writing_edit).
 
 	obs_data_t *settings = obs_data_create();
 	obs_data_set_int(settings, "box_width", width);
-	obs_source_update(source_, settings);
+	{
+		WritingEdit writing;
+		obs_source_update(source_, settings);
+	}
 	obs_data_release(settings);
 }
 
@@ -486,15 +555,17 @@ void TextSource::set_content(const std::string &text, const Spans &spans)
 	const Spans normalised = doc.spans;
 	apply(std::move(doc));
 
-	// Still under content_mutex_ (see the header): OBS defers a video
-	// source's update to its graphics thread, so this doesn't call update().
+	// Still under content_mutex_ (see the header and writing_edit).
 
 	obs_data_t *settings = obs_data_create();
 	obs_data_set_string(settings, "text", text.c_str());
 	obs_data_array_t *array = spans_array(normalised);
 	obs_data_set_array(settings, "spans", array);
 	obs_data_array_release(array);
-	obs_source_update(source_, settings);
+	{
+		WritingEdit writing;
+		obs_source_update(source_, settings);
+	}
 	obs_data_release(settings);
 }
 
@@ -597,21 +668,7 @@ size_t TextSource::next_cursor(size_t index, int direction) const
 size_t TextSource::backspace_from(size_t index) const
 {
 	std::lock_guard lock(layout_lock());
-	int n = 0;
-	const PangoLogAttr *attrs = pango_layout_get_log_attrs_readonly(layout_, &n);
-	const long i = char_offset(doc_.text, index);
-	if (i <= 0)
-		return 0;
-	// After a character made of several (a letter and its accent, an Indic
-	// or Hangul syllable), Backspace takes off only the last of them, so a
-	// mistyped accent can be typed again.
-	if (i < n && attrs[i].backspace_deletes_character)
-		return byte_index(doc_.text, i - 1);
-	long j = i;
-	do
-		j--;
-	while (j > 0 && !attrs[j].is_cursor_position);
-	return byte_index(doc_.text, j);
+	return backspace_index(layout_, std::min(index, doc_.text.size()));
 }
 
 size_t TextSource::cursor_at_or_before(size_t index) const

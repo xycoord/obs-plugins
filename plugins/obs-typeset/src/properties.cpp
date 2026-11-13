@@ -12,6 +12,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <mutex>
 #include <string>
 
 namespace typeset {
@@ -182,8 +183,13 @@ bool font_changed(obs_properties_t *props, obs_property_t *, obs_data_t *setting
 		std::string used;
 		bool installed;
 		{
-			std::lock_guard lock(layout_lock());
-			installed = font_installed(layout_context(), family, &used);
+			// A font map of its own, so listing every installed family
+			// (slow the first time) never holds up the text's layout,
+			// which OBS's graphics thread waits on.
+			static std::mutex mutex;
+			std::lock_guard lock(mutex);
+			static PangoContext *context = create_context(pango_cairo_font_map_new());
+			installed = font_installed(context, family, &used);
 		}
 		const std::string message = installed ? std::string()
 						      : std::string(obs_module_text("FontMissing.1")) + " \u201c" +

@@ -107,6 +107,7 @@ struct Raster {
 	RasterParams params;
 	uint64_t version = 0; // of the document drawn (set by whoever asked for it)
 	bool failed = false;  // couldn't be drawn (out of memory): try again later
+	std::string error;    // why, when it failed
 	int x0 = 0, y0 = 0;
 	int width = 0, height = 0;
 	std::vector<uint8_t> pixels; // BGRA, premultiplied, width*4 per row
@@ -120,6 +121,12 @@ constexpr double max_raster_pixels = 32.0 * 1024 * 1024;
 // Draws the document at the given scale. A raster comes out empty when
 // there's no ink, and failed when memory couldn't be had for it.
 Raster rasterise(PangoLayout *layout, const Document &doc, RasterParams params);
+
+// Where Backspace at a byte index of a layout's text deletes back to: the
+// whole grapheme before it, as Pango divides graphemes (an emoji sequence, a
+// flag, a letter with its accent, a Hangul syllable), except where Pango says
+// one character is deleted (Indic scripts: क + ि loses only the vowel sign).
+size_t backspace_index(PangoLayout *layout, size_t index);
 
 // Whether a font family is installed, and the family Pango will use for it.
 bool font_installed(PangoContext *context, const std::string &family, std::string *used);

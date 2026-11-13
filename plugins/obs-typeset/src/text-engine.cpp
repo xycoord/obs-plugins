@@ -3,6 +3,7 @@
 #include <obs.h>
 
 #include <algorithm>
+#include <memory>
 #include <cmath>
 #include <cstring>
 #include <new>
@@ -310,33 +311,34 @@ static void rounded_rect(cairo_t *cr, const Box &b, double r)
 	cairo_close_path(cr);
 }
 
-// The text with its outline, in the current source; for the shadow, both in
-// one colour.
+// The text with its outline, in the current source; for the shadow, its
+// silhouette in one colour, grown by the outline and the shadow's spread.
 static void draw_text(cairo_t *cr, PangoLayout *layout, const Style &s, const Frame &f, bool silhouette)
 {
 	cairo_save(cr);
 	cairo_translate(cr, f.text_x, f.text_y);
 	cairo_scale(cr, f.text_scale, f.text_scale);
-	if (s.outline && s.outline_width > 0) {
-		// Behind the fill, so it grows the letters outwards and never eats
-		// into them; round joins, so corners don't spike.
+	// Strokes are centred on the letters' edges, so half of each grows
+	// them: round joins, so corners don't spike.
+	auto stroke = [&](double grow_by) {
 		pango_cairo_layout_path(cr, layout);
-		cairo_set_line_width(cr, 2 * s.outline_width / f.text_scale);
-		cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
-		cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
-		if (!silhouette)
-			set_colour(cr, s.outline_colour);
-		cairo_stroke(cr);
-	}
-	if (silhouette && s.shadow_spread > 0) {
-		// The shadow's spread: its shape grown all round, so it holds up
-		// thin letters over bright backgrounds.
-		pango_cairo_layout_path(cr, layout);
-		const double grow_by = s.shadow_spread + (s.outline ? s.outline_width : 0.0);
 		cairo_set_line_width(cr, 2 * grow_by / f.text_scale);
 		cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
 		cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
 		cairo_stroke(cr);
+	};
+	const double outline = s.outline && s.outline_width > 0 ? s.outline_width : 0.0;
+	if (silhouette) {
+		// The shadow's shape is the outlined text's, grown by its spread
+		// (so it holds up thin letters over bright backgrounds): one
+		// stroke covers both.
+		if (outline + s.shadow_spread > 0)
+			stroke(outline + s.shadow_spread);
+	} else if (outline > 0) {
+		// Behind the fill, so it grows the letters outwards and never eats
+		// into them.
+		set_colour(cr, s.outline_colour);
+		stroke(outline);
 	}
 	if (!silhouette)
 		set_colour(cr, s.colour);
@@ -417,7 +419,10 @@ Raster rasterise(PangoLayout *layout, const Document &doc, RasterParams params)
 	// packed edge to edge (it always can for ARGB32), so there's no second
 	// full-size copy; otherwise into a surface of its own and copied.
 	// Cairo's ARGB32 is premultiplied BGRA in memory on little-endian
-	// machines: what OBS's GS_BGRA textures take.
+	// machines: what OBS's GS_BGRA textures take. Cairo's objects are owned
+	// here, so an exception (an allocation in the blur) can't leak them.
+	using Surface = std::unique_ptr<cairo_surface_t, decltype(&cairo_surface_destroy)>;
+	using Context = std::unique_ptr<cairo_t, decltype(&cairo_destroy)>;
 	auto fail = [&out] {
 		out.width = out.height = 0;
 		out.pixels = std::vector<uint8_t>();
@@ -431,71 +436,85 @@ Raster rasterise(PangoLayout *layout, const Document &doc, RasterParams params)
 	} catch (const std::bad_alloc &) {
 		return fail();
 	}
-	cairo_surface_t *surface = direct ? cairo_image_surface_create_for_data(out.pixels.data(), CAIRO_FORMAT_ARGB32,
-										out.width, out.height, packed)
-					  : cairo_image_surface_create(CAIRO_FORMAT_ARGB32, out.width, out.height);
-	if (cairo_surface_status(surface) != CAIRO_STATUS_SUCCESS) {
-		cairo_surface_destroy(surface);
-		return fail();
-	}
-	cairo_t *cr = cairo_create(surface);
-	cairo_translate(cr, params.ox - out.x0, params.oy - out.y0);
-	cairo_scale(cr, params.sx, params.sy);
-
-	if (s.plate) {
-		rounded_rect(cr, f.plate, s.plate_radius);
-		set_colour(cr, s.plate_colour);
-		cairo_fill(cr);
-	}
-
-	if (s.shadow) {
-		cairo_surface_t *mask = cairo_image_surface_create(CAIRO_FORMAT_A8, out.width, out.height);
-		if (cairo_surface_status(mask) != CAIRO_STATUS_SUCCESS) {
-			// No shadow is a wrong drawing, not a lesser one: not kept.
-			cairo_surface_destroy(mask);
-			cairo_destroy(cr);
-			cairo_surface_destroy(surface);
+	{
+		Surface surface(direct ? cairo_image_surface_create_for_data(out.pixels.data(), CAIRO_FORMAT_ARGB32,
+									    out.width, out.height, packed)
+				       : cairo_image_surface_create(CAIRO_FORMAT_ARGB32, out.width, out.height),
+				cairo_surface_destroy);
+		if (cairo_surface_status(surface.get()) != CAIRO_STATUS_SUCCESS)
 			return fail();
+		Context cr(cairo_create(surface.get()), cairo_destroy);
+		cairo_translate(cr.get(), params.ox - out.x0, params.oy - out.y0);
+		cairo_scale(cr.get(), params.sx, params.sy);
+
+		if (s.plate) {
+			rounded_rect(cr.get(), f.plate, s.plate_radius);
+			set_colour(cr.get(), s.plate_colour);
+			cairo_fill(cr.get());
 		}
-		cairo_t *mcr = cairo_create(mask);
-		cairo_translate(mcr, params.ox - out.x0, params.oy - out.y0);
-		cairo_scale(mcr, params.sx, params.sy);
-		cairo_translate(mcr, s.shadow_x, s.shadow_y);
-		cairo_set_source_rgba(mcr, 0, 0, 0, 1);
-		draw_text(mcr, layout, s, f, true);
-		cairo_destroy(mcr);
-		cairo_surface_flush(mask);
-		// The blur's size is in source units, like everything else;
-		// half of it is the Gaussian's standard deviation.
-		const double sigma = std::max(0.0, s.shadow_blur) * 0.5;
-		box_blur(cairo_image_surface_get_data(mask), out.width, out.height, cairo_image_surface_get_stride(mask),
-			 sigma * params.sx, sigma * params.sy);
-		cairo_surface_mark_dirty(mask);
 
-		cairo_save(cr);
-		cairo_identity_matrix(cr);
-		set_colour(cr, s.shadow_colour);
-		cairo_mask_surface(cr, mask, 0, 0);
-		cairo_restore(cr);
-		cairo_surface_destroy(mask);
-	}
+		if (s.shadow) {
+			// No shadow is a wrong drawing, not a lesser one: a failure
+			// here fails the whole drawing, to be tried again.
+			Surface mask(cairo_image_surface_create(CAIRO_FORMAT_A8, out.width, out.height),
+				     cairo_surface_destroy);
+			if (cairo_surface_status(mask.get()) != CAIRO_STATUS_SUCCESS)
+				return fail();
+			{
+				Context mcr(cairo_create(mask.get()), cairo_destroy);
+				cairo_translate(mcr.get(), params.ox - out.x0, params.oy - out.y0);
+				cairo_scale(mcr.get(), params.sx, params.sy);
+				cairo_translate(mcr.get(), s.shadow_x, s.shadow_y);
+				cairo_set_source_rgba(mcr.get(), 0, 0, 0, 1);
+				draw_text(mcr.get(), layout, s, f, true);
+				if (cairo_status(mcr.get()) != CAIRO_STATUS_SUCCESS)
+					return fail();
+			}
+			cairo_surface_flush(mask.get());
+			// The blur's size is in source units, like everything else;
+			// half of it is the Gaussian's standard deviation.
+			const double sigma = std::max(0.0, s.shadow_blur) * 0.5;
+			box_blur(cairo_image_surface_get_data(mask.get()), out.width, out.height,
+				 cairo_image_surface_get_stride(mask.get()), sigma * params.sx, sigma * params.sy);
+			cairo_surface_mark_dirty(mask.get());
 
-	draw_text(cr, layout, s, f, false);
-	const bool drawn = cairo_status(cr) == CAIRO_STATUS_SUCCESS;
-	cairo_destroy(cr);
-	cairo_surface_flush(surface);
-	if (!drawn) {
-		cairo_surface_destroy(surface);
-		return fail();
-	}
-	if (!direct) {
-		const int stride = cairo_image_surface_get_stride(surface);
-		const uint8_t *data = cairo_image_surface_get_data(surface);
-		for (int y = 0; y < out.height; y++)
-			memcpy(&out.pixels[size_t(y) * size_t(packed)], data + size_t(y) * stride, size_t(packed));
-	}
-	cairo_surface_destroy(surface);
+			cairo_save(cr.get());
+			cairo_identity_matrix(cr.get());
+			set_colour(cr.get(), s.shadow_colour);
+			cairo_mask_surface(cr.get(), mask.get(), 0, 0);
+			cairo_restore(cr.get());
+		}
+
+		draw_text(cr.get(), layout, s, f, false);
+		if (cairo_status(cr.get()) != CAIRO_STATUS_SUCCESS)
+			return fail();
+		cr.reset();
+		cairo_surface_flush(surface.get());
+		if (!direct) {
+			const int stride = cairo_image_surface_get_stride(surface.get());
+			const uint8_t *data = cairo_image_surface_get_data(surface.get());
+			for (int y = 0; y < out.height; y++)
+				memcpy(&out.pixels[size_t(y) * size_t(packed)], data + size_t(y) * stride, size_t(packed));
+		}
+	} // the surface (which may use out.pixels) goes before out is returned
 	return out;
+}
+
+size_t backspace_index(PangoLayout *layout, size_t index)
+{
+	const char *text = pango_layout_get_text(layout);
+	const size_t size = strlen(text);
+	index = std::min(index, size);
+	const long i = g_utf8_pointer_to_offset(text, text + index);
+	if (i <= 0)
+		return 0;
+	int n = 0;
+	const PangoLogAttr *attrs = pango_layout_get_log_attrs_readonly(layout, &n);
+	long j = i - 1;
+	if (!(i < n && attrs[i].backspace_deletes_character))
+		while (j > 0 && !attrs[j].is_cursor_position)
+			j--;
+	return size_t(g_utf8_offset_to_pointer(text, j) - text);
 }
 
 bool font_installed(PangoContext *context, const std::string &family, std::string *used)
