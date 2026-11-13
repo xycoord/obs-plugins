@@ -17,6 +17,9 @@ namespace {
 constexpr uint32_t accent_edge = 0x0A1830D0;
 constexpr uint32_t selection_keyline = 0xFFFFFFC0;
 constexpr uint32_t veil = 0x00000040; // over the rest of the canvas while editing
+// Half the side of OBS's selection handles, in display pixels at a device
+// pixel ratio of 1, as OBS draws them.
+constexpr float handle_half = 4.0f;
 // The selection: the accent nearly opaque (the selected glyphs are drawn
 // again on it), or a wash of it where they can't be (a rotated source).
 uint32_t with_alpha(uint32_t rgba, uint32_t a)
@@ -105,21 +108,103 @@ void outline(std::vector<Quad> &out, const Quad &q, float w, float dash = 0)
 	}
 }
 
-// Grown outwards by d display pixels (for a quad whose corners go round
-// clockwise or anticlockwise; its centre is used).
-Quad grown(const Quad &q, float d)
+using Poly = std::vector<vec2>;
+
+// A convex region less a convex quad (either way round), as convex pieces:
+// each is the region outside one of the quad's edges and inside the edges
+// before it, so they never overlap and a translucent fill is even.
+std::vector<Poly> minus(const Poly &region, const Quad &q)
 {
-	vec2 c;
-	vec2_set(&c, (q.p[0].x + q.p[2].x) / 2, (q.p[0].y + q.p[2].y) / 2);
-	Quad out;
+	float area = 0;
 	for (int i = 0; i < 4; i++) {
-		vec2 v;
-		vec2_sub(&v, &q.p[i], &c);
-		const float len = std::max(vec2_len(&v), 1e-3f);
-		vec2_mulf(&v, &v, (len + d * 1.41421f) / len);
-		vec2_add(&out.p[i], &c, &v);
+		const vec2 &a = q.p[i], &b = q.p[(i + 1) % 4];
+		area += a.x * b.y - b.x * a.y;
 	}
-	return out;
+	if (std::fabs(area) < 1e-3f)
+		return {region};
+	const float sign = area > 0 ? 1.0f : -1.0f;
+	auto clip = [&](const Poly &poly, int i, bool inside) {
+		const vec2 &a = q.p[i], &b = q.p[(i + 1) % 4];
+		auto side = [&](const vec2 &p) {
+			const float v = sign * ((b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x));
+			return inside ? v : -v;
+		};
+		Poly out;
+		for (size_t k = 0; k < poly.size(); k++) {
+			const vec2 &p = poly[k], &n = poly[(k + 1) % poly.size()];
+			const float sp = side(p), sn = side(n);
+			if (sp >= 0)
+				out.push_back(p);
+			if ((sp >= 0) != (sn >= 0)) {
+				vec2 x;
+				const float t = sp / (sp - sn);
+				vec2_set(&x, p.x + (n.x - p.x) * t, p.y + (n.y - p.y) * t);
+				out.push_back(x);
+			}
+		}
+		return out;
+	};
+	std::vector<Poly> pieces;
+	for (int i = 0; i < 4; i++) {
+		Poly poly = clip(region, i, false);
+		for (int j = 0; j < i && poly.size() >= 3; j++)
+			poly = clip(poly, j, true);
+		if (poly.size() >= 3)
+			pieces.push_back(std::move(poly));
+	}
+	return pieces;
+}
+
+// The canvas less an item's box and OBS's handles on it, as quads to fill.
+// The edge is exactly OBS's outline (a rotated box too); the handles, which
+// straddle it, are left clear whole.
+std::vector<Quad> outside(const Quad &box, const Quad &canvas, float handle)
+{
+	std::vector<Quad> cuts{box};
+	vec2 u, v; // OBS draws its handles upright, the box rotated or not
+	vec2_set(&u, handle, 0);
+	vec2_set(&v, 0, handle);
+	for (int i = 0; i < 4; i++) {
+		const vec2 &a = box.p[i], &b = box.p[(i + 1) % 4];
+		vec2 mid;
+		vec2_set(&mid, (a.x + b.x) / 2, (a.y + b.y) / 2);
+		for (const vec2 &c : {a, mid}) {
+			Quad sq;
+			vec2_set(&sq.p[0], c.x - u.x - v.x, c.y - u.y - v.y);
+			vec2_set(&sq.p[1], c.x + u.x - v.x, c.y + u.y - v.y);
+			vec2_set(&sq.p[2], c.x + u.x + v.x, c.y + u.y + v.y);
+			vec2_set(&sq.p[3], c.x - u.x + v.x, c.y - u.y + v.y);
+			cuts.push_back(sq);
+		}
+	}
+	auto bounds_meet = [](const Poly &p, const Quad &q) {
+		float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f, qx0 = 1e9f, qy0 = 1e9f, qx1 = -1e9f, qy1 = -1e9f;
+		for (const vec2 &c : p) {
+			x0 = std::min(x0, c.x), y0 = std::min(y0, c.y), x1 = std::max(x1, c.x), y1 = std::max(y1, c.y);
+		}
+		for (const vec2 &c : q.p) {
+			qx0 = std::min(qx0, c.x), qy0 = std::min(qy0, c.y), qx1 = std::max(qx1, c.x), qy1 = std::max(qy1, c.y);
+		}
+		return x0 < qx1 && qx0 < x1 && y0 < qy1 && qy0 < y1;
+	};
+	std::vector<Poly> pieces{Poly(canvas.p, canvas.p + 4)};
+	for (const Quad &cut : cuts) {
+		std::vector<Poly> next;
+		for (const Poly &p : pieces) {
+			if (!bounds_meet(p, cut)) {
+				next.push_back(p);
+				continue;
+			}
+			for (Poly &r : minus(p, cut))
+				next.push_back(std::move(r));
+		}
+		pieces = std::move(next);
+	}
+	std::vector<Quad> quads;
+	for (const Poly &poly : pieces)
+		for (size_t k = 1; k + 1 < poly.size(); k++) // a fan of triangles
+			quads.push_back({{poly[0], poly[k], poly[k + 1], poly[k + 1]}});
+	return quads;
 }
 
 // From an item's source units to display pixels.
@@ -316,29 +401,16 @@ void OverlayPainter::paint(const Overlay &o, uint32_t, uint32_t cy)
 	if (o.editing && o.target) {
 		const Projector to_display(o.target, map);
 		// No frame of its own: OBS's selection box is the text's one outline
-		// (the text stays selected while it's edited). The veil leaves a
-		// margin round it clear.
-		const Quad frame = grown(to_display.box(o.box), 8 * px);
-		float top = 1e9f, left = 1e9f, bottom = -1e9f, right = -1e9f;
-		for (const vec2 &p : frame.p) {
-			top = std::min(top, p.y);
-			left = std::min(left, p.x);
-			bottom = std::max(bottom, p.y);
-			right = std::max(right, p.x);
-		}
-
-		// The rest of the canvas a little dimmer while editing (OBS's
-		// guides with it), so it's plain which text has the keyboard.
+		// (the text stays selected while it's edited). The rest of the canvas
+		// goes a little dimmer (OBS's guides with it), so it's plain which
+		// text has the keyboard; the edge of the dimming is OBS's outline.
 		{
 			obs_video_info ovi = {};
 			obs_get_video_info(&ovi);
-			const float cx0 = float(map.x), cy0 = float(map.y);
-			const float cx1 = float(map.x + ovi.base_width * map.scale), cy1 = float(map.y + ovi.base_height * map.scale);
-			const float t = std::clamp(top, cy0, cy1), b = std::clamp(bottom, cy0, cy1);
-			const float l = std::clamp(left, cx0, cx1), r = std::clamp(right, cx0, cx1);
-			fill({rect(cx0, cy0, cx1, t), rect(cx0, b, cx1, cy1), rect(cx0, t, l, b), rect(r, t, cx1, b)}, veil);
+			const Quad canvas = rect(float(map.x), float(map.y), float(map.x + ovi.base_width * map.scale),
+						 float(map.y + ovi.base_height * map.scale));
+			fill(outside(to_display.box(o.box), canvas, handle_half * float(map.dpr)), veil);
 		}
-
 
 		// The selection: a solid highlight with the selected text drawn
 		// again on top, clipped to it, so it keeps its own colours. A
