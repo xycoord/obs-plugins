@@ -964,8 +964,10 @@ void PreviewEditor::pick_colour()
 	// can even be closing, with this editor gone, when it returns.
 	QPointer<PreviewEditor> self(this);
 	const uint64_t serial = edit_serial_;
+	// Qt's own dialog, never the desktop's, as OBS's colour settings show it
+	// on Linux (where OBS turns native dialogs off).
 	const QColor picked = QColorDialog::getColor(initial, preview_, obs_module_text("TextColour"),
-						     QColorDialog::ShowAlphaChannel);
+						     QColorDialog::ShowAlphaChannel | QColorDialog::DontUseNativeDialog);
 	if (!self)
 		return;
 	if (preview_)
