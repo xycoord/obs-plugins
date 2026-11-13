@@ -8,7 +8,9 @@ output frames of typical jobs. Same scenes, same steps, every time.
 Needs what test_typeset.py needs. Writes:
 
   props-1-new.png        the properties dialog of a source just added
+  props-1-new-more.png   the same, scrolled to the bottom
   props-2-lower-third.png  the dialog of one set up as a lower third
+  props-2-lower-third-more.png  the same, scrolled to the bottom
   edit-1-start.png       the preview just after double-clicking a word
   edit-2-caret.png       the caret part-way through the text
   edit-3-selection.png   a selection over two lines
@@ -28,19 +30,20 @@ from obs_session import CANVAS, ObsSession  # noqa: E402
 
 LOCATOR = (12, 200, 90)
 
-# Settings per scenario. Keys a version doesn't know are ignored by it, so
-# the scenarios stay the same as features are added.
+# Settings per scenario: each job set up with what the source offers for it.
+# Keys a version doesn't know are ignored by it.
 NEW = {}
 TITLE = {"text": "The Grove\nLive tonight", "font": {"face": "Inter", "style": "Bold", "size": 140, "flags": 0},
          "align": 1}
-LOWER_THIRD = {"text": "Ada Lovelace\nAnalytical Engines", "font": {"face": "Inter", "style": "SemiBold", "size": 64,
-               "flags": 0}, "colour": 0xFFFFFFFF, "line_spacing": 1.1,
-               # features a later version may have
-               "background": True, "background_colour": 0xD0201010, "padding": 24, "shadow": True}
+LOWER_THIRD = {"text": "Ada Lovelace\nAnalytical Engines",
+               "font": {"face": "Inter", "style": "SemiBold", "size": 64, "flags": 0}, "colour": 0xFFFFFFFF,
+               "typography": True, "line_spacing": 1.1,
+               "plate": True, "plate_colour": 0xD8281410, "plate_padding": 28, "plate_radius": 6}
 SET_TIMES = {"text": "19:30  Doors\n20:15  Support\n21:30  Headliner",
-             "font": {"face": "DejaVu Sans Mono", "style": "Book", "size": 48, "flags": 0}, "colour": 0xFFE0F0FF}
+             "font": {"face": "Inter", "style": "Medium", "size": 48, "flags": 0}, "colour": 0xFFE0F0FF,
+             "typography": True, "tabular": True}
 MESSAGE = {"text": "Bar closes in 10 minutes", "font": {"face": "DejaVu Serif", "style": "Italic", "size": 56,
-           "flags": 0}, "colour": 0xFFFFD060, "outline": True, "outline_size": 3}
+           "flags": 0}, "colour": 0xFFFFD060, "outline": True, "outline_width": 3}
 
 
 def busy_background(path):
@@ -80,8 +83,8 @@ def collection(backdrop):
                                       "width": CANVAS[0], "height": CANVAS[1]}}]}
 
 
-def window_shot(obs, title_pattern, path):
-    """A screenshot of one window, found by its title."""
+def find_window(obs, title_pattern):
+    """A window, found by its title, placed and sized the same every time."""
     for _ in range(40):
         ids = obs.xdo("search", "--onlyvisible", "--name", title_pattern, check=False).split()
         if ids:
@@ -90,12 +93,9 @@ def window_shot(obs, title_pattern, path):
     else:
         raise RuntimeError("no window like %r" % title_pattern)
     wid = ids[-1]
-    obs.xdo("windowsize", wid, "900", "960")
-    obs.xdo("windowmove", wid, "300", "20")
+    obs.xdo("windowsize", wid, "900", "990")
+    obs.xdo("windowmove", wid, "300", "5")
     time.sleep(1.5)
-    out = subprocess.run(["import", "-window", wid, path], env=obs.env, capture_output=True)
-    if out.returncode:
-        raise RuntimeError(out.stderr.decode())
     return wid
 
 
@@ -137,9 +137,23 @@ def main():
         time.sleep(0.5)
 
         # The properties dialogs.
-        for name, file in (("New text", "props-1-new.png"), ("Lower third", "props-2-lower-third.png")):
+        # Each in two parts: the top, and scrolled to the bottom (with the
+        # pointer over the labels, where the wheel can't change a value).
+        for name, file in (("New text", "props-1-new"), ("Lower third", "props-2-lower-third")):
             obs.request("OpenInputPropertiesDialog", inputName=name)
-            wid = window_shot(obs, "Properties for '%s'" % name, os.path.join(out, file))
+            wid = find_window(obs, "Properties for '%s'" % name)
+            geometry = obs.xdo("getwindowgeometry", wid)
+            x, y = [int(v) for v in geometry.split("Position: ")[1].split(" ")[0].split(",")]
+            # A smaller preview in the dialog (its splitter dragged up), so
+            # more of the settings show.
+            obs.drag(x + 450, y + 472, x + 450, y + 200)
+            time.sleep(0.5)
+            subprocess.run(["import", "-window", wid, os.path.join(out, file + ".png")], env=obs.env, check=True)
+            obs.xdo("mousemove", str(x + 30), str(y + 800))
+            for _ in range(40):
+                obs.xdo("click", "5")
+            time.sleep(0.5)
+            subprocess.run(["import", "-window", wid, os.path.join(out, file + "-more.png")], env=obs.env, check=True)
             obs.xdo("windowclose", wid, check=False)
             time.sleep(1)
 

@@ -5,7 +5,7 @@ find_package(libobs REQUIRED)
 find_package(obs-frontend-api REQUIRED)
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets)
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(PANGOCAIRO REQUIRED IMPORTED_TARGET pangocairo>=1.44)
+pkg_check_modules(PANGOCAIRO REQUIRED IMPORTED_TARGET pangocairo>=1.50)
 
 add_library(obs-typeset MODULE
 	src/plugin.cpp

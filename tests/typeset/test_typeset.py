@@ -44,8 +44,10 @@ def font(size, style="Book", face=FONT):
 
 
 def text_source(name, text, size, **settings):
+    # Plain text: no shadow (on by default), so scaled renders can be compared
+    # pixel for pixel.
     return {"id": "typeset_text", "versioned_id": "typeset_text", "name": name,
-            "settings": dict({"text": text, "font": font(size)}, **settings)}
+            "settings": dict({"text": text, "font": font(size), "shadow": False}, **settings)}
 
 
 def item(name, i, x, y, sx=1.0, sy=None):
@@ -159,12 +161,15 @@ def test_scaling(out):
 # --- 2. Editing in the preview -----------------------------------------------------------------
 
 def canvas_on_screen(screen):
-    """Where the canvas is drawn in the preview: the background's extent."""
+    """Where the canvas is drawn in the preview: the background's extent,
+    across, and its top. (With no window manager, a part of the screen OBS's
+    window no longer covers isn't repainted, so old pixels can linger below.)"""
     match = np.abs(screen.astype(int) - np.array(BG)).sum(axis=2) <= 3
-    rows = np.nonzero(match.sum(axis=1) > 50)[0]
-    cols = np.nonzero(match.sum(axis=0) > 50)[0]
-    x0, x1, y0, y1 = cols.min(), cols.max() + 1, rows.min(), rows.max() + 1
-    return x0, y0, (x1 - x0) / CANVAS[0], (y1 - y0) / CANVAS[1]
+    per_col, per_row = match.sum(axis=0), match.sum(axis=1)
+    cols = np.nonzero(per_col > per_col.max() / 2)[0]
+    rows = np.nonzero(per_row > per_row.max() / 2)[0]
+    scale = (cols.max() + 1 - cols.min()) / CANVAS[0]
+    return cols.min(), rows.min(), scale, scale
 
 
 def test_editing(out):
@@ -297,10 +302,104 @@ def test_editing(out):
         check(not warnings, "no warnings from obs-typeset", "; ".join(warnings))
 
 
+# --- 3. Features: text box, F2, hotkeys, Studio Mode ------------------------------------------
+
+def test_features(out):
+    print("-- text box, F2, hotkeys and Studio Mode")
+    sources = [text_source("Title", "Hello world", 160), text_source("Boxed", "Short", 60)]
+    items = [item("Title", 2, 200, 200), item("Boxed", 3, 200, 700)]
+    scene = collection(sources, items)
+    # A second scene, switched to by the key 1.
+    scene["scene_order"].append({"name": "Other scene"})
+    scene["sources"].append({"id": "scene", "versioned_id": "scene", "name": "Other scene",
+                             "settings": {"id_counter": 0, "items": []},
+                             "hotkeys": {"OBSBasic.SelectScene": [{"key": "OBS_KEY_1"}]}})
+    with ObsSession(scene) as obs:
+        time.sleep(1)
+        ids = {i["sourceName"]: i["sceneItemId"]
+               for i in obs.request("GetSceneItemList", sceneName="Scene")["sceneItems"]}
+
+        def size(name):
+            t = obs.request("GetSceneItemTransform", sceneName="Scene", sceneItemId=ids[name])["sceneItemTransform"]
+            return t["sourceWidth"], t["sourceHeight"]
+
+        # A text box: a fixed width the text wraps in, or shrinks to fit.
+        long_text = "A rather long band name that will not fit"
+        obs.request("SetInputSettings", inputName="Boxed", inputSettings={
+            "text": long_text, "box": True, "box_width": 400, "overflow": 0})
+        time.sleep(0.5)
+        w, h = size("Boxed")
+        check(w == 400 and h > 60 * 2.5, "a text box wraps at its width", "%dx%d" % (w, h))
+        obs.request("SetInputSettings", inputName="Boxed", inputSettings={"overflow": 1})
+        time.sleep(0.5)
+        w, h = size("Boxed")
+        check(w == 400 and h < 60 * 1.2, "shrink to fit keeps it to one line in the box", "%dx%d" % (w, h))
+        obs.request("SetInputSettings", inputName="Boxed", inputSettings={"text": "Short"})
+        time.sleep(0.5)
+        w2, _ = size("Boxed")
+        check(w2 == 400, "the box keeps its width when the text gets shorter", "%d" % w2)
+
+        x0, y0, sx, sy = canvas_on_screen(obs.screen())
+        to_screen = lambda cx, cy: (x0 + cx * sx, y0 + cy * sy)  # noqa: E731
+        tw, th = size("Title")
+        title = to_screen(200 + tw * 0.7, 200 + th / 2)
+
+        # F2 on the selected text edits all of it.
+        obs.click(*title)
+        obs.key("F2")
+        obs.type("Fresh")
+        check(obs.settings("Title")["text"] == "Fresh", "F2 edits the selected text, all of it selected",
+              repr(obs.settings("Title")["text"]))
+        save(out, "features-f2.png", obs.screen())
+
+        # Typing a key bound to an OBS hotkey types it, and doesn't switch scenes.
+        # Held down as long as a person holds a key, so OBS's own reading of
+        # the keyboard would see it.
+        obs.key("End")
+        obs.xdo("keydown", "1")
+        time.sleep(0.2)
+        obs.xdo("keyup", "1")
+        time.sleep(0.5)
+        current = obs.request("GetCurrentProgramScene")["currentProgramSceneName"]
+        check(current == "Scene" and obs.settings("Title")["text"] == "Fresh1",
+              "while editing, a hotkey's key is typed, not acted on",
+              "scene %r, text %r" % (current, obs.settings("Title")["text"]))
+        obs.key("Escape")
+        # ... which it would have been otherwise (or the check above proves nothing).
+        obs.click(*title)
+        obs.key("1")
+        time.sleep(0.5)
+        current = obs.request("GetCurrentProgramScene")["currentProgramSceneName"]
+        check(current == "Other scene", "(the same key switches scenes when not editing)", "scene %r" % current)
+
+        # Studio Mode: the preview shows a different scene from the output,
+        # and editing works on the one in the preview.
+        obs.request("SetStudioModeEnabled", studioModeEnabled=True)
+        time.sleep(1)
+        obs.request("SetCurrentPreviewScene", sceneName="Scene")
+        time.sleep(2)
+        x0, y0, sx, sy = canvas_on_screen(obs.screen())
+        to_screen = lambda cx, cy: (x0 + cx * sx, y0 + cy * sy)  # noqa: E731
+        tw, th = size("Title")
+        # The title is still selected from before: a double-click on
+        # selected text edits it too (OBS's first click selects what's
+        # below it).
+        obs.click(*to_screen(200 + tw * 0.5, 200 + th / 2), repeat=2)
+        obs.key("ctrl+a")
+        obs.type("Studio")
+        check(obs.settings("Title")["text"] == "Studio", "in Studio Mode, text in the preview's scene is edited",
+              repr(obs.settings("Title")["text"]))
+        save(out, "features-studio.png", obs.screen())
+        obs.key("Escape")
+
+        warnings = [line for line in obs.log().splitlines() if "[obs-typeset]" in line and "editing" not in line]
+        check(not warnings, "no warnings from obs-typeset", "; ".join(warnings))
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", help="keep the frames and screenshots in this folder")
-    parser.add_argument("tests", nargs="*", default=["scaling", "editing"])
+    parser.add_argument("tests", nargs="*", default=["scaling", "editing", "features"])
     args = parser.parse_args()
     if args.out:
         os.makedirs(args.out, exist_ok=True)
