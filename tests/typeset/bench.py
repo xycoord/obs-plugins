@@ -127,7 +127,6 @@ def run(kind, name, seconds=10.0):
         if kind != "none":
             items = obs.request("GetSceneItemList", sceneName="Scene")["sceneItems"]
             ids = {i["sourceName"]: i["sceneItemId"] for i in items if i["sourceName"] != "Back"}
-        drawn0 = obs.log().count("] drew ")
         stats0 = obs.request("GetStats")
         cpu0 = threads(pid)
         t0 = time.monotonic()
@@ -152,7 +151,6 @@ def run(kind, name, seconds=10.0):
         wall = time.monotonic() - t0
         cpu1 = threads(pid)
         stats1 = obs.request("GetStats")
-        drawn = obs.log().count("] drew ") - drawn0
         per_thread = {n: (cpu1.get(n, 0) - cpu0.get(n, 0)) / wall * 100 for n in cpu1}
         return {
             "cpu": sum(per_thread.values()),
@@ -161,7 +159,6 @@ def run(kind, name, seconds=10.0):
             "skipped": stats1["renderSkippedFrames"] - stats0["renderSkippedFrames"],
             "rss": rss_mb(pid),
             "rss_settled": rss0,
-            "drawings": drawn,
         }
 
 
@@ -323,10 +320,10 @@ def main():
             med = lambda key: statistics.median(r[key] for r in runs)  # noqa: E731
             results.setdefault(name, {})[kind] = {
                 "cpu": med("cpu"), "render_ms": med("render_ms"), "rss": med("rss"),
-                "skipped": med("skipped"), "drawings": med("drawings"), "threads": runs[-1]["threads"]}
+                "skipped": med("skipped"), "threads": runs[-1]["threads"]}
             r = results[name][kind]
-            print("%-10s %-13s cpu %6.1f%%  render %5.2f ms  rss %6.0f MB  skipped %d  drawings %d" % (
-                name, kind, r["cpu"], r["render_ms"], r["rss"], r["skipped"], r["drawings"]), flush=True)
+            print("%-10s %-13s cpu %6.1f%%  render %5.2f ms  rss %6.0f MB  skipped %d" % (
+                name, kind, r["cpu"], r["render_ms"], r["rss"], r["skipped"]), flush=True)
             print("           threads: " + ", ".join("%s %.1f%%" % (n, v) for n, v in
                                                     sorted(r["threads"].items(), key=lambda x: -x[1])), flush=True)
     if args.json:
