@@ -325,10 +325,12 @@ int main()
 		whole(small, 1.7, "and a small size scaled up");
 
 		// Otherwise it's drawn as Pango's own renderer draws it: colours,
-		// see-through runs, underlines, strikethrough, a second line. Letters
-		// spaced well apart, so that Cairo draws Pango's whole too.
+		// see-through runs, underlines, strikethrough, a second line, colour
+		// emoji (where there's a font for them; Cairo puts those on whole
+		// pixels). Letters spaced well apart, so that Cairo draws Pango's
+		// whole too.
 		{
-			Document d = text_doc("Live tonight\nDoors 19:30");
+			Document d = text_doc("Live tonight \xF0\x9F\x8E\xB8\nDoors 19:30");
 			d.style.size = 40;
 			d.style.letter_spacing = 60;
 			d.style.colour = 0xFF40C0F0;
@@ -336,7 +338,7 @@ int main()
 			red.has_colour = true;
 			red.colour = 0x800000FF;
 			red.underline = 1;
-			Span bold(13, 18);
+			Span bold(18, 23);
 			bold.bold = 1;
 			d.spans = {red, bold};
 			d.style.font_flags = OBS_FONT_STRIKEOUT;
@@ -367,7 +369,7 @@ int main()
 					worst = std::max(worst, std::abs(ad[y * stride + x] - bd[y * stride + x]));
 					inked += x % 4 == 3 && bd[y * stride + x] > 0;
 				}
-			check("drawn as Pango draws it (colours, see-through, underline, strikethrough, lines)",
+			check("drawn as Pango draws it (colours, see-through, underline, strikethrough, lines, emoji)",
 			      worst <= 1 && inked > 1000, "largest difference " + std::to_string(worst));
 			cairo_surface_destroy(a);
 			cairo_surface_destroy(b);

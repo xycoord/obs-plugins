@@ -500,6 +500,18 @@ static void rounded_rect(cairo_t *cr, const Box &b, double r)
 	cairo_close_path(cr);
 }
 
+// Whether a font has colour glyphs (emoji): layers, bitmaps, SVG or paint.
+static bool colour_font(PangoFont *font)
+{
+	hb_font_t *hb = font ? pango_font_get_hb_font(font) : nullptr;
+	hb_face_t *face = hb ? hb_font_get_face(hb) : nullptr;
+	return face && (hb_ot_color_has_layers(face) || hb_ot_color_has_png(face) || hb_ot_color_has_svg(face)
+#if HB_VERSION_ATLEAST(7, 0, 0)
+			|| hb_ot_color_has_paint(face)
+#endif
+		       );
+}
+
 // show_layout()'s renderer: Pango's own Cairo renderer's drawing (in
 // pangocairo-render.c), but with each glyph given to Cairo at the quarter
 // pixel Cairo draws it at (see quarter_pixel_glyphs). Pango works out the
@@ -561,16 +573,13 @@ static void render_glyphs(PangoRenderer *renderer, PangoFont *font, PangoGlyphSt
 		return;
 	}
 	cairo_set_scaled_font(cr, scaled);
+	// A colour font's glyphs Cairo draws one at a time, each at a whole
+	// pixel and with no mask: they're never cut, and are left where they are.
+	const bool snap = r->snap && !colour_font(font);
 
-	constexpr int on_stack = 256;
-	cairo_glyph_t stack[on_stack];
-	std::vector<cairo_glyph_t> heap;
-	cairo_glyph_t *out = stack;
-	if (glyphs->num_glyphs > on_stack) {
-		heap.resize(size_t(glyphs->num_glyphs));
-		out = heap.data();
-	}
-	int count = 0, advance = 0;
+	std::vector<cairo_glyph_t> out;
+	out.reserve(size_t(glyphs->num_glyphs));
+	int advance = 0;
 	for (int i = 0; i < glyphs->num_glyphs; i++) {
 		PangoGlyphInfo *gi = &glyphs->glyphs[i];
 		const int at = advance;
@@ -585,16 +594,16 @@ static void render_glyphs(PangoRenderer *renderer, PangoFont *font, PangoGlyphSt
 			pango_draws(&alone, 1, gx, gy);
 			continue;
 		}
-		if (r->snap) {
+		if (snap) {
 			// Rounded as Cairo rounds it: to the nearest quarter pixel.
 			cairo_user_to_device(cr, &gx, &gy);
 			gx = std::floor(gx * 4 + 0.5) / 4;
 			gy = std::floor(gy * 4 + 0.5) / 4;
 			cairo_device_to_user(cr, &gx, &gy);
 		}
-		out[count++] = {gi->glyph, gx, gy};
+		out.push_back({gi->glyph, gx, gy});
 	}
-	cairo_show_glyphs(cr, out, count);
+	cairo_show_glyphs(cr, out.data(), int(out.size()));
 	cairo_restore(cr);
 }
 
@@ -869,14 +878,7 @@ static bool has_colour_glyphs(PangoLayout *layout)
 		PangoLayoutRun *run = pango_layout_iter_get_run_readonly(it);
 		if (!run || !run->item || !run->item->analysis.font)
 			continue;
-		hb_font_t *font = pango_font_get_hb_font(run->item->analysis.font);
-		hb_face_t *face = font ? hb_font_get_face(font) : nullptr;
-		if (face && (hb_ot_color_has_layers(face) || hb_ot_color_has_png(face) || hb_ot_color_has_svg(face)
-#if HB_VERSION_ATLEAST(7, 0, 0)
-			     || hb_ot_color_has_paint(face)
-#endif
-			     ))
-			colour = true;
+		colour = colour_font(run->item->analysis.font);
 	} while (!colour && pango_layout_iter_next_run(it));
 	pango_layout_iter_free(it);
 	return colour;
