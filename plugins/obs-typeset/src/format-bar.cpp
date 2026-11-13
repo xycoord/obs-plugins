@@ -10,7 +10,10 @@
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QMenu>
+#include <QFrame>
 #include <QPainter>
+#include <QPainterPath>
+#include <QRegion>
 #include <QSpinBox>
 #include <QToolButton>
 
@@ -145,13 +148,13 @@ FormatBar::FormatBar(QWidget *parent, Actions actions)
 	// and giving a widget there a native window of its own would make Qt
 	// recreate the preview's, taking OBS's display with it.
 	setAttribute(Qt::WA_ShowWithoutActivating);
-	setAttribute(Qt::WA_StyledBackground);
-	setAutoFillBackground(true);
+	// Its own background is drawn (rounded, as OBS's controls are): see
+	// paintEvent().
 	setFocusPolicy(Qt::NoFocus);
 	setObjectName("typesetFormatBar");
 
 	auto *row = new QHBoxLayout(this);
-	row->setContentsMargins(4, 3, 4, 3);
+	row->setContentsMargins(5, 4, 5, 4);
 	row->setSpacing(2);
 
 	// The typeface: OBS's fonts, each shown in itself; type to find one.
@@ -159,6 +162,8 @@ FormatBar::FormatBar(QWidget *parent, Actions actions)
 	family_->setToolTip(tip("Bar.Typeface"));
 	family_->setFocusPolicy(Qt::ClickFocus);
 	family_->setMaximumWidth(200);
+	// Typed into, to find a font among hundreds (a plain list would take a
+	// space in a name as choosing what's found so far).
 	QObject::connect(family_, QOverload<int>::of(&QComboBox::activated), this, [this](int) {
 		if (!updating_ && actions_.family)
 			actions_.family(family_->currentFont().family().toStdString());
@@ -171,6 +176,11 @@ FormatBar::FormatBar(QWidget *parent, Actions actions)
 	weight_->setToolTip(tip("Bar.Weight", "Ctrl+B: Bold"));
 	weight_->setSizeAdjustPolicy(QComboBox::AdjustToContents);
 	weight_->setFocusPolicy(Qt::ClickFocus);
+	// The same shape as the typeface's (a field and its arrow), though only
+	// chosen from: a click anywhere on it opens the list.
+	weight_->setEditable(true);
+	weight_->lineEdit()->setReadOnly(true);
+	weight_->lineEdit()->installEventFilter(this);
 	QObject::connect(weight_, QOverload<int>::of(&QComboBox::activated), this, [this](int i) {
 		const int w = weight_->itemData(i).toInt();
 		if (!updating_ && w > 0 && actions_.weight)
@@ -230,13 +240,28 @@ FormatBar::FormatBar(QWidget *parent, Actions actions)
 	sub_ = button(tip("Bar.Subscript", "Ctrl+="), true);
 	sub_->setIcon(script_icon(this, false));
 	QObject::connect(sub_, &QToolButton::clicked, this, toggle(Toggle::Subscript));
-	row->addSpacing(6);
-
 	colour_ = button(tip("Bar.Colour"), false);
 	QObject::connect(colour_, &QToolButton::clicked, this, [this] {
 		if (actions_.colour)
 			actions_.colour();
 	});
+	clear_ = button(tip("Bar.Clear", "Ctrl+Space"), false);
+	clear_->setIcon(clear_icon(this));
+	QObject::connect(clear_, &QToolButton::clicked, this, [this] {
+		if (actions_.clear)
+			actions_.clear();
+	});
+
+	// Everything before acts on the selection (or what's typed next);
+	// alignment, after a line, on the whole text.
+	auto *line = new QFrame(this);
+	line->setFrameShape(QFrame::VLine);
+	line->setFrameShadow(QFrame::Plain);
+	line->setFixedWidth(1);
+	line->setStyleSheet("color: palette(mid);");
+	row->addSpacing(4);
+	row->addWidget(line);
+	row->addSpacing(4);
 	align_ = button(tip("Bar.Align"), false);
 	align_->setPopupMode(QToolButton::InstantPopup);
 	auto *menu = new QMenu(align_);
@@ -249,17 +274,11 @@ FormatBar::FormatBar(QWidget *parent, Actions actions)
 		});
 	}
 	align_->setMenu(menu);
-	clear_ = button(tip("Bar.Clear", "Ctrl+Space"), false);
-	clear_->setIcon(clear_icon(this));
-	QObject::connect(clear_, &QToolButton::clicked, this, [this] {
-		if (actions_.clear)
-			actions_.clear();
-	});
 
 	// A style that's on shows in the theme's highlight, as plainly as a
 	// pressed button in OBS's own toolbars.
-	setStyleSheet("QToolButton:checked { background: palette(highlight); color: palette(highlighted-text); "
-		      "border-radius: 3px; }");
+	// (Only the colour: the shape is the theme's own, as on its buttons.)
+	setStyleSheet("QToolButton:checked { background: palette(highlight); color: palette(highlighted-text); }");
 
 	// Keys typed into the size field or the weight list are theirs, not
 	// OBS's shortcuts (Delete would remove the source).
@@ -267,6 +286,28 @@ FormatBar::FormatBar(QWidget *parent, Actions actions)
 		w->installEventFilter(this);
 	set_state(state_);
 	hide();
+}
+
+// The bar's own shape: a rounded panel in the theme's window colour with a
+// hairline edge, its corners as round as OBS's controls'. Cut to that shape
+// with a mask (no compositor is needed for it).
+constexpr int bar_radius = 6;
+
+void FormatBar::paintEvent(QPaintEvent *)
+{
+	QPainter p(this);
+	p.setRenderHint(QPainter::Antialiasing);
+	p.setPen(QPen(palette().color(QPalette::Mid), 1));
+	p.setBrush(palette().color(QPalette::Window));
+	p.drawRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5), bar_radius, bar_radius);
+}
+
+void FormatBar::resizeEvent(QResizeEvent *event)
+{
+	QPainterPath path;
+	path.addRoundedRect(QRectF(rect()), bar_radius, bar_radius);
+	setMask(QRegion(path.toFillPolygon().toPolygon()));
+	QWidget::resizeEvent(event);
 }
 
 void FormatBar::set_state(const State &s)
@@ -284,13 +325,20 @@ void FormatBar::set_state(const State &s)
 	}
 	weight_->clear();
 	std::vector<int> weights = s.weights;
-	if (s.weight > 0 && std::find(weights.begin(), weights.end(), s.weight) == weights.end())
-		weights.push_back(s.weight); // what the text has, even if the font doesn't (synthesised)
+	// What the text has, as the list's nearest weight within a step (fonts
+	// put their Book at 380, their Regular at 400: one weight to a reader),
+	// or as itself if the font has nothing near (a synthesised weight).
+	int shown = s.weight;
+	for (int w : weights)
+		if (shown > 0 && std::abs(w - shown) <= 50)
+			shown = w;
+	if (shown > 0 && std::find(weights.begin(), weights.end(), shown) == weights.end())
+		weights.push_back(shown);
 	std::sort(weights.begin(), weights.end());
 	for (int w : weights)
 		weight_->addItem(weight_label(w), w);
-	if (s.weight > 0) {
-		weight_->setCurrentIndex(weight_->findData(s.weight));
+	if (shown > 0) {
+		weight_->setCurrentIndex(weight_->findData(shown));
 	} else {
 		weight_->addItem(QString(), 0); // mixed: shown blank
 		weight_->setCurrentIndex(weight_->count() - 1);
@@ -342,8 +390,17 @@ void FormatBar::log_geometry() const
 	blog(LOG_INFO, "[obs-typeset] bar %s", line.toUtf8().constData());
 }
 
-bool FormatBar::eventFilter(QObject *, QEvent *event)
+bool FormatBar::eventFilter(QObject *obj, QEvent *event)
 {
+	// (Opened on the release: opened on the press, the release would land on
+	// the list and choose what's under the pointer.)
+	if (obj == weight_->lineEdit() &&
+	    (event->type() == QEvent::MouseButtonPress || event->type() == QEvent::MouseButtonDblClick))
+		return true;
+	if (obj == weight_->lineEdit() && event->type() == QEvent::MouseButtonRelease) {
+		weight_->showPopup();
+		return true;
+	}
 	if (event->type() == QEvent::ShortcutOverride) {
 		event->accept();
 		return false; // and the key goes to the field

@@ -736,7 +736,8 @@ std::vector<Box> TextSource::selection_boxes(size_t from, size_t to) const
 		PangoLayoutLine *line = pango_layout_iter_get_line_readonly(iter);
 		const size_t start = size_t(line->start_index), end = start + size_t(line->length);
 		// A line's end counts as selected when the selection runs on past
-		// it (over the line break): shown as a narrow mark after the line.
+		// it (over the line break): the line's highlight runs on a little
+		// past its last letter, as in word processors.
 		const bool through_end = to > end && from <= end;
 		if (to < start || from > end || (from == end && !through_end))
 			continue;
@@ -758,8 +759,19 @@ std::vector<Box> TextSource::selection_boxes(size_t from, size_t to) const
 			add(x0, y, x1, h);
 		}
 		g_free(ranges);
-		if (through_end)
-			add(line_x1, y, line_x1 + doc_.style.size * 0.12, h);
+		if (through_end) {
+			const double mark = doc_.style.size * 0.25;
+			// The piece that reaches the line's end grows; with none (the
+			// selection starts at the line's very end), a piece of its own.
+			Box *last = nullptr;
+			for (Box &bx : boxes)
+				if (std::fabs(bx.x + bx.w - to_source_x(line_x1)) < 1e-6 && std::fabs(bx.y - to_source_y(y)) < 1e-6)
+					last = &bx;
+			if (last)
+				last->w += mark * s;
+			else
+				add(line_x1, y, line_x1 + mark, h);
+		}
 	} while (pango_layout_iter_next_line(iter));
 	pango_layout_iter_free(iter);
 	return boxes;
