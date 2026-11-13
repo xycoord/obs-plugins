@@ -22,6 +22,7 @@
 #include <QMouseEvent>
 #include <QPlatformSurfaceEvent>
 #include <QPointer>
+#include <QScreen>
 #include <QTimer>
 #include <QWidget>
 #include <QWindow>
@@ -236,6 +237,7 @@ private:
 	void place_bar();
 	QRect frame_rect();
 	void pick_colour();
+	void place_beside_text(QWidget *window);
 	bool on_grip(QPointF widget_pos);
 	void input_method(QInputMethodEvent *event);
 	QVariant input_method_query(Qt::InputMethodQuery query);
@@ -965,10 +967,16 @@ void PreviewEditor::pick_colour()
 	QPointer<PreviewEditor> self(this);
 	const uint64_t serial = edit_serial_;
 	// Qt's own dialog, never the desktop's, as OBS's colour settings show it
-	// on Linux (where OBS turns native dialogs off).
-	const QColor picked = QColorDialog::getColor(initial, preview_, obs_module_text("TextColour"),
-						     QColorDialog::ShowAlphaChannel | QColorDialog::DontUseNativeDialog);
-	if (!self)
+	// on Linux (where OBS turns native dialogs off). (On the heap, owned by
+	// the preview: if the preview goes while it's open, so does it.)
+	QPointer<QColorDialog> dialog = new QColorDialog(initial, preview_);
+	dialog->setWindowTitle(QString::fromUtf8(obs_module_text("TextColour")));
+	dialog->setOptions(QColorDialog::ShowAlphaChannel | QColorDialog::DontUseNativeDialog);
+	place_beside_text(dialog);
+	const bool chosen = dialog->exec() == QDialog::Accepted;
+	const QColor picked = dialog ? dialog->selectedColor() : QColor();
+	delete dialog.data();
+	if (!self || !chosen)
 		return;
 	if (preview_)
 		preview_->setFocus(Qt::OtherFocusReason);
@@ -981,6 +989,33 @@ void PreviewEditor::pick_colour()
 		   uint32_t(picked.alpha()) << 24;
 	style(c, false);
 	refresh_overlay();
+}
+
+// A window opened for the text (the colour dialog) put beside it, where it
+// doesn't cover the text or the bar: to their right if the screen has room,
+// else their left, level with the bar; failing both, under them, by the
+// colour button.
+// Always on the screen.
+void PreviewEditor::place_beside_text(QWidget *window)
+{
+	window->adjustSize();
+	const QSize size = window->frameGeometry().size().expandedTo(window->sizeHint());
+	const QRect text = frame_rect().translated(preview_->mapToGlobal(QPoint(0, 0)));
+	const QRect bar = bar_ && bar_->isVisible() ? bar_->frameGeometry() : QRect(text.topLeft(), QSize(0, 0));
+	QScreen *screen = preview_->screen();
+	const QRect area = screen ? screen->availableGeometry() : QRect(0, 0, 1 << 15, 1 << 15);
+	constexpr int gap = 12;
+	const QRect both = text.united(bar); // clear of the text and the bar (often wider)
+	QPoint at;
+	if (both.right() + gap + size.width() <= area.right())
+		at = QPoint(both.right() + gap, both.top());
+	else if (both.left() - gap - size.width() >= area.left())
+		at = QPoint(both.left() - gap - size.width(), both.top());
+	else // under the text and the bar, by the colour button (a list opened from it)
+		at = QPoint(bar_ && bar_->isVisible() ? bar_->colour_button().left() : bar.left(), both.bottom() + gap);
+	at.setX(std::clamp(at.x(), area.left(), std::max(area.left(), area.right() - size.width())));
+	at.setY(std::clamp(at.y(), area.top(), std::max(area.top(), area.bottom() - size.height())));
+	window->move(at);
 }
 
 // Whether a point is on the text box's width grip (a little generous: it's

@@ -68,6 +68,7 @@ public:
 	FormatBar(QWidget *parent, Actions actions);
 	void set_state(const State &state);
 	void set_accent(const QColor &accent); // a button that's on, in the theme's own colour
+	QRect colour_button() const;           // on the screen, for the colour dialog to open by
 	// Where it goes, on the screen: its bottom-left corner just above (x, y)
 	// (or its top just below below_y, if there's no room above), kept within
 	// the preview's rectangle.

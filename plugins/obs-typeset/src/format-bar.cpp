@@ -543,6 +543,11 @@ void FormatBar::set_accent(const QColor &accent)
 			      .arg(accent.name()));
 }
 
+QRect FormatBar::colour_button() const
+{
+	return QRect(colour_->mapToGlobal(QPoint(0, 0)), colour_->size());
+}
+
 void FormatBar::show_size()
 {
 	const State &s = state_;
