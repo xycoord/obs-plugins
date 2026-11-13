@@ -48,14 +48,15 @@ constexpr int preset_sizes[] = {16, 20, 24, 28, 32, 40, 48, 56, 64, 72, 96, 120,
 // An item's role: the text's own size (back to it), not a size of its own.
 constexpr int base_role = Qt::UserRole + 1;
 
-// A size typed: its number, whatever's round it ("140 px"); 0 if none.
+// A size typed: the first number in it, whatever's round it ("140 px"), a
+// decimal one ("12.5", "12,5") rounded to the nearest pixel; 0 if none.
 int typed_size(const QString &text)
 {
-	QString digits;
-	for (QChar c : text)
-		if (c.isDigit())
-			digits += c;
-	return std::clamp(digits.toInt(), 0, 4096);
+	const QRegularExpressionMatch m = QRegularExpression("(\\d+)(?:[.,](\\d+))?").match(text);
+	if (!m.hasMatch())
+		return 0;
+	const double v = (m.captured(1) + "." + (m.captured(2).isEmpty() ? "0" : m.captured(2))).toDouble();
+	return int(std::lround(std::clamp(v, 0.0, 4096.0)));
 }
 
 // Icons drawn in the theme's own text colour, so they suit any OBS theme.
