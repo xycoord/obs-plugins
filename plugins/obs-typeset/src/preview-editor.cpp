@@ -865,6 +865,12 @@ void PreviewEditor::make_bar()
 		c.field = StyleChange::Clear;
 		style(c, false);
 	});
+	// The text's own properties: editing carries on, and what's changed
+	// there shows here at once.
+	a.properties = [this] {
+		if (editing())
+			obs_frontend_open_source_properties(source_);
+	};
 	a.back_to_text = [this] {
 		if (editing() && preview_) {
 			preview_->window()->activateWindow();

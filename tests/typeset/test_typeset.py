@@ -545,6 +545,15 @@ def test_rich(out):
         obs.key("Escape")  # the pop-up closed
         obs.key("ctrl+z", "ctrl+z")
 
+        # The bar's "..." opens the text's properties, editing carrying on.
+        obs.click(*bar_button(obs, "more"))
+        time.sleep(1.5)
+        found = obs.xdo("search", "--onlyvisible", "--name", "Properties", check=False).strip()
+        check(bool(found), "the bar's ... button opens the text's properties")
+        if found:
+            obs.xdo("windowclose", found.split()[0], check=False)  # Cancel: nothing was changed there
+            time.sleep(0.8)
+
         # The typeface list: type a name, Return.
         obs.click(*bar_button(obs, "typeface"))
         obs.key("ctrl+a")

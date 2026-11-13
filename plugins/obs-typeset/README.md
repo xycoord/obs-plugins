@@ -57,6 +57,8 @@ text, made of OBS's own controls in OBS's theme:
   lines** (the lines as even in length as they can be, so a title doesn't end in a short line) and
   **Avoid orphans** (no paragraph ends in one word alone). These two are in the text box's
   properties too.
+- At the end, **…** opens the text's properties, for everything else (the background, shadow,
+  outline, text box). Editing carries on, and what's changed there shows at once.
 
 A drag of a slider is one undo; a value typed in a field applies on Enter.
 

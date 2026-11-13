@@ -74,6 +74,7 @@ public:
 		std::function<void(double, bool)> line_spacing;
 		std::function<void(bool, bool)> wrap_options; // balance, avoid a lone last word
 		std::function<void()> back_to_text; // the keyboard back to the preview
+		std::function<void()> properties;   // the text's own properties dialog, all of its settings
 	};
 
 	FormatBar(QWidget *parent, Actions actions);
@@ -100,7 +101,7 @@ private:
 	QComboBox *weight_;
 	QComboBox *size_;
 	QToolButton *italic_, *underline_, *super_, *sub_, *colour_, *clear_;
-	QToolButton *tracking_, *paragraph_;
+	QToolButton *tracking_, *paragraph_, *more_;
 	// Spacing's pop-up (letters: the selection's; lines: the text's); the
 	// paragraph's (the whole text: alignment, wrapping).
 	QFrame *tracking_popup_, *paragraph_popup_;

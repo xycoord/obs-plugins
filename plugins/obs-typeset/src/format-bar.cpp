@@ -201,6 +201,17 @@ QIcon spacing_icon(QWidget *w)
 	});
 }
 
+// More: three dots, for all of the text's settings.
+QIcon more_icon(QWidget *w)
+{
+	return drawn_icon(w, [](QPainter &p, QColor c) {
+		p.setPen(Qt::NoPen);
+		p.setBrush(c);
+		for (int i = 0; i < 3; i++)
+			p.drawEllipse(QPointF(4.5 + i * 5.5, 10), 1.6, 1.6);
+	});
+}
+
 // Letter spacing: a V and an A, an arrow apart.
 QIcon tracking_icon(QWidget *w)
 {
@@ -392,6 +403,14 @@ FormatBar::FormatBar(QWidget *parent, Actions actions)
 	row->addSpacing((group_gap - gap) / 2);
 	paragraph_ = button(tip("Bar.Paragraph"), false);
 	QObject::connect(paragraph_, &QToolButton::clicked, this, [this] { show_popup(paragraph_popup_, paragraph_); });
+	// Everything else: the text's properties, a group's gap on.
+	row->addSpacing(group_gap);
+	more_ = button(tip("Bar.More"), false);
+	more_->setIcon(more_icon(this));
+	QObject::connect(more_, &QToolButton::clicked, this, [this] {
+		if (actions_.properties)
+			actions_.properties();
+	});
 	make_popups();
 
 	// A style that's on shows in the theme's accent, as plainly as a
@@ -407,7 +426,7 @@ FormatBar::FormatBar(QWidget *parent, Actions actions)
 		h = std::max(h, w->sizeHint().height());
 	for (QWidget *w : std::initializer_list<QWidget *>{family_, weight_, size_})
 		w->setFixedHeight(h);
-	for (QToolButton *b : {italic_, underline_, super_, sub_, tracking_, colour_, clear_, paragraph_})
+	for (QToolButton *b : {italic_, underline_, super_, sub_, tracking_, colour_, clear_, paragraph_, more_})
 		b->setFixedSize(h, h);
 	line->setFixedHeight(h - 2 * gap);
 	// The paragraph pop-up's alignment buttons as the bar's own.
@@ -751,10 +770,10 @@ void FormatBar::log_geometry() const
 		return QString("%1,%2").arg(g.x()).arg(g.y());
 	};
 	const QString line = QString("typeface=%1 weight=%2 size=%3 italic=%4 underline=%5 super=%6 sub=%7 "
-				     "colour=%8 paragraph=%9 clear=%10 tracking=%11")
+				     "colour=%8 paragraph=%9 clear=%10 tracking=%11 more=%12")
 				     .arg(c(family_), c(weight_), c(size_), c(italic_), c(underline_), c(super_), c(sub_),
 					  c(colour_), c(paragraph_), c(clear_))
-				     .arg(c(tracking_));
+				     .arg(c(tracking_), c(more_));
 	blog(LOG_INFO, "[obs-typeset] bar %s", line.toUtf8().constData());
 }
 
