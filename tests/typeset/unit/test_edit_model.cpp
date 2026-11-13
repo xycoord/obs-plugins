@@ -232,20 +232,15 @@ int main()
 		check("100 px on 96 px text", m.spans().size() == 1 && std::fabs(m.spans()[0].size * 96 / 100 - 100) < 1e-6);
 	}
 	{
-		// The strip's alignment and box width undo with the words.
+		// The strip's alignment undoes with the words.
 		EditModel m;
 		m.start("ab", {}, {0, 300});
 		m.set_caret(2, false);
 		type(m, "c");
 		m.set_align(1);
-		m.begin_box_drag();
-		m.set_box_width(320);
-		m.set_box_width(340);
-		check("the strip's changes are kept", m.layout() == EditModel::Layout{1, 340});
+		check("the strip's changes are kept", m.layout() == EditModel::Layout{1, 300});
 		m.undo();
-		check("one undo takes back a whole grip drag", m.layout() == EditModel::Layout{1, 300} && m.text() == "abc");
-		m.undo();
-		check("the next, the alignment", m.layout() == EditModel::Layout{0, 300} && m.text() == "abc");
+		check("one undo takes back the alignment", m.layout() == EditModel::Layout{0, 300} && m.text() == "abc");
 		m.undo();
 		check("then the typing", m.text() == "ab");
 	}

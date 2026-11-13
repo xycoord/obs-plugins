@@ -98,11 +98,9 @@ public:
 	bool set_line_spacing(double spacing, bool new_step);
 	bool set_wrap_options(bool balance, bool avoid_orphans);
 	bool toggle_script(int which);         // 1 superscript, 2 subscript: on, or off if it has it
-	// The alignment (one undo step), and the box's width (one undo step per
-	// drag of its grip: begin_box_drag() marks the start).
+	// The alignment: one undo step. (The box's width is set by OBS's side
+	// handles, outside the edit: see PreviewEditor.)
 	bool set_align(int align);
-	void begin_box_drag();
-	bool set_box_width(int width);
 	bool undo();
 	bool redo();
 

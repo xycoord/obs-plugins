@@ -373,7 +373,8 @@ obs_properties_t *source_properties(void *data)
 	obs_properties_t *style = obs_properties_create();
 	obs_properties_add_button2(style, "copy_style", obs_module_text("CopyStyle"), copy_style, text);
 	obs_properties_add_button2(style, "paste_style", obs_module_text("PasteStyle"), paste_style, text);
-	obs_properties_add_button2(style, "default_style", obs_module_text("DefaultStyle"), save_default, text);
+	p = obs_properties_add_button2(style, "default_style", obs_module_text("DefaultStyle"), save_default, text);
+	obs_property_set_long_description(p, obs_module_text("DefaultStyle.Help"));
 	p = obs_properties_add_group(props, "style", obs_module_text("Style"), OBS_GROUP_NORMAL, style);
 	obs_property_set_long_description(p, obs_module_text("Style.Help"));
 

@@ -1015,7 +1015,7 @@ QRect PreviewEditor::frame_rect()
 		x1 = std::max(x1, w.x());
 		y1 = std::max(y1, w.y());
 	}
-	const double grow = 8 / map.dpr; // the frame is drawn 8 display pixels out
+	const double grow = 8 / map.dpr; // the bar's clearance: 8 display pixels out from OBS's outline
 	return QRectF(QPointF(x0 - grow, y0 - grow), QPointF(x1 + grow, y1 + grow)).toAlignedRect();
 }
 

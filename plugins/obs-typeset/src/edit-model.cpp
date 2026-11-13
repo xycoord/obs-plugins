@@ -142,20 +142,6 @@ bool EditModel::set_align(int align)
 	return true;
 }
 
-void EditModel::begin_box_drag()
-{
-	push_undo();
-	last_edit_ = EditKind::Other;
-}
-
-bool EditModel::set_box_width(int width)
-{
-	if (width == layout_.box_width)
-		return false;
-	layout_.box_width = width;
-	return true;
-}
-
 bool EditModel::undo()
 {
 	if (undo_.empty())
