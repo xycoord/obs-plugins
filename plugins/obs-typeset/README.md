@@ -190,7 +190,8 @@ text scaled in a scene comes out identical to text at the matching font size; an
 and keyboard on OBS's window, that editing in the preview works, never shows in the output, isn't
 interrupted by OBS's shortcuts or hotkeys, and works in Studio Mode; that OBS's Undo and Redo take
 a whole edit back and forth; that hiding the text ends its edit at once; and the text box's sizes.
-`capture.py` there takes a fixed set of screenshots for reviewing the design. `unit/run.sh` tests the
+`capture.py` there takes a fixed set of screenshots for reviewing the design, and `demo.py` records a
+captioned video of it in use (moving and resizing, editing, the format bar, a text box, undo). `unit/run.sh` tests the
 styled runs, the editing model (typing, undo, bold on and off, size steps, pasting), where the canvas
 sits in the preview, and the reading of font style names, on their own, without OBS.
 
