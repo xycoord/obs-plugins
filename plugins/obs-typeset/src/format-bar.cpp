@@ -191,7 +191,6 @@ FormatBar::FormatBar(QWidget *parent, Actions actions)
 		if (actions_.back_to_text)
 			actions_.back_to_text();
 	});
-	row->addWidget(weight_);
 
 	auto *size = new SizeBox(this);
 	size_ = size;
@@ -213,6 +212,7 @@ FormatBar::FormatBar(QWidget *parent, Actions actions)
 		}
 	});
 	row->addWidget(size);
+	row->addWidget(weight_); // typeface, size, then weight
 	row->addSpacing(group_gap);
 
 	auto button = [&](const QString &tooltip, bool checkable) {
@@ -281,7 +281,10 @@ FormatBar::FormatBar(QWidget *parent, Actions actions)
 	// A style that's on shows in the theme's highlight, as plainly as a
 	// pressed button in OBS's own toolbars.
 	// (Only the colour: the shape is the theme's own, as on its buttons.)
-	setStyleSheet("QToolButton:checked { background: palette(highlight); color: palette(highlighted-text); }");
+	// (The theme gives lists and number fields a margin inside their own
+	// height, which would draw them shorter than the buttons beside them.)
+	setStyleSheet("QToolButton:checked { background: palette(highlight); color: palette(highlighted-text); }"
+		      "QComboBox, QAbstractSpinBox { margin-top: 0px; margin-bottom: 0px; }");
 
 	// Every control the same height (OBS's theme sizes each kind its own
 	// way), the buttons square at it, and the line a little shorter.

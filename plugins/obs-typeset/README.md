@@ -40,9 +40,8 @@ Part of the text can have a style of its own: a band's name in another typeface 
 another colour, the "st" of "21st" raised. While editing in the preview, a format bar sits above the
 text, made of OBS's own controls in OBS's theme:
 
-- **Typeface** and **Weight**: any font, and any of its weights (Thin to Black, as the font has them).
-- **Size**, in the text's own pixels: type a size, or step it with its arrows (a tenth of the size a
-  step).
+- **Typeface**, **Size** and **Weight**: any font, at any size in the text's own pixels (type it, or step
+  it with the arrows: a tenth of the size a step), in any of its weights (Thin to Black, as it has them).
 - **Italic**, **Underline**, **Superscript** and **Subscript** (the font's own superscript size and
   height), lit for what the selection has.
 - **Colour**, the whole text's **Alignment**, and **Clear formatting**, which puts the selection back
