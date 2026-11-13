@@ -91,6 +91,19 @@ int main()
 		check("toggling makes all of it bold", m.has(StyleChange::Bold, regular));
 	}
 	{
+		// Typing over a selected word keeps its style (as double-click, type).
+		Span it(4, 8);
+		it.italic = 1;
+		EditModel m;
+		m.start("The Barn", {it});
+		m.select(4, 8);
+		type(m, "Shed");
+		const Spans &s = m.spans();
+		check("typing over an italic word keeps it italic",
+		      m.text() == "The Shed" && s.size() == 1 && s[0].start == 4 && s[0].end == 8 && s[0].italic == 1,
+		      m.text() + " " + std::to_string(s.size()) + " runs");
+	}
+	{
 		// Size steps on a selection go from each part's own size.
 		EditModel m;
 		m.start("abcd", {});
