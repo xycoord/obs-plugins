@@ -23,6 +23,9 @@ add_library(obs-typeset MODULE
 target_link_libraries(obs-typeset PRIVATE OBS::libobs OBS::obs-frontend-api Qt6::Core Qt6::Gui Qt6::Widgets
 	PkgConfig::PANGOCAIRO)
 target_compile_options(obs-typeset PRIVATE -Wall -Wextra)
+# The drawing's pixel loops (the shadow's spread and blur) run several times
+# faster when the compiler does many pixels at once, which -O3 lets it.
+set_source_files_properties(src/text-engine.cpp PROPERTIES COMPILE_OPTIONS "$<$<NOT:$<CONFIG:Debug>>:-O3>")
 # A symbol missing from the module fails the build, not OBS at the moment it's first called.
 target_link_options(obs-typeset PRIVATE -Wl,--no-undefined)
 set_target_properties(obs-typeset PROPERTIES PREFIX "" CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON

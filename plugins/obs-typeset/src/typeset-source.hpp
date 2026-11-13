@@ -154,6 +154,8 @@ private:
 	struct View {
 		std::shared_ptr<RasterSlot> slot = std::make_shared<RasterSlot>();
 		gs_texture_t *texture = nullptr;
+		gs_vertbuffer_t *parts = nullptr; // the drawing's parts with ink, when not all of it
+		size_t part_vertices = 0;
 		Raster drawn; // the texture's geometry (its pixels aren't kept)
 		uint64_t texture_seq = 0;
 		bool want = false;
@@ -178,7 +180,10 @@ private:
 	void apply(Document doc);
 	void request(View &view, const RasterParams &params);
 	void upload_result(View &view);
-	void draw(View &view);
+	// at: how the source is drawn now, if known (axis-aligned): a drawing made
+	// for exactly that is copied pixel for pixel.
+	void draw(View &view, const RasterParams *at = nullptr);
+	gs_samplerstate_t *point_sampler_ = nullptr; // graphics thread
 	void release(View &view);
 	void retry_later(View &view, const char *why, uint64_t version);
 	void shown_now(const View &view, const Raster &r);

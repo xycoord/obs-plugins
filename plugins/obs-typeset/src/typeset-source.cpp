@@ -109,6 +109,8 @@ TextSource::~TextSource()
 	obs_enter_graphics();
 	for (View &v : views_)
 		release(v);
+	if (point_sampler_)
+		gs_samplerstate_destroy(point_sampler_);
 	obs_leave_graphics();
 }
 
@@ -304,6 +306,10 @@ void TextSource::release(View &view)
 	if (view.texture)
 		gs_texture_destroy(view.texture);
 	view.texture = nullptr;
+	if (view.parts)
+		gs_vertexbuffer_destroy(view.parts);
+	view.parts = nullptr;
+	view.part_vertices = 0;
 	view.requested = false;
 	// Nothing asked for so far is wanted now: a drawing waiting to be
 	// uploaded is dropped, and one still being drawn is dropped when it's
@@ -397,18 +403,19 @@ void TextSource::tick(float seconds)
 			v.last_wanted = v.wanted;
 			v.still = moved ? 0 : v.still + seconds;
 			if (!v.requested || version != v.requested_version || !v.wanted.close_to(v.requested_params)) {
-				// Moved but not scaled (dragged, or a move transition):
-				// the drawing slides, as any image does, smooth if a
-				// little soft between pixels; drawn again on the pixel
-				// grid once it's been still a moment. Chasing every
-				// fraction of a pixel would redraw it every frame of a
-				// move, each a frame late, sharp and soft by turns.
-				const bool only_moved = v.requested && version == v.requested_version &&
-							RasterParams{v.wanted.sx, v.wanted.sy, v.requested_params.ox,
-								     v.requested_params.oy}
-								.close_to(v.requested_params);
+				// Moving or zooming (dragged, a move transition, an
+				// animated scale): the drawing slides and stretches, as
+				// any image does, while it's near enough the size it was
+				// drawn for (a little soft, which motion hides), and is
+				// drawn again for exactly where and how big it is once
+				// it's been still a moment. Chasing every frame would draw
+				// it every frame, each a frame late, sharp and soft by
+				// turns. A changed text is drawn at once.
+				const double gx = v.wanted.sx / v.requested_params.sx, gy = v.wanted.sy / v.requested_params.sy;
+				const bool near = v.requested && version == v.requested_version && gx <= 1.03 &&
+						  gy <= 1.03 && gx >= 0.85 && gy >= 0.85;
 				constexpr double settle = 0.1; // seconds
-				if (!only_moved || v.still >= settle)
+				if (!near || v.still >= settle)
 					request(v, v.wanted);
 			}
 		} else if (i == 0) {
@@ -465,28 +472,88 @@ void TextSource::upload_result(View &view)
 		if (view.texture)
 			gs_texture_destroy(view.texture);
 		view.texture = nullptr;
+		if (view.parts)
+			gs_vertexbuffer_destroy(view.parts);
+		view.parts = nullptr;
+		view.part_vertices = 0;
 		view.failures = 0;
 		shown_now(view, r);
 		view.drawn = std::move(r);
 		return;
 	}
-	if (view.texture && int(gs_texture_get_width(view.texture)) == r.width &&
-	    int(gs_texture_get_height(view.texture)) == r.height) {
-		gs_texture_set_image(view.texture, r.pixels.data(), uint32_t(r.width) * 4, false);
-	} else {
+	// Textures have room to spare (up to 64 pixels across, 16 down), so a
+	// text that changes often (a clock, a score) mostly goes into the one
+	// it has, rather than a new one each time its width changes by a pixel.
+	// Only the drawing's part of the texture is drawn.
+	auto padded = [](int n, int to) { return uint32_t((n + to) / to * to); };
+	const uint32_t want_w = padded(r.width, 64), want_h = padded(r.height, 16);
+	const uint32_t have_w = view.texture ? gs_texture_get_width(view.texture) : 0;
+	const uint32_t have_h = view.texture ? gs_texture_get_height(view.texture) : 0;
+	const bool fits = have_w > uint32_t(r.width) && have_h > uint32_t(r.height) && have_w <= want_w + 128 &&
+			  have_h <= want_h + 32;
+	if (!fits) {
 		// The new texture made before the old one goes, so if it can't be
 		// (out of video memory) the text still shows as it was.
-		const uint8_t *data = r.pixels.data();
-		gs_texture_t *texture =
-			gs_texture_create(uint32_t(r.width), uint32_t(r.height), GS_BGRA, 1, &data, GS_DYNAMIC);
+		gs_texture_t *texture = gs_texture_create(want_w, want_h, GS_BGRA, 1, nullptr, GS_DYNAMIC);
 		if (!texture) {
-			const std::string why = "no " + std::to_string(r.width) + "x" + std::to_string(r.height) + " texture";
+			const std::string why = "no " + std::to_string(want_w) + "x" + std::to_string(want_h) + " texture";
 			retry_later(view, why.c_str(), r.version);
 			return;
 		}
 		if (view.texture)
 			gs_texture_destroy(view.texture);
 		view.texture = texture;
+	}
+	uint8_t *ptr = nullptr;
+	uint32_t linesize = 0;
+	if (!gs_texture_map(view.texture, &ptr, &linesize)) {
+		retry_later(view, "couldn't write to its texture", r.version);
+		return;
+	}
+	const uint32_t tex_w = gs_texture_get_width(view.texture), tex_h = gs_texture_get_height(view.texture);
+	const size_t row = size_t(r.width) * 4;
+	for (int y = 0; y < r.height; y++) {
+		uint8_t *dst = ptr + size_t(y) * linesize;
+		memcpy(dst, &r.pixels[size_t(y) * row], row);
+		// A clear pixel beyond its edge, where filtering a scaled drawing
+		// reaches (the rest of the texture is never sampled).
+		if (uint32_t(r.width) < tex_w)
+			memset(dst + row, 0, 4);
+	}
+	if (uint32_t(r.height) < tex_h)
+		memset(ptr + size_t(r.height) * linesize, 0, std::min(size_t(linesize), size_t(r.width + 1) * 4));
+	gs_texture_unmap(view.texture);
+
+	// Only its parts with ink are drawn: two triangles each, in the
+	// drawing's pixels, as gs_draw_sprite would draw the whole.
+	if (view.parts)
+		gs_vertexbuffer_destroy(view.parts);
+	view.parts = nullptr;
+	view.part_vertices = 0;
+	if (!r.parts.empty()) {
+		const size_t n = r.parts.size() * 6;
+		gs_vb_data *vbd = gs_vbdata_create();
+		vbd->num = n;
+		vbd->points = static_cast<vec3 *>(bmalloc(sizeof(vec3) * n));
+		vbd->num_tex = 1;
+		vbd->tvarray = static_cast<gs_tvertarray *>(bzalloc(sizeof(gs_tvertarray)));
+		vbd->tvarray[0].width = 2;
+		vbd->tvarray[0].array = bmalloc(sizeof(vec2) * n);
+		vec3 *pos = vbd->points;
+		vec2 *uv = static_cast<vec2 *>(vbd->tvarray[0].array);
+		size_t i = 0;
+		for (const Raster::Part &p : r.parts) {
+			const float x0 = float(p.x), y0 = float(p.y), x1 = float(p.x + p.w), y1 = float(p.y + p.h);
+			const float corners[6][2] = {{x0, y0}, {x1, y0}, {x0, y1}, {x1, y0}, {x1, y1}, {x0, y1}};
+			for (const auto &c : corners) {
+				vec3_set(&pos[i], c[0], c[1], 0.0f);
+				vec2_set(&uv[i], c[0] / float(tex_w), c[1] / float(tex_h));
+				i++;
+			}
+		}
+		view.parts = gs_vertexbuffer_create(vbd, 0);
+		if (view.parts)
+			view.part_vertices = n;
 	}
 	view.failures = 0;
 	shown_now(view, r);
@@ -570,16 +637,30 @@ void TextSource::render()
 	if (!view.requested && view.retry_wait <= 0)
 		request(view, want); // the first time: don't wait a frame
 
-	draw(view);
+	draw(view, axis_aligned ? &want : nullptr);
 }
 
-void TextSource::draw(View &view)
+void TextSource::draw(View &view, const RasterParams *at)
 {
 	if (!view.texture)
 		return;
 	const RasterParams &p = view.drawn.params;
 	gs_effect_t *effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
 	gs_eparam_t *image = gs_effect_get_param_by_name(effect, "image");
+	if (at && p.close_to(*at)) {
+		// Drawn for exactly where it is: each of its pixels on one of the
+		// frame's, so it's copied rather than filtered (the same pixels;
+		// filtering costs more, a lot more with software rendering).
+		if (!point_sampler_) {
+			gs_sampler_info info = {};
+			info.filter = GS_FILTER_POINT;
+			info.address_u = info.address_v = info.address_w = GS_ADDRESS_CLAMP;
+			info.max_anisotropy = 1;
+			point_sampler_ = gs_samplerstate_create(&info);
+		}
+		if (point_sampler_)
+			gs_effect_set_next_sampler(image, point_sampler_);
+	}
 
 	const bool previous_srgb = gs_framebuffer_srgb_enabled();
 	gs_enable_framebuffer_srgb(false);
@@ -590,8 +671,16 @@ void TextSource::draw(View &view)
 	gs_matrix_translate3f(float((view.drawn.x0 - p.ox) / p.sx), float((view.drawn.y0 - p.oy) / p.sy), 0.0f);
 	gs_matrix_scale3f(float(1.0 / p.sx), float(1.0 / p.sy), 1.0f);
 	gs_effect_set_texture(image, view.texture);
-	while (gs_effect_loop(effect, "Draw"))
-		gs_draw_sprite(view.texture, 0, uint32_t(view.drawn.width), uint32_t(view.drawn.height));
+	while (gs_effect_loop(effect, "Draw")) {
+		if (view.parts) {
+			gs_load_vertexbuffer(view.parts);
+			gs_load_indexbuffer(nullptr);
+			gs_draw(GS_TRIS, 0, uint32_t(view.part_vertices));
+		} else {
+			gs_draw_sprite_subregion(view.texture, 0, 0, 0, uint32_t(view.drawn.width),
+						 uint32_t(view.drawn.height));
+		}
+	}
 	gs_matrix_pop();
 
 	gs_blend_state_pop();

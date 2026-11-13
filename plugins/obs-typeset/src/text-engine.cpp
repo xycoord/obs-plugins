@@ -466,8 +466,9 @@ static void rounded_rect(cairo_t *cr, const Box &b, double r)
 }
 
 // The text with its outline, in the current source; for the shadow, its
-// silhouette in one colour, grown by the outline and the shadow's spread.
-static void draw_text(cairo_t *cr, PangoLayout *layout, const Style &s, const Frame &f, bool silhouette)
+// silhouette in one colour, grown by the outline and by spread.
+static void draw_text(cairo_t *cr, PangoLayout *layout, const Style &s, const Frame &f, bool silhouette,
+		      double spread = 0)
 {
 	cairo_save(cr);
 	cairo_translate(cr, f.text_x, f.text_y);
@@ -486,8 +487,8 @@ static void draw_text(cairo_t *cr, PangoLayout *layout, const Style &s, const Fr
 		// The shadow's shape is the outlined text's, grown by its spread
 		// (so it holds up thin letters over bright backgrounds): one
 		// stroke covers both.
-		if (outline + s.shadow_spread > 0)
-			stroke(outline + s.shadow_spread);
+		if (outline + spread > 0)
+			stroke(outline + spread);
 	} else if (outline > 0) {
 		// Behind the fill, so it grows the letters outwards and never eats
 		// into them.
@@ -501,7 +502,9 @@ static void draw_text(cairo_t *cr, PangoLayout *layout, const Style &s, const Fr
 }
 
 // Three box blurs make a close approximation of a Gaussian blur; across and
-// down separately, as the text can be scaled differently each way.
+// down separately, as the text can be scaled differently each way. Each
+// pass is a running sum (so any radius costs the same), along rows: down
+// the image too, a row of sums at a time, which keeps to memory in order.
 static void box_blur(uint8_t *data, int w, int h, int stride, double sigma_x, double sigma_y)
 {
 	if (w <= 0 || h <= 0)
@@ -510,27 +513,146 @@ static void box_blur(uint8_t *data, int w, int h, int stride, double sigma_x, do
 		return sigma < 0.5 ? -1 : std::max(1, int(std::floor(sigma * 3 * std::sqrt(2 * M_PI) / 4 + 0.5))) / 2;
 	};
 	const int rx = radius(sigma_x), ry = radius(sigma_y);
-	std::vector<uint8_t> line(size_t(std::max(w, h)));
-	auto pass = [&](uint8_t *start, int n, int step, int r) {
-		for (int i = 0; i < n; i++)
-			line[size_t(i)] = start[size_t(i) * step];
-		int sum = 0;
-		for (int i = -r; i <= r; i++)
-			sum += (i >= 0 && i < n) ? line[size_t(i)] : 0;
-		const int width = 2 * r + 1;
-		for (int i = 0; i < n; i++) {
-			start[size_t(i) * step] = uint8_t(sum / width);
-			const int in = i + r + 1, out = i - r;
-			sum += (in < n ? line[size_t(in)] : 0) - (out >= 0 ? line[size_t(out)] : 0);
+	// Dividing by the box's width: multiplying by its reciprocal, in 16.16.
+	auto reciprocal = [](int r) { return uint32_t((65536 + r) / (2 * r + 1)); };
+	const size_t W = size_t(w);
+
+	if (rx >= 0) {
+		const uint32_t mul = reciprocal(rx);
+		std::vector<uint8_t> a(W), b(W);
+		for (int y = 0; y < h; y++) {
+			uint8_t *row = data + size_t(y) * size_t(stride);
+			const uint8_t *in = row;
+			for (int k = 0; k < 3; k++) {
+				uint8_t *out = k == 2 ? row : (k == 0 ? a.data() : b.data());
+				uint32_t sum = 0;
+				for (int i = 0; i <= rx && i < w; i++)
+					sum += in[i];
+				for (int i = 0; i < w; i++) {
+					out[i] = uint8_t((sum * mul + 32768) >> 16);
+					const int add = i + rx + 1, sub = i - rx;
+					sum += (add < w ? in[add] : 0) - (sub >= 0 ? in[sub] : 0);
+				}
+				in = out;
+			}
+		}
+	}
+	if (ry >= 0) {
+		const uint32_t mul = reciprocal(ry);
+		std::vector<uint8_t> tmp(W * size_t(h));
+		std::vector<uint32_t> sums(W);
+		auto row_of = [&](uint8_t *base, size_t pitch, int y) { return base + size_t(y) * pitch; };
+		for (int k = 0; k < 3; k++) {
+			// Ping-pong between the image and a copy: data -> tmp -> data -> tmp, then back.
+			uint8_t *src = (k % 2 == 0) ? data : tmp.data();
+			uint8_t *dst = (k % 2 == 0) ? tmp.data() : data;
+			const size_t sp = (k % 2 == 0) ? size_t(stride) : W, dp = (k % 2 == 0) ? W : size_t(stride);
+			std::fill(sums.begin(), sums.end(), 0);
+			for (int i = 0; i <= ry && i < h; i++) {
+				const uint8_t *r = row_of(src, sp, i);
+				for (size_t x = 0; x < W; x++)
+					sums[x] += r[x];
+			}
+			for (int y = 0; y < h; y++) {
+				uint8_t *out = row_of(dst, dp, y);
+				for (size_t x = 0; x < W; x++)
+					out[x] = uint8_t((sums[x] * mul + 32768) >> 16);
+				const int add = y + ry + 1, sub = y - ry;
+				if (add < h) {
+					const uint8_t *r = row_of(src, sp, add);
+					for (size_t x = 0; x < W; x++)
+						sums[x] += r[x];
+				}
+				if (sub >= 0) {
+					const uint8_t *r = row_of(src, sp, sub);
+					for (size_t x = 0; x < W; x++)
+						sums[x] -= r[x];
+				}
+			}
+		}
+		// Three passes end in tmp: back into the image.
+		for (int y = 0; y < h; y++)
+			memcpy(data + size_t(y) * size_t(stride), tmp.data() + size_t(y) * W, W);
+	}
+}
+
+// Grows a mask by an ellipse of radii rx and ry whole pixels (each pixel
+// takes the largest value within it).
+static void dilate_whole(uint8_t *data, int w, int h, int stride, int K, int R, double rx, double ry)
+{
+	if ((R <= 0 && K <= 0) || w <= 0 || h <= 0)
+		return;
+	const size_t W = size_t(w);
+	// How far across each row of the ellipse reaches.
+	std::vector<int> half(size_t(2 * R + 1));
+	for (int dy = -R; dy <= R; dy++) {
+		const double t = R > 0 ? double(dy) / ry : 0.0;
+		half[size_t(dy + R)] = t * t > 1.0 + 1e-9 ? -1 : std::min(K, int(std::floor(rx * std::sqrt(std::max(0.0, 1.0 - t * t)) + 0.5)));
+	}
+	// For the rows in reach, each grown across by 0 to K pixels: a ring of them.
+	const size_t rows = size_t(2 * R + 1);
+	std::vector<uint8_t> ring(rows * size_t(K + 1) * W);
+	auto slot = [&](int row, int k) { return ring.data() + ((size_t(row) % rows) * size_t(K + 1) + size_t(k)) * W; };
+	auto build = [&](int row) {
+		uint8_t *prev = slot(row, 0);
+		memcpy(prev, data + size_t(row) * size_t(stride), W);
+		for (int k = 1; k <= K; k++) {
+			uint8_t *cur = slot(row, k);
+			// Each pixel and its neighbours' largest (no branches inside,
+			// so it's done many pixels at a time).
+			cur[0] = W > 1 ? std::max(prev[0], prev[1]) : prev[0];
+			for (size_t x = 1; x + 1 < W; x++)
+				cur[x] = std::max(std::max(prev[x - 1], prev[x]), prev[x + 1]);
+			if (W > 1)
+				cur[W - 1] = std::max(prev[W - 2], prev[W - 1]);
+			prev = cur;
 		}
 	};
-	for (int k = 0; k < 3; k++) {
-		if (rx >= 0)
-			for (int y = 0; y < h; y++)
-				pass(data + size_t(y) * stride, w, 1, rx);
-		if (ry >= 0)
-			for (int x = 0; x < w; x++)
-				pass(data + x, h, stride, ry);
+	for (int j = 0; j < R && j < h; j++)
+		build(j);
+	std::vector<uint8_t> out(W);
+	for (int y = 0; y < h; y++) {
+		if (y + R < h)
+			build(y + R); // before row y is written over (it may be this one)
+		std::fill(out.begin(), out.end(), 0);
+		for (int dy = -R; dy <= R; dy++) {
+			const int j = y + dy, k = half[size_t(dy + R)];
+			if (j < 0 || j >= h || k < 0)
+				continue;
+			const uint8_t *src = slot(j, k);
+			for (size_t x = 0; x < W; x++)
+				out[x] = std::max(out[x], src[x]);
+		}
+		memcpy(data + size_t(y) * size_t(stride), out.data(), W);
+	}
+}
+
+// The shadow's spread: the mask grown by an ellipse of radii rx and ry pixels,
+// as a stroke round every letter would grow it, at a small fraction of the
+// cost. A radius part-way between whole pixels is a mix of the two either
+// side, so the shadow grows smoothly with the text's scale.
+static void dilate(uint8_t *data, int w, int h, int stride, double rx, double ry)
+{
+	if (w <= 0 || h <= 0 || (rx <= 0 && ry <= 0))
+		return;
+	const int kx = int(std::floor(rx)), ky = int(std::floor(ry));
+	const double t = ((rx - kx) + (ry - ky)) / 2;
+	if (t < 1.0 / 64) {
+		dilate_whole(data, w, h, stride, kx, ky, std::max(rx, 1e-9), std::max(ry, 1e-9));
+		return;
+	}
+	const size_t W = size_t(w);
+	std::vector<uint8_t> more(W * size_t(h));
+	for (int y = 0; y < h; y++)
+		memcpy(&more[size_t(y) * W], data + size_t(y) * size_t(stride), W);
+	dilate_whole(data, w, h, stride, kx, ky, std::max(double(kx), 1e-9), std::max(double(ky), 1e-9));
+	dilate_whole(more.data(), w, h, w, kx + 1, ky + 1, double(kx + 1), double(ky + 1));
+	const uint32_t f = uint32_t(std::lround(t * 256));
+	for (int y = 0; y < h; y++) {
+		uint8_t *a = data + size_t(y) * size_t(stride);
+		const uint8_t *b = &more[size_t(y) * W];
+		for (size_t x = 0; x < W; x++)
+			a[x] = uint8_t((a[x] * (256 - f) + b[x] * f + 128) >> 8);
 	}
 }
 
@@ -610,6 +732,16 @@ Raster rasterise(PangoLayout *layout, const Document &doc, RasterParams params)
 		if (s.shadow) {
 			// No shadow is a wrong drawing, not a lesser one: a failure
 			// here fails the whole drawing, to be tried again.
+			// The blur's size is in source units, like everything else;
+			// half of it is the Gaussian's standard deviation. The spread
+			// grows the silhouette's pixels (fast) where the blur is wide
+			// enough to hide their whole-pixel steps; otherwise it's a
+			// stroke round each letter (exact).
+			const double sigma = std::max(0.0, s.shadow_blur) * 0.5;
+			const double spread = std::max(0.0, s.shadow_spread);
+			const double blur_px = sigma * std::min(params.sx, params.sy);
+			const double spread_px = spread * std::max(params.sx, params.sy);
+			const bool grow_after = spread > 0 && blur_px >= 1.0 && blur_px >= spread_px / 2;
 			Surface mask(cairo_image_surface_create(CAIRO_FORMAT_A8, out.width, out.height),
 				     cairo_surface_destroy);
 			if (cairo_surface_status(mask.get()) != CAIRO_STATUS_SUCCESS)
@@ -620,16 +752,16 @@ Raster rasterise(PangoLayout *layout, const Document &doc, RasterParams params)
 				cairo_scale(mcr.get(), params.sx, params.sy);
 				cairo_translate(mcr.get(), s.shadow_x, s.shadow_y);
 				cairo_set_source_rgba(mcr.get(), 0, 0, 0, 1);
-				draw_text(mcr.get(), layout, s, f, true);
+				draw_text(mcr.get(), layout, s, f, true, grow_after ? 0.0 : spread);
 				if (cairo_status(mcr.get()) != CAIRO_STATUS_SUCCESS)
 					return fail();
 			}
 			cairo_surface_flush(mask.get());
-			// The blur's size is in source units, like everything else;
-			// half of it is the Gaussian's standard deviation.
-			const double sigma = std::max(0.0, s.shadow_blur) * 0.5;
-			box_blur(cairo_image_surface_get_data(mask.get()), out.width, out.height,
-				 cairo_image_surface_get_stride(mask.get()), sigma * params.sx, sigma * params.sy);
+			uint8_t *mask_data = cairo_image_surface_get_data(mask.get());
+			const int mask_stride = cairo_image_surface_get_stride(mask.get());
+			if (grow_after)
+				dilate(mask_data, out.width, out.height, mask_stride, spread * params.sx, spread * params.sy);
+			box_blur(mask_data, out.width, out.height, mask_stride, sigma * params.sx, sigma * params.sy);
 			cairo_surface_mark_dirty(mask.get());
 
 			cairo_save(cr.get());
@@ -651,7 +783,58 @@ Raster rasterise(PangoLayout *layout, const Document &doc, RasterParams params)
 				memcpy(&out.pixels[size_t(y) * size_t(packed)], data + size_t(y) * stride, size_t(packed));
 		}
 	} // the surface (which may use out.pixels) goes before out is returned
+	find_parts(out);
 	return out;
+}
+
+void find_parts(Raster &r)
+{
+	r.parts.clear();
+	if (r.width <= 0 || r.height <= 0 || r.pixels.empty())
+		return;
+	// A tile counts if anything within a pixel of it has ink: filtering a
+	// scaled drawing reaches that far, so a tile left out is one whose
+	// every drawn pixel would have been clear.
+	constexpr int tile = 16;
+	const int tx = (r.width + tile - 1) / tile, ty = (r.height + tile - 1) / tile;
+	std::vector<uint8_t> inked(size_t(tx) * size_t(ty), 0);
+	for (int y = 0; y < r.height; y++) {
+		const uint32_t *row = reinterpret_cast<const uint32_t *>(&r.pixels[size_t(y) * size_t(r.width) * 4]);
+		const int t0 = std::max(0, (y - 1) / tile), t1 = std::min(ty - 1, (y + 1) / tile);
+		for (int x = 0; x < r.width; x++) {
+			if (!row[x])
+				continue;
+			// This pixel, and the tiles a pixel either side of it.
+			const int u0 = std::max(0, (x - 1) / tile), u1 = std::min(tx - 1, (x + 1) / tile);
+			for (int t = t0; t <= t1; t++)
+				for (int u = u0; u <= u1; u++)
+					inked[size_t(t) * size_t(tx) + size_t(u)] = 1;
+			// The rest of this tile is marked: on to the next tile.
+			const int next = (x / tile + 1) * tile - 2;
+			if (next > x)
+				x = next;
+		}
+	}
+	long drawn = 0;
+	for (int t = 0; t < ty; t++) {
+		for (int u = 0; u < tx; u++) {
+			if (!inked[size_t(t) * size_t(tx) + size_t(u)])
+				continue;
+			int end = u;
+			while (end + 1 < tx && inked[size_t(t) * size_t(tx) + size_t(end + 1)])
+				end++;
+			const int x = u * tile, y = t * tile;
+			Raster::Part p{x, y, std::min(r.width, (end + 1) * tile) - x, std::min(r.height, y + tile) - y};
+			drawn += long(p.w) * p.h;
+			r.parts.push_back(p);
+			u = end;
+		}
+	}
+	// Nearly all of it: one part is as good, and cheaper to set up.
+	if (drawn * 10 > long(r.width) * r.height * 9)
+		r.parts.clear();
+	else if (r.parts.empty())
+		r.parts.push_back({0, 0, 1, 1}); // all clear: a pixel, so it's not taken as "all of it"
 }
 
 size_t backspace_index(PangoLayout *layout, size_t index)

@@ -48,8 +48,10 @@ SCENARIOS = {
 
 
 def settings(kind, text, wrap=None):
-    if kind == "typeset":
+    if kind.startswith("typeset"):
         s = {"text": text, "font": FONT, "colour": 0xFFFFFFFF}
+        if kind == "typeset-plain":  # as OBS's own: no shadow (Typeset Text's default has a soft one)
+            s["shadow"] = False
         if wrap:
             s.update(box=True, box_width=wrap)
         return s
@@ -65,8 +67,8 @@ def collection(kind, sc):
     sources = [{"id": "color_source", "versioned_id": "color_source_v3", "name": "Back",
                 "settings": {"color": 0xFF202020, "width": 1920, "height": 1080}}]
     if kind != "none":
-        sid = {"typeset": "typeset_text", "ft2": "text_ft2_source"}[kind]
-        vid = {"typeset": "typeset_text", "ft2": "text_ft2_source_v2"}[kind]
+        sid = "typeset_text" if kind.startswith("typeset") else "text_ft2_source"
+        vid = "typeset_text" if kind.startswith("typeset") else "text_ft2_source_v2"
         for i in range(sc["n"]):
             name = "T%d" % i
             sources.append({"id": sid, "versioned_id": vid, "name": name,
@@ -294,6 +296,8 @@ def main():
     parser.add_argument("--runs", type=int, default=2)
     parser.add_argument("--json")
     parser.add_argument("--editing", action="store_true", help="the editing measurements instead")
+    parser.add_argument("--kinds", default="none,ft2,typeset-plain,typeset",
+                        help="which texts: none (a baseline), ft2 (OBS's own), typeset-plain (no shadow), typeset")
     parser.add_argument("scenarios", nargs="*", default=list(SCENARIOS))
     args = parser.parse_args()
     results = {}
@@ -314,14 +318,14 @@ def main():
                 json.dump(results, f, indent=1)
         return
     for name in args.scenarios:
-        for kind in ("none", "ft2", "typeset"):
+        for kind in args.kinds.split(","):
             runs = [run(kind, name) for _ in range(args.runs)]
             med = lambda key: statistics.median(r[key] for r in runs)  # noqa: E731
             results.setdefault(name, {})[kind] = {
                 "cpu": med("cpu"), "render_ms": med("render_ms"), "rss": med("rss"),
                 "skipped": med("skipped"), "drawings": med("drawings"), "threads": runs[-1]["threads"]}
             r = results[name][kind]
-            print("%-10s %-8s cpu %6.1f%%  render %5.2f ms  rss %6.0f MB  skipped %d  drawings %d" % (
+            print("%-10s %-13s cpu %6.1f%%  render %5.2f ms  rss %6.0f MB  skipped %d  drawings %d" % (
                 name, kind, r["cpu"], r["render_ms"], r["rss"], r["skipped"], r["drawings"]), flush=True)
             print("           threads: " + ", ".join("%s %.1f%%" % (n, v) for n, v in
                                                     sorted(r["threads"].items(), key=lambda x: -x[1])), flush=True)

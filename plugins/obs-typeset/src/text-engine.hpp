@@ -126,7 +126,17 @@ struct Raster {
 	int x0 = 0, y0 = 0;
 	int width = 0, height = 0;
 	std::vector<uint8_t> pixels; // BGRA, premultiplied, width*4 per row
+	// The parts with anything in them, in its pixels: runs of tiles along
+	// each row of tiles, everything else clear. Only these are drawn. Empty
+	// when it's all to be drawn (it's nearly all ink).
+	struct Part {
+		int x, y, w, h;
+	};
+	std::vector<Part> parts;
 };
+
+// Tiles of a raster with ink, merged along rows (Raster::parts).
+void find_parts(Raster &r);
 
 // The largest a raster may be, per side and in all: above it the scale is
 // reduced (the text then blurs a little, only when drawn that large).
