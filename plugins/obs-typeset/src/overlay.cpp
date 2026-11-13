@@ -280,7 +280,7 @@ Label make_label(const std::string &text, double px, uint32_t fg, uint32_t bg)
 		}
 		cairo_move_to(cr, pad, pad / 2.0);
 		rgba(fg);
-		pango_cairo_show_layout(cr, layout);
+		show_layout(cr, layout);
 		cairo_destroy(cr);
 		cairo_surface_flush(surface);
 		const int stride = cairo_image_surface_get_stride(surface);

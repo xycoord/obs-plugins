@@ -10,8 +10,31 @@
 #include <strings.h>
 
 #include <hb-ot.h>
+#include <cairo-pdf.h>
 
 namespace typeset {
+
+// Cairo (from 1.17.4) draws each glyph at its position rounded to a quarter
+// pixel, but works out the area a run of glyphs covers from their positions
+// rounded to whole pixels (as image surfaces ask for). The two can be half a
+// pixel apart, and when Cairo draws the run through a mask of that area (it
+// does whenever the glyphs' boxes overlap, which is nearly every run, unless
+// it's adding to a blank A8 surface), a letter's last part-covered row or
+// column at its edge falls outside it and is cut off: a hard edge where there
+// should be antialiasing. Two things together make the area exactly what's
+// drawn: font options that leave the positions unrounded (see create_context)
+// and glyphs given to Cairo at the quarter pixel it would draw them at
+// anyway (see show_layout), so the glyphs themselves are drawn as before.
+// Older Cairo rounds glyphs to whole pixels for both, and is left as it is.
+static bool quarter_pixel_glyphs()
+{
+#if CAIRO_HAS_PDF_SURFACE
+	static const bool yes = cairo_version() >= CAIRO_VERSION_ENCODE(1, 17, 4);
+	return yes;
+#else
+	return false; // no way to the unrounded options (below)
+#endif
+}
 
 PangoContext *create_context(PangoFontMap *map)
 {
@@ -22,6 +45,16 @@ PangoContext *create_context(PangoFontMap *map)
 	// scale like a vector drawing. Grey antialiasing, as for any texture
 	// that is composited and scaled (subpixel colour fringes wouldn't be).
 	cairo_font_options_t *options = cairo_font_options_create();
+#if CAIRO_HAS_PDF_SURFACE
+	if (quarter_pixel_glyphs()) {
+		// Cairo's only public way to font options that leave glyph
+		// positions unrounded: a PDF surface's (one with no output, never
+		// drawn on). They're otherwise the ones set below.
+		cairo_surface_t *pdf = cairo_pdf_surface_create(nullptr, 1, 1);
+		cairo_surface_get_font_options(pdf, options);
+		cairo_surface_destroy(pdf);
+	}
+#endif
 	cairo_font_options_set_antialias(options, CAIRO_ANTIALIAS_GRAY);
 	cairo_font_options_set_hint_style(options, CAIRO_HINT_STYLE_NONE);
 	cairo_font_options_set_hint_metrics(options, CAIRO_HINT_METRICS_OFF);
@@ -467,6 +500,183 @@ static void rounded_rect(cairo_t *cr, const Box &b, double r)
 	cairo_close_path(cr);
 }
 
+// Whether a font has colour glyphs (emoji): layers, bitmaps, SVG or paint.
+static bool colour_font(PangoFont *font)
+{
+	hb_font_t *hb = font ? pango_font_get_hb_font(font) : nullptr;
+	hb_face_t *face = hb ? hb_font_get_face(hb) : nullptr;
+	return face && (hb_ot_color_has_layers(face) || hb_ot_color_has_png(face) || hb_ot_color_has_svg(face)
+#if HB_VERSION_ATLEAST(7, 0, 0)
+			|| hb_ot_color_has_paint(face)
+#endif
+		       );
+}
+
+// show_layout()'s renderer: Pango's own Cairo renderer's drawing (in
+// pangocairo-render.c), but with each glyph given to Cairo at the quarter
+// pixel Cairo draws it at (see quarter_pixel_glyphs). Pango works out the
+// lines, runs, colours and decorations; this only draws them.
+namespace {
+struct Renderer {
+	PangoRenderer parent;
+	cairo_t *cr;
+	double x0, y0; // where the layout's origin is, in user space
+	bool snap;
+};
+struct RendererClass {
+	PangoRendererClass parent;
+};
+} // namespace
+
+// A part's colour as Pango's renderer sets it: the run's colour and/or
+// alpha, the rest from the current source.
+static void set_part_colour(Renderer *r, PangoRenderPart part)
+{
+	PangoRenderer *renderer = &r->parent;
+	const PangoColor *colour = pango_renderer_get_color(renderer, part);
+	const guint16 a = pango_renderer_get_alpha(renderer, part);
+	if (!colour && !a)
+		return;
+	double red = 0, green = 0, blue = 0, alpha = 1;
+	if (colour) {
+		red = colour->red / 65535.0;
+		green = colour->green / 65535.0;
+		blue = colour->blue / 65535.0;
+	} else if (cairo_pattern_t *p = cairo_get_source(r->cr); p && cairo_pattern_get_type(p) == CAIRO_PATTERN_TYPE_SOLID) {
+		cairo_pattern_get_rgba(p, &red, &green, &blue, &alpha);
+	}
+	if (a)
+		alpha = a / 65535.0;
+	cairo_set_source_rgba(r->cr, red, green, blue, alpha);
+}
+
+static void render_glyphs(PangoRenderer *renderer, PangoFont *font, PangoGlyphString *glyphs, int x, int y)
+{
+	Renderer *r = reinterpret_cast<Renderer *>(renderer);
+	cairo_t *cr = r->cr;
+	const double base_x = r->x0 + double(x) / PANGO_SCALE, base_y = r->y0 + double(y) / PANGO_SCALE;
+	cairo_save(cr);
+	set_part_colour(r, PANGO_RENDER_PART_FOREGROUND);
+	// Pango draws what a font can't (boxes for a missing letter, or for any
+	// letter of a font that won't load): those are left to it.
+	auto pango_draws = [&](PangoGlyphInfo *glyph, int n, double gx, double gy) {
+		PangoGlyphString string{n, glyph, nullptr, 0};
+		cairo_move_to(cr, gx, gy);
+		pango_cairo_show_glyph_string(cr, font, &string);
+	};
+	cairo_scaled_font_t *scaled = font && PANGO_IS_CAIRO_FONT(font)
+					      ? pango_cairo_font_get_scaled_font(PANGO_CAIRO_FONT(font))
+					      : nullptr;
+	if (!scaled || cairo_scaled_font_status(scaled) != CAIRO_STATUS_SUCCESS) {
+		pango_draws(glyphs->glyphs, glyphs->num_glyphs, base_x, base_y);
+		cairo_restore(cr);
+		return;
+	}
+	cairo_set_scaled_font(cr, scaled);
+	// A colour font's glyphs Cairo draws one at a time, each at a whole
+	// pixel and with no mask: they're never cut, and are left where they are.
+	const bool snap = r->snap && !colour_font(font);
+
+	std::vector<cairo_glyph_t> out;
+	out.reserve(size_t(glyphs->num_glyphs));
+	int advance = 0;
+	for (int i = 0; i < glyphs->num_glyphs; i++) {
+		PangoGlyphInfo *gi = &glyphs->glyphs[i];
+		const int at = advance;
+		advance += gi->geometry.width;
+		if (gi->glyph == PANGO_GLYPH_EMPTY)
+			continue;
+		double gx = base_x + double(at + gi->geometry.x_offset) / PANGO_SCALE;
+		double gy = gi->geometry.y_offset == 0 ? base_y : base_y + double(gi->geometry.y_offset) / PANGO_SCALE;
+		if (gi->glyph & PANGO_GLYPH_UNKNOWN_FLAG) {
+			PangoGlyphInfo alone = *gi;
+			alone.geometry.x_offset = alone.geometry.y_offset = 0;
+			pango_draws(&alone, 1, gx, gy);
+			continue;
+		}
+		if (snap) {
+			// Rounded as Cairo rounds it: to the nearest quarter pixel.
+			cairo_user_to_device(cr, &gx, &gy);
+			gx = std::floor(gx * 4 + 0.5) / 4;
+			gy = std::floor(gy * 4 + 0.5) / 4;
+			cairo_device_to_user(cr, &gx, &gy);
+		}
+		out.push_back({gi->glyph, gx, gy});
+	}
+	cairo_show_glyphs(cr, out.data(), int(out.size()));
+	cairo_restore(cr);
+}
+
+static void render_rectangle(PangoRenderer *renderer, PangoRenderPart part, int x, int y, int width, int height)
+{
+	Renderer *r = reinterpret_cast<Renderer *>(renderer);
+	cairo_save(r->cr);
+	set_part_colour(r, part);
+	cairo_rectangle(r->cr, r->x0 + double(x) / PANGO_SCALE, r->y0 + double(y) / PANGO_SCALE,
+			double(width) / PANGO_SCALE, double(height) / PANGO_SCALE);
+	cairo_fill(r->cr);
+	cairo_restore(r->cr);
+}
+
+// In device space, from the layout's origin (Pango draws decorations this
+// way when its context has a matrix).
+static void render_trapezoid(PangoRenderer *renderer, PangoRenderPart part, double y1, double x11, double x21,
+			     double y2, double x12, double x22)
+{
+	Renderer *r = reinterpret_cast<Renderer *>(renderer);
+	cairo_t *cr = r->cr;
+	cairo_save(cr);
+	set_part_colour(r, part);
+	double x = r->x0, y = r->y0;
+	cairo_user_to_device_distance(cr, &x, &y);
+	cairo_identity_matrix(cr);
+	cairo_translate(cr, x, y);
+	cairo_move_to(cr, x11, y1);
+	cairo_line_to(cr, x21, y1);
+	cairo_line_to(cr, x22, y2);
+	cairo_line_to(cr, x12, y2);
+	cairo_close_path(cr);
+	cairo_fill(cr);
+	cairo_restore(cr);
+}
+
+// (Shapes and squiggly error underlines, which Pango's renderer also draws,
+// aren't in any layout made here.)
+static GType renderer_type()
+{
+	static gsize type = 0;
+	if (g_once_init_enter(&type)) {
+		const GType t = g_type_register_static_simple(
+			PANGO_TYPE_RENDERER, g_intern_static_string("TypesetCairoRenderer"), sizeof(RendererClass),
+			[](gpointer klass, gpointer) {
+				PangoRendererClass *c = PANGO_RENDERER_CLASS(klass);
+				c->draw_glyphs = render_glyphs;
+				c->draw_rectangle = render_rectangle;
+				c->draw_trapezoid = render_trapezoid;
+			},
+			sizeof(Renderer), nullptr, GTypeFlags(0));
+		g_once_init_leave(&type, t);
+	}
+	return GType(type);
+}
+
+void show_layout(cairo_t *cr, PangoLayout *layout)
+{
+	Renderer *r = static_cast<Renderer *>(g_object_new(renderer_type(), nullptr));
+	r->cr = cr;
+	r->snap = quarter_pixel_glyphs();
+	// At the current point, as pango_cairo_show_layout() draws, which it
+	// leaves where it was.
+	const bool had_point = cairo_has_current_point(cr);
+	cairo_get_current_point(cr, &r->x0, &r->y0);
+	pango_renderer_draw_layout(&r->parent, layout, 0, 0);
+	if (had_point)
+		cairo_move_to(cr, r->x0, r->y0);
+	else
+		cairo_new_sub_path(cr);
+	g_object_unref(r);
+}
+
 // The text with its outline, in the current source; for the shadow, its
 // silhouette in one colour, grown by the outline and by spread.
 static void draw_text(cairo_t *cr, PangoLayout *layout, const Style &s, const Frame &f, bool silhouette,
@@ -499,7 +709,7 @@ static void draw_text(cairo_t *cr, PangoLayout *layout, const Style &s, const Fr
 	}
 	if (!silhouette)
 		set_colour(cr, s.colour);
-	pango_cairo_show_layout(cr, layout);
+	show_layout(cr, layout);
 	cairo_restore(cr);
 }
 
@@ -668,14 +878,7 @@ static bool has_colour_glyphs(PangoLayout *layout)
 		PangoLayoutRun *run = pango_layout_iter_get_run_readonly(it);
 		if (!run || !run->item || !run->item->analysis.font)
 			continue;
-		hb_font_t *font = pango_font_get_hb_font(run->item->analysis.font);
-		hb_face_t *face = font ? hb_font_get_face(font) : nullptr;
-		if (face && (hb_ot_color_has_layers(face) || hb_ot_color_has_png(face) || hb_ot_color_has_svg(face)
-#if HB_VERSION_ATLEAST(7, 0, 0)
-			     || hb_ot_color_has_paint(face)
-#endif
-			     ))
-			colour = true;
+		colour = colour_font(run->item->analysis.font);
 	} while (!colour && pango_layout_iter_next_run(it));
 	pango_layout_iter_free(it);
 	return colour;
