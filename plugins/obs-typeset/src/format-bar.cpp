@@ -371,6 +371,19 @@ FormatBar::FormatBar(QWidget *parent, Actions actions)
 	sub_ = button(tip("Bar.Subscript", "Ctrl+="), true);
 	sub_->setIcon(script_icon(this, false));
 	QObject::connect(sub_, &QToolButton::clicked, this, toggle(Toggle::Subscript));
+
+	// The layout: spacing (letters, the selection's; lines, the text's) and
+	// the paragraph (the whole text's alignment and wrapping: its icon is the
+	// alignment).
+	row->addSpacing(group_gap);
+	tracking_ = button(tip("Bar.Spacing"), false);
+	tracking_->setIcon(spacing_icon(this));
+	QObject::connect(tracking_, &QToolButton::clicked, this, [this] { show_popup(tracking_popup_, tracking_); });
+	paragraph_ = button(tip("Bar.Paragraph"), false);
+	QObject::connect(paragraph_, &QToolButton::clicked, this, [this] { show_popup(paragraph_popup_, paragraph_); });
+
+	// The colour, and clearing what's been set.
+	row->addSpacing(group_gap);
 	colour_ = button(tip("Bar.Colour"), false);
 	QObject::connect(colour_, &QToolButton::clicked, this, [this] {
 		if (actions_.colour)
@@ -383,26 +396,7 @@ FormatBar::FormatBar(QWidget *parent, Actions actions)
 			actions_.clear();
 		then_back();
 	});
-	// Spacing: letters (the selection's) and lines (the text's), together.
-	tracking_ = button(tip("Bar.Spacing"), false);
-	tracking_->setIcon(spacing_icon(this));
-	QObject::connect(tracking_, &QToolButton::clicked, this, [this] { show_popup(tracking_popup_, tracking_); });
 
-	// Everything before acts on the selection (or what's typed next), but
-	// line spacing; the paragraph, after a line, on the whole text: its icon
-	// is its alignment.
-	auto *line = new QFrame(this);
-	line->setFrameShape(QFrame::VLine);
-	line->setFrameShadow(QFrame::Plain);
-	line->setFixedWidth(1);
-	line->setStyleSheet("color: palette(mid);");
-	// (Either side of it, the gap and a little: a line takes no room of its
-	// own, so the two together are a group's gap.)
-	row->addSpacing((group_gap - gap) / 2);
-	row->addWidget(line);
-	row->addSpacing((group_gap - gap) / 2);
-	paragraph_ = button(tip("Bar.Paragraph"), false);
-	QObject::connect(paragraph_, &QToolButton::clicked, this, [this] { show_popup(paragraph_popup_, paragraph_); });
 	// Everything else: the text's properties, a group's gap on.
 	row->addSpacing(group_gap);
 	more_ = button(tip("Bar.More"), false);
@@ -428,7 +422,6 @@ FormatBar::FormatBar(QWidget *parent, Actions actions)
 		w->setFixedHeight(h);
 	for (QToolButton *b : {italic_, underline_, super_, sub_, tracking_, colour_, clear_, paragraph_, more_})
 		b->setFixedSize(h, h);
-	line->setFixedHeight(h - 2 * gap);
 	// The paragraph pop-up's alignment buttons as the bar's own.
 	for (QToolButton *b : aligns_)
 		b->setFixedSize(h, h);

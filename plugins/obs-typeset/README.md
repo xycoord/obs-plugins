@@ -48,17 +48,17 @@ text, made of OBS's own controls in OBS's theme:
   a time (a run of steps is one undo); a stray scroll over the bar does nothing. A selection of several sizes shows its smallest
   and a plus ("96+"), with the range in the tooltip.
 - **Italic**, **Underline**, **Superscript** and **Subscript** (the font's own superscript size and
-  height), lit for what the selection has; **Colour**; **Clear formatting** (the eraser), which puts
-  the selection back to the text's own style; and **Spacing**, a small pop-up with letter spacing
-  (tracking) for the selection and line spacing (leading) for the whole text, each a slider and a
-  field.
-- After a line, the **Paragraph** button (its icon is the alignment), for the whole text: a pop-up with
-  its alignment (left, centre, right or justified) and, for text in a text box that wraps, **Balance
-  lines** (the lines as even in length as they can be, so a title doesn't end in a short line) and
-  **Avoid orphans** (no paragraph ends in one word alone). These two are in the text box's
-  properties too.
-- At the end, **…** opens the text's properties, for everything else (the background, shadow,
-  outline, text box). Editing carries on, and what's changed there shows at once.
+  height), lit for what the selection has.
+- **Spacing**, a small pop-up with letter spacing (tracking) for the selection and line spacing
+  (leading) for the whole text, each a slider and a field; and **Paragraph** (its icon is the
+  alignment), for the whole text: its alignment (left, centre, right or justified) and, for text in a
+  text box that wraps, **Balance lines** (the lines as even in length as they can be, so a title
+  doesn't end in a short line) and **Avoid orphans** (no paragraph ends in one word alone). These two
+  are in the text box's properties too.
+- **Colour**, and **Clear formatting** (the eraser), which puts the selection back to the text's own
+  style.
+- **…** opens the text's properties, for everything else (the background, shadow, outline, text
+  box). Editing carries on, and what's changed there shows at once.
 
 A drag of a slider is one undo; a value typed in a field applies on Enter.
 

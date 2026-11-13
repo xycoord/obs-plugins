@@ -1,9 +1,10 @@
 // The format bar shown above the text being edited in OBS's preview: real
 // Qt controls, so OBS's theme draws them as it draws the rest of its window.
-// Grouped by what they act on: the selection's font (typeface, size, weight;
-// bold is a weight: Ctrl+B), its style (italic, underline, superscript,
-// subscript, colour) and clear formatting; then, after a line, the whole
-// text's alignment. Each has a tooltip naming its shortcut.
+// In groups: the selection's font (typeface, size, weight; bold is a weight:
+// Ctrl+B); its style (italic, underline, superscript, subscript); the layout
+// (spacing, and the paragraph's alignment and wrapping); its colour, and
+// clearing what's been set; and "…", the text's properties. Each has a tooltip
+// naming its shortcut.
 //
 // It's a small frameless window kept above OBS's (see the constructor). It
 // takes the keyboard only while its size field or weight list is in use, and
