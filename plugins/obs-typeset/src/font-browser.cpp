@@ -19,6 +19,7 @@
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QListView>
 #include <QPainter>
 #include <QPointer>
@@ -64,7 +65,7 @@ QString weight_text(int w)
 struct Prefs {
 	std::vector<std::string> favourites, recent;
 	int width = 540, height = 600;
-	std::set<std::string> categories;
+	std::set<std::string> categories, feels;
 	bool cover = true, weight = false, italic = false, by_name = false;
 	bool loaded = false;
 
@@ -282,6 +283,8 @@ public:
 	void sample_ready(const QString &key, const QImage &image);
 	QRect star_rect(const QRect &row) const { return QRect(row.right() - 30, row.top() + 6, 24, 20); }
 	bool covers(const FamilyInfo &f) const { return f.covers(cover_text_); }
+	const std::set<std::string> &feels() const { return feels_; }
+	QPoint feel_button() const { return feel_->mapToGlobal(feel_->rect().center()); } // (for the tests' log)
 
 protected:
 	bool eventFilter(QObject *obj, QEvent *event) override;
@@ -294,6 +297,8 @@ private:
 	void choose(const QModelIndex &index);
 	void toggle_favourite(const QModelIndex &index);
 	void place(const QRect &anchor, const QRect &avoid);
+	void make_feel_menu();
+	void show_feels();
 	QString sample_key(const FamilyInfo &f, int weight) const;
 
 	FontRequest request_;
@@ -305,7 +310,8 @@ private:
 
 	QLineEdit *search_ = nullptr;
 	std::vector<std::pair<QToolButton *, std::string>> chips_;
-	QToolButton *cover_ = nullptr, *weight_ = nullptr, *italic_ = nullptr;
+	QToolButton *feel_ = nullptr, *cover_ = nullptr, *weight_ = nullptr, *italic_ = nullptr;
+	std::set<std::string> feels_; // chosen in the Feel menu
 	QComboBox *order_ = nullptr;
 	QListView *list_ = nullptr;
 	RowModel *model_ = nullptr;
@@ -403,6 +409,16 @@ public:
 				cat += " · " + QString::fromStdString(f.classes.front());
 			facts << cat;
 		}
+		// Its strongest feelings, the ones chosen first.
+		QStringList feels;
+		for (const auto &[name, strength] : strong_feels(f))
+			if (browser_->feels().count(name))
+				feels << QString::fromStdString(name);
+		for (const auto &[name, strength] : strong_feels(f))
+			if (!browser_->feels().count(name) && feels.size() < 2)
+				feels << QString::fromStdString(name);
+		if (!feels.isEmpty())
+			facts << feels.join(", ");
 		if (f.variable)
 			facts << QString("%1 %2–%3").arg(text("Fonts.Variable")).arg(f.var_lo).arg(f.var_hi);
 		else if (f.weights.size() > 1)
@@ -528,6 +544,14 @@ FontBrowser::FontBrowser(QWidget *parent, const FontRequest &request,
 
 	auto *filters = new QHBoxLayout();
 	filters->setSpacing(4);
+	// Feel: Google's feelings ("Fancy", "Calm"), from a menu (there are 20).
+	feel_ = new QToolButton(this);
+	feel_->setAutoRaise(true);
+	feel_->setFocusPolicy(Qt::NoFocus);
+	feel_->setPopupMode(QToolButton::InstantPopup);
+	feel_->setToolTip(text("Fonts.Feel.Help"));
+	feels_ = prefs.feels;
+	filters->addWidget(feel_);
 	cover_ = chip(text("Fonts.Covers"), prefs.cover);
 	cover_->setToolTip(text("Fonts.Covers.Help"));
 	weight_ = chip(text("Fonts.HasWeight").arg(weight_text(request.weight)), prefs.weight);
@@ -568,6 +592,7 @@ FontBrowser::FontBrowser(QWidget *parent, const FontRequest &request,
 
 	QObject::connect(search_, &QLineEdit::textChanged, this, [this] { rebuild(); });
 	worker_ = std::make_unique<SampleWorker>(QPointer<FontBrowser>(this));
+	show_feels();
 	setStyleSheet(parent ? parent->styleSheet() : QString());
 }
 
@@ -673,6 +698,8 @@ void FontBrowser::sample_ready(const QString &key, const QImage &image)
 void FontBrowser::rebuild()
 {
 	Prefs &prefs = Prefs::get();
+	if (FontIndex::get().ready() && !feel_->menu())
+		make_feel_menu(); // (once the fonts are read: it lists theirs)
 	prefs.categories.clear();
 	FontQuery q;
 	q.text = search_->text().toStdString();
@@ -686,6 +713,7 @@ void FontBrowser::rebuild()
 	prefs.weight = weight_->isChecked();
 	q.need_weight = prefs.weight ? request_.weight : 0;
 	q.need_italic = prefs.italic = italic_->isChecked();
+	q.feels = prefs.feels = feels_;
 	prefs.by_name = order_->currentIndex() == 1;
 	q.order = prefs.by_name ? FontQuery::Order::Name : FontQuery::Order::Popular;
 
@@ -742,6 +770,10 @@ void FontBrowser::rebuild()
 	} else {
 		hidden_->clear();
 	}
+	if (found.unrated > 0) {
+		const QString note = text("Fonts.Unrated").arg(found.unrated).toHtmlEscaped();
+		hidden_->setText(hidden_->text() + (hidden_->text().isEmpty() ? "" : " ") + "· " + note);
+	}
 	// Highlighted, for Enter: with nothing typed, the text's own typeface
 	// (Enter at once changes nothing); else the best match.
 	int first = -1;
@@ -762,10 +794,66 @@ void FontBrowser::rebuild()
 	}
 	if (debug) {
 		const QModelIndex cur = list_->currentIndex();
-		blog(LOG_INFO, "[obs-typeset] fonts shown=%zu hidden=%d first=%s sections=%d", found.families.size(),
-		     found.hidden, cur.isValid() ? model_->data(cur, Qt::DisplayRole).toString().toUtf8().constData() : "",
-		     sections ? 1 : 0);
+		blog(LOG_INFO, "[obs-typeset] fonts shown=%zu hidden=%d unrated=%d first=%s sections=%d feel=%s",
+		     found.families.size(), found.hidden, found.unrated,
+		     cur.isValid() ? model_->data(cur, Qt::DisplayRole).toString().toUtf8().constData() : "",
+		     sections ? 1 : 0, feel_->text().toUtf8().constData());
 	}
+}
+
+// The Feel menu: every feeling the installed fonts have strongly, with how
+// many have it; any number chosen (a family has to have each).
+void FontBrowser::make_feel_menu()
+{
+	auto *menu = new QMenu(feel_);
+	menu->installEventFilter(this); // a click on a feeling leaves it open, for another
+	QAction *any = menu->addAction(text("Fonts.AnyFeel"));
+	QObject::connect(any, &QAction::triggered, this, [this] {
+		feels_.clear();
+		show_feels();
+		rebuild();
+	});
+	menu->addSeparator();
+	const auto counts = feel_counts(FontIndex::get().families());
+	for (const auto &[name, count] : counts) {
+		QAction *a = menu->addAction(QString("%1  (%2)").arg(QString::fromStdString(name)).arg(count));
+		a->setCheckable(true);
+		a->setChecked(feels_.count(name) > 0);
+		a->setData(QString::fromStdString(name));
+		QObject::connect(a, &QAction::toggled, this, [this, name](bool on) {
+			if (on)
+				feels_.insert(name);
+			else
+				feels_.erase(name);
+			show_feels();
+			rebuild();
+		});
+	}
+	if (counts.empty()) {
+		menu->addAction(text("Fonts.NoFeels"))->setEnabled(false);
+	}
+	// Feelings chosen last time but not had by any font now: dropped.
+	for (auto it = feels_.begin(); it != feels_.end();)
+		it = counts.count(*it) ? std::next(it) : feels_.erase(it);
+	feel_->setMenu(menu);
+	show_feels();
+}
+
+// The button says what's chosen: "Feel", "Fancy", "Fancy + Vintage".
+void FontBrowser::show_feels()
+{
+	QStringList names;
+	for (const std::string &n : feels_)
+		names << QString::fromStdString(n);
+	feel_->setText(names.isEmpty() ? text("Fonts.Feel") : names.join(" + "));
+	feel_->setCheckable(true);
+	feel_->setChecked(!names.isEmpty());
+	if (QMenu *menu = feel_->menu())
+		for (QAction *a : menu->actions())
+			if (a->isCheckable()) {
+				const QSignalBlocker quiet(a);
+				a->setChecked(feels_.count(a->data().toString().toStdString()) > 0);
+			}
 }
 
 void FontBrowser::move_current(int by)
@@ -863,6 +951,14 @@ bool FontBrowser::eventFilter(QObject *obj, QEvent *event)
 		event->accept(); // every key to search, none to OBS's shortcuts
 		return false;
 	}
+	if (feel_ && obj == feel_->menu() && event->type() == QEvent::MouseButtonRelease) {
+		auto *menu = static_cast<QMenu *>(obj);
+		QAction *a = menu->actionAt(static_cast<QMouseEvent *>(event)->position().toPoint());
+		if (a && a->isCheckable() && a->isEnabled()) {
+			a->trigger();
+			return true;
+		}
+	}
 	if (obj == list_->viewport() && event->type() == QEvent::MouseButtonRelease) {
 		auto *m = static_cast<QMouseEvent *>(event);
 		const QModelIndex index = list_->indexAt(m->position().toPoint());
@@ -911,7 +1007,9 @@ void open_font_browser(QWidget *parent, const QRect &anchor, const QRect &avoid,
 	b->start(anchor, avoid, search);
 	if (debug) {
 		const QRect g = b->geometry();
-		blog(LOG_INFO, "[obs-typeset] fonts open x=%d y=%d w=%d h=%d", g.x(), g.y(), g.width(), g.height());
+		const QPoint feel = b->feel_button();
+		blog(LOG_INFO, "[obs-typeset] fonts open x=%d y=%d w=%d h=%d feel=%d,%d", g.x(), g.y(), g.width(),
+		     g.height(), feel.x(), feel.y());
 	}
 }
 

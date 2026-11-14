@@ -48,10 +48,10 @@ static std::string names(const std::vector<FamilyInfo> &all, const FontResults &
 int main()
 {
 	std::vector<FamilyInfo> all = {
-		family("Playfair Display", "Serif", 22, {400, 900}, true, "serif didone calm claus eggers"),
+		family("Playfair Display", "Serif", 22, {400, 900}, true, "serif didone claus eggers"),
 		family("Play", "Sans Serif", 300, {400, 700}, false, "sans"),
 		family("Playball", "Handwriting", 900, {400}, false, "handwriting informal"),
-		family("Inter", "Sans Serif", 5, {}, true, "sans neo grotesque calm competent"),
+		family("Inter", "Sans Serif", 5, {}, true, "sans neo grotesque"),
 		family("Roboto Slab", "Serif", 30, {100, 400, 900}, false, "serif slab geometric"),
 		family("Space Mono", "Monospace", 200, {400, 700}, true, "monospace"),
 		family("Local Font", "", 0, {400}, false, ""),
@@ -59,6 +59,11 @@ int main()
 	all[3].variable = true; // Inter: 100-900, variable
 	all[3].var_lo = 100;
 	all[3].var_hi = 900;
+	// Feelings (Google's 0-100): from 50 they count.
+	all[0].feel = {{"Calm", 70}, {"Fancy", 95}, {"Sophisticated", 80}};
+	all[2].feel = {{"Fancy", 60}, {"Playful", 90}};
+	all[3].feel = {{"Calm", 90}, {"Competent", 60}, {"Fancy", 20}};
+	all[4].feel = {{"Calm", 40}};
 	FcCharSetAddChar(all[0].charset.get(), 0xF6); // Playfair has ö
 	FcCharSetAddChar(all[3].charset.get(), 0xF6); // and Inter
 
@@ -89,7 +94,12 @@ int main()
 	check("a word in a name before a class", names(all, r) == "Roboto Slab", names(all, r));
 	q.text = "calm";
 	r = find_fonts(all, q);
-	check("feel words find families", names(all, r) == "Inter, Playfair Display", names(all, r));
+	check("a feeling typed finds those strongly so, the strongest first (not Calm 40)",
+	      names(all, r) == "Inter, Playfair Display", names(all, r));
+	q.text = "fan";
+	r = find_fonts(all, q);
+	check("a feeling's start does too (Fancy 20 doesn't count)", names(all, r) == "Playfair Display, Playball",
+	      names(all, r));
 	q.text = "geometric";
 	r = find_fonts(all, q);
 	check("classes find families", names(all, r) == "Roboto Slab", names(all, r));
@@ -111,6 +121,33 @@ int main()
 	check("categories: any of those chosen", names(all, r) == "Playfair Display, Roboto Slab, Space Mono",
 	      names(all, r));
 	q.categories.clear();
+
+	q.feels = {"Fancy"};
+	r = find_fonts(all, q);
+	check("a feeling chosen: those strongly so, the strongest first",
+	      names(all, r) == "Playfair Display, Playball" && r.unrated == 3,
+	      names(all, r) + " unrated " + std::to_string(r.unrated));
+	q.must_cover = true;
+	q.cover_text = to_u32("ö");
+	r = find_fonts(all, q);
+	check("those without feelings that can't show the text anyway aren't counted as such", r.unrated == 0,
+	      std::to_string(r.unrated));
+	q.must_cover = false;
+	q.cover_text.clear();
+	q.feels = {"Fancy", "Calm"};
+	r = find_fonts(all, q);
+	check("two chosen: those with both", names(all, r) == "Playfair Display", names(all, r));
+	q.feels = {"Calm"};
+	q.order = FontQuery::Order::Name;
+	r = find_fonts(all, q);
+	check("and A-Z still A-Z", names(all, r) == "Inter, Playfair Display", names(all, r));
+	q.order = FontQuery::Order::Popular;
+	q.feels.clear();
+	check("a family's strong feelings, strongest first",
+	      strong_feels(all[0]).size() == 3 && strong_feels(all[0])[0].first == "Fancy" &&
+		      strong_feels(all[3]).size() == 2);
+	const auto counts = feel_counts(all);
+	check("how many have each feeling", counts.at("Calm") == 2 && counts.at("Fancy") == 2 && !counts.count("X"));
 
 	q.need_weight = 900;
 	r = find_fonts(all, q);

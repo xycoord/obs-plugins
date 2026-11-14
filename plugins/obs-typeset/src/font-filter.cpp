@@ -151,7 +151,37 @@ std::string without_spaces(const std::string &s)
 	return out;
 }
 
+// The strength of the strongest feeling a word starts ("fan": Fancy), 0 none.
+int feel_match(const FamilyInfo &f, const std::string &word)
+{
+	int best = 0;
+	for (const auto &[name, strength] : f.feel)
+		if (strength >= feel_strong && lower(name).rfind(word, 0) == 0)
+			best = std::max(best, strength);
+	return best;
+}
+
 } // namespace
+
+std::vector<std::pair<std::string, int>> strong_feels(const FamilyInfo &f)
+{
+	std::vector<std::pair<std::string, int>> out;
+	for (const auto &[name, strength] : f.feel)
+		if (strength >= feel_strong)
+			out.emplace_back(name, strength);
+	std::stable_sort(out.begin(), out.end(), [](const auto &a, const auto &b) { return a.second > b.second; });
+	return out;
+}
+
+std::map<std::string, int> feel_counts(const std::vector<FamilyInfo> &families)
+{
+	std::map<std::string, int> out;
+	for (const FamilyInfo &f : families)
+		for (const auto &[name, strength] : f.feel)
+			if (strength >= feel_strong)
+				out[name]++;
+	return out;
+}
 
 int search_score(const FamilyInfo &f, const std::string &text)
 {
@@ -175,6 +205,8 @@ int search_score(const FamilyInfo &f, const std::string &text)
 			s = 600;
 		else if (name.find(w) != std::string::npos)
 			s = 400;
+		else if (const int strength = w.size() >= 3 ? feel_match(f, w) : 0)
+			s = 250 + strength; // a feeling ("fancy"): the strongest first
 		else if (starts_word(f.search_extra, w))
 			s = 250; // a category, class, feel or designer ("slab", "calm")
 		else if (w.size() >= 3)
@@ -190,7 +222,11 @@ FontResults find_fonts(const std::vector<FamilyInfo> &families, const FontQuery 
 {
 	FontResults out;
 	std::map<char32_t, int> missing_count;
-	std::vector<std::pair<int, size_t>> scored;
+	struct Scored {
+		int score, feel; // the search's, and the chosen feelings' strengths together
+		size_t i;
+	};
+	std::vector<Scored> scored;
 	for (size_t i = 0; i < families.size(); i++) {
 		const FamilyInfo &f = families[i];
 		if (!q.categories.empty() && !q.categories.count(f.category))
@@ -202,6 +238,20 @@ FontResults find_fonts(const std::vector<FamilyInfo> &families, const FontQuery 
 		const int score = search_score(f, q.text);
 		if (score == 0)
 			continue;
+		int feel = 0;
+		for (const std::string &want : q.feels) {
+			const auto it = f.feel.find(want);
+			if (it == f.feel.end() || it->second < feel_strong) {
+				feel = -1;
+				break;
+			}
+			feel += it->second;
+		}
+		if (feel < 0) {
+			// (Counted only where nothing else would leave it out.)
+			out.unrated += f.feel.empty() && (!q.must_cover || f.covers(q.cover_text));
+			continue;
+		}
 		if (q.must_cover && !f.covers(q.cover_text)) {
 			out.hidden++;
 			// Named only past plain ASCII: a family missing ordinary letters
@@ -213,14 +263,17 @@ FontResults find_fonts(const std::vector<FamilyInfo> &families, const FontQuery 
 				}
 			continue;
 		}
-		scored.emplace_back(score, i);
+		scored.push_back({score, feel, i});
 	}
 	const bool searching = !words(q.text).empty();
-	std::stable_sort(scored.begin(), scored.end(), [&](const auto &a, const auto &b) {
-		const FamilyInfo &fa = families[a.second], &fb = families[b.second];
-		if (searching && a.first != b.first)
-			return a.first > b.first;
+	std::stable_sort(scored.begin(), scored.end(), [&](const Scored &a, const Scored &b) {
+		const FamilyInfo &fa = families[a.i], &fb = families[b.i];
+		if (searching && a.score != b.score)
+			return a.score > b.score;
 		if (q.order == FontQuery::Order::Popular || searching) {
+			// The feelings chosen, the strongest first; then the most used.
+			if (a.feel != b.feel)
+				return a.feel > b.feel;
 			// Ranked families first, most used first; the rest by name.
 			const int ra = fa.popularity > 0 ? fa.popularity : 1 << 30;
 			const int rb = fb.popularity > 0 ? fb.popularity : 1 << 30;
@@ -229,8 +282,8 @@ FontResults find_fonts(const std::vector<FamilyInfo> &families, const FontQuery 
 		}
 		return fa.search_name < fb.search_name;
 	});
-	for (const auto &[score, i] : scored)
-		out.families.push_back(i);
+	for (const Scored &s : scored)
+		out.families.push_back(s.i);
 	std::vector<std::pair<int, char32_t>> by_count;
 	for (const auto &[c, n] : missing_count)
 		by_count.emplace_back(-n, c);

@@ -21,7 +21,7 @@ struct FamilyInfo {
 	std::string name;
 	std::string category;             // "Sans Serif", "Serif", "Display", "Handwriting", "Monospace"; "" unknown
 	std::vector<std::string> classes; // finer, strongest first ("Geometric")
-	std::map<std::string, int> feel;  // "Calm" -> strength 0-100
+	std::map<std::string, int> feel;  // "Calm" -> strength 0-100 (Google's; see feel_strong)
 	std::vector<std::string> designers;
 	int popularity = 0; // Google's rank, 1 the most used; 0 unknown
 	// Weights it has (OpenType 100-1000): the static styles' and the variable
@@ -31,7 +31,8 @@ struct FamilyInfo {
 	int var_lo = 0, var_hi = 0;
 	bool italic = false;
 	std::shared_ptr<FcCharSet> charset; // every character any of its styles has
-	// Lowercased, for search.
+	// Lowercased, for search: the name, and the category, classes and
+	// designers (feelings are matched with their strength: font-filter.cpp).
 	std::string search_name, search_extra;
 
 	bool has_weight(int w) const;

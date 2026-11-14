@@ -198,8 +198,6 @@ std::vector<FamilyInfo> build_font_index()
 		std::string extra = f.category == "Sans Serif" ? "sans" : lower(f.category);
 		for (const auto &s : f.classes)
 			extra += " " + lower(s);
-		for (const auto &[k, v] : f.feel)
-			extra += " " + lower(k);
 		for (const auto &s : f.designers)
 			extra += " " + lower(s);
 		f.search_extra = extra;

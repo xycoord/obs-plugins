@@ -692,8 +692,9 @@ def font_library(obs_dir):
     # (as Google's "Abhaya Libre" is for "Abhaya Libre ExtraBold").
     catalogue = {"version": 1, "families": {
         "DejaVu Serif": {"category": "Serif", "popularity": 1, "classes": "Transitional", "feel": {"Calm": 60}},
-        "DejaVu Sans": {"category": "Sans Serif", "popularity": 2, "classes": "Humanist"},
-        "DejaVu Mono": {"category": "Monospace", "popularity": 3}},
+        "DejaVu Sans": {"category": "Sans Serif", "popularity": 2, "classes": "Humanist",
+                        "feel": {"Calm": 90, "Business": 70}},
+        "DejaVu Mono": {"category": "Monospace", "popularity": 3, "feel": {"Business": 80, "Calm": 30}}},
         "folders": {"ofl/dejavu": "DejaVu Sans", "ofl/dejavumono": "DejaVu Mono"}}
     with open(os.path.join(root, "typeset-catalogue.json"), "w") as f:
         json.dump(catalogue, f)
@@ -743,8 +744,31 @@ def test_fonts(out):
         obs.type("calm")
         time.sleep(0.6)
         shown = fonts_log(obs, since)
-        check(shown and "shown=1 " in shown[-1] and "first=DejaVu Serif" in shown[-1],
-              "searching a feel finds the typefaces tagged with it", shown[-1] if shown else "")
+        check(shown and "shown=2 " in shown[-1] and "first=DejaVu Sans" in shown[-1],
+              "a feeling typed finds the typefaces strongly so, the strongest first (not Calm 30)",
+              shown[-1] if shown else "")
+        obs.key("ctrl+a", "BackSpace")
+        time.sleep(0.6)
+
+        # The Feel menu: Any feeling, then Business (2) and Calm (2).
+        opened = fonts_log(obs, since, "open ")
+        fx, fy = (int(v) for v in opened[-1].split("feel=")[1].split(","))
+
+        def pick_feel(downs):
+            obs.click(fx, fy)
+            time.sleep(0.8)
+            obs.key(*(["Down"] * downs), "Return")
+            time.sleep(0.8)
+            return fonts_log(obs, since)[-1]
+
+        shown = pick_feel(3)
+        check("feel=Calm " in shown + " " and "shown=2 " in shown and "unrated=0" not in shown,
+              "the Feel menu: a feeling chosen shows only those strongly so, and says how many have none", shown)
+        shown = pick_feel(2)
+        check("feel=Business + Calm" in shown and "shown=1 " in shown,
+              "two chosen: those with both", shown)
+        shown = pick_feel(1)
+        check(shown.endswith("feel=Feel"), "Any feeling clears them", shown)
         obs.key("Escape")
         time.sleep(0.5)
         check(not any(s.get("family") for s in spans()), "Escape leaves the text as it was", repr(spans()))
