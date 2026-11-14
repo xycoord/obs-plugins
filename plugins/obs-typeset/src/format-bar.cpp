@@ -1,5 +1,6 @@
 #include "format-bar.hpp"
 
+#include "font-browser.hpp"
 #include "text-engine.hpp"
 
 #include <obs-module.h>
@@ -246,6 +247,42 @@ QString weight_label(int w)
 
 } // namespace
 
+// A list-shaped field whose arrow opens something of its own (the font
+// browser) instead of a list.
+class BrowseField : public QComboBox {
+public:
+	BrowseField(QWidget *parent, std::function<void(const QString &)> open)
+		: QComboBox(parent), open_(std::move(open))
+	{
+	}
+	void showPopup() override { open_(QString()); }
+
+private:
+	std::function<void(const QString &)> open_;
+};
+
+void FormatBar::browse_fonts(const QString &typed)
+{
+	FontRequest req;
+	req.family = state_.family;
+	req.weight = state_.weight > 0 ? state_.weight : 400;
+	req.italic = state_.italic;
+	req.sample = state_.sample;
+	req.in_use = fonts_in_use();
+	const QRect field(family_->mapToGlobal(QPoint(0, 0)), family_->size());
+	open_font_browser(
+		this, QRect(field.left(), geometry().top(), field.width(), geometry().height()), state_.text_rect, req,
+		typed.toStdString(),
+		[this](const std::string &family) {
+			if (actions_.family)
+				actions_.family(family);
+		},
+		[this] {
+			if (actions_.back_to_text)
+				actions_.back_to_text();
+		});
+}
+
 FormatBar::FormatBar(QWidget *parent, Actions actions)
 	: QWidget(parent, Qt::Tool | Qt::FramelessWindowHint), actions_(std::move(actions))
 {
@@ -265,19 +302,16 @@ FormatBar::FormatBar(QWidget *parent, Actions actions)
 	row->setContentsMargins(margin, margin, margin, margin);
 	row->setSpacing(gap);
 
-	// The typeface: OBS's fonts, each shown in itself; type to find one.
-	family_ = new QFontComboBox(this);
+	// The typeface: its name, in a field the shape of the others; a click,
+	// or typing, opens the font browser (font-browser.hpp).
+	family_ = new BrowseField(this, [this](const QString &typed) { browse_fonts(typed); });
 	family_->setToolTip(tip("Bar.Typeface"));
 	family_->setFocusPolicy(Qt::ClickFocus);
+	family_->setMinimumWidth(150);
 	family_->setMaximumWidth(200);
-	// Typed into, to find a font among hundreds (a plain list would take a
-	// space in a name as choosing what's found so far).
-	QObject::connect(family_, QOverload<int>::of(&QComboBox::activated), this, [this](int) {
-		if (!updating_ && actions_.family)
-			actions_.family(family_->currentFont().family().toStdString());
-		if (actions_.back_to_text)
-			actions_.back_to_text();
-	});
+	family_->setEditable(true);
+	family_->lineEdit()->setReadOnly(true);
+	family_->lineEdit()->installEventFilter(this);
 	row->addWidget(family_);
 
 	weight_ = new QComboBox(this);
@@ -488,14 +522,7 @@ void FormatBar::set_state(const State &s)
 	updating_ = true;
 	state_ = s;
 
-	if (!family_->hasFocus()) {
-		if (s.family.empty()) {
-			family_->setCurrentIndex(-1); // mixed: shown blank
-			family_->lineEdit()->clear();
-		} else {
-			family_->setCurrentFont(QFont(QString::fromStdString(s.family)));
-		}
-	}
+	family_->setEditText(QString::fromStdString(s.family)); // (mixed: blank)
 	weight_->clear();
 	std::vector<int> weights = s.weights;
 	// What the text has, as the list's nearest weight within a step (fonts
@@ -773,6 +800,29 @@ void FormatBar::log_geometry() const
 
 bool FormatBar::eventFilter(QObject *obj, QEvent *event)
 {
+	// The typeface field: a click (on its release, as the weight list's) or
+	// a letter typed opens the font browser, the letter in its search.
+	if (obj == family_->lineEdit()) {
+		if (event->type() == QEvent::MouseButtonPress || event->type() == QEvent::MouseButtonDblClick)
+			return true;
+		if (event->type() == QEvent::MouseButtonRelease) {
+			browse_fonts(QString());
+			return true;
+		}
+		if (event->type() == QEvent::KeyPress) {
+			auto *k = static_cast<QKeyEvent *>(event);
+			const QString t = k->text();
+			if (!t.isEmpty() && t.at(0).isPrint() && !(k->modifiers() & (Qt::ControlModifier | Qt::AltModifier))) {
+				browse_fonts(t);
+				return true;
+			}
+			if (k->key() == Qt::Key_Down || k->key() == Qt::Key_Return || k->key() == Qt::Key_Enter ||
+			    k->key() == Qt::Key_F4) {
+				browse_fonts(QString());
+				return true;
+			}
+		}
+	}
 	// (Opened on the release: opened on the press, the release would land on
 	// the list and choose what's under the pointer.)
 	if (obj == weight_->lineEdit() &&

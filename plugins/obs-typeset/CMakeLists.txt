@@ -6,6 +6,7 @@ find_package(obs-frontend-api REQUIRED)
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(PANGOCAIRO REQUIRED IMPORTED_TARGET pangocairo>=1.50)
+pkg_check_modules(FONTCONFIG REQUIRED IMPORTED_TARGET fontconfig)
 
 add_library(obs-typeset MODULE
 	src/plugin.cpp
@@ -19,9 +20,12 @@ add_library(obs-typeset MODULE
 	src/obs-preview.cpp
 	src/edit-model.cpp
 	src/overlay.cpp
-	src/format-bar.cpp)
+	src/format-bar.cpp
+	src/font-index.cpp
+	src/font-filter.cpp
+	src/font-browser.cpp)
 target_link_libraries(obs-typeset PRIVATE OBS::libobs OBS::obs-frontend-api Qt6::Core Qt6::Gui Qt6::Widgets
-	PkgConfig::PANGOCAIRO)
+	PkgConfig::PANGOCAIRO PkgConfig::FONTCONFIG)
 target_compile_options(obs-typeset PRIVATE -Wall -Wextra)
 # The drawing's pixel loops (the shadow's spread and blur) run several times
 # faster when the compiler does many pixels at once, which -O3 lets it.

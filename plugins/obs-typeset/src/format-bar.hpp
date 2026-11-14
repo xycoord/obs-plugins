@@ -19,7 +19,6 @@
 #include <vector>
 
 class QComboBox;
-class QFontComboBox;
 class QCheckBox;
 class QFrame;
 class QLabel;
@@ -44,6 +43,11 @@ public:
 	// What the selection (or what's typed next) has.
 	struct State {
 		std::string family;       // the typeface shown; empty: mixed
+		// For the font browser: the person's words (the selection, else the
+		// caret's line), and where the text is on the screen (the browser
+		// keeps clear of it).
+		std::string sample;
+		QRect text_rect;
 		std::vector<int> weights; // that typeface's weights, for the list
 		int weight = 400;         // 0: mixed
 		bool italic = false, underline = false;
@@ -98,7 +102,7 @@ protected:
 
 private:
 	Actions actions_;
-	QFontComboBox *family_;
+	QComboBox *family_;
 	QComboBox *weight_;
 	QComboBox *size_;
 	QToolButton *italic_, *underline_, *super_, *sub_, *colour_, *clear_;
@@ -113,6 +117,7 @@ private:
 	QLabel *wrap_note_;
 	bool new_step_ = true;
 	void make_popups();
+	void browse_fonts(const QString &typed); // the font browser, from the typeface field
 	void show_popup(QFrame *popup, QToolButton *under);
 	State state_;
 	int listed_base_ = -1; // the base size the list was made with

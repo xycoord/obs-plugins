@@ -42,7 +42,7 @@ another colour, the "st" of "21st" raised. While editing in the preview, a forma
 text, made of OBS's own controls in OBS's theme:
 
 - **Typeface**, **Size** and **Weight**: any font, in any of its weights (Thin to Black, as it has
-  them), at any size in the text's own pixels. Type a size and press Enter (nothing changes on the
+  them), at any size in the text's own pixels. The typeface opens the font browser (below). Type a size and press Enter (nothing changes on the
   canvas until you do; Esc puts it back), or pick a common one from the list, or the text's own size
   ("96 — current": the size set in its properties), which puts the words back to it and leaves
   their other styles. Once you've clicked into it, Up and Down or the mouse wheel step it a tenth at
@@ -79,6 +79,31 @@ The properties are the style of the rest of the text: change the font there and 
 bold, in the new font. A note in the properties says when some words have a style of their own, with
 a button to clear them. (Styles set by a script that overlap are tidied up: the earlier one keeps the overlap.) Words typed after a styled word continue its style; text changed in the
 properties keeps its styles where it's unchanged.
+
+## Finding a typeface
+
+Click the format bar's typeface (or type a letter in it), or **Browse typefaces…** in the text's
+properties: the font browser lists every installed family, each with its name and what it has
+(category, weights, italic, variable) and, under that, your own words set in it: the selection, or
+the line you're on, at your weight. A family without that weight says which it has instead
+("Medium → Regular").
+
+- **Search**: a name, or the start of one ("pla"), even without its spaces ("robotoslab"); or a
+  category, a finer class, a feel or a designer ("slab", "geometric", "calm", "playful").
+- **Sans, Serif, Display, Handwriting, Mono**: any of those chosen.
+- **Covers my text** (on to start with): only families with every character of your words, so an
+  accent or a symbol in a band's name never falls back to another font. How many are left out, and
+  for what, is at the bottom; a click there shows them again.
+- **Has <weight>**, **Has italic**: only families with those.
+- **Most used** (Google's own ranking) or **A–Z**.
+- With nothing typed: **Recent**, your **Favourites** (Ctrl+D, or the star), and the typefaces
+  **in this scene collection** come first, then all of them.
+
+Up and Down move through them, Enter (or a click) uses the one highlighted, and Escape leaves the
+text as it was: nothing changes on the canvas until you choose. Its size and your favourites are
+kept. The categories, classes, feel and popularity come from Google's catalogue, for fonts installed
+with [tools/google-fonts.sh](../../tools/google-fonts.sh) (the whole Google Fonts library, with it);
+any other font is listed too, with what can be read from the font itself.
 
 ## Resizing and font size
 
