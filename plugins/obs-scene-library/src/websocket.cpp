@@ -73,7 +73,7 @@ void save_scene(obs_data_t *request, obs_data_t *response, void *)
 	std::string name = obs_data_get_string(request, "name");
 	bool replace = obs_data_get_bool(request, "replace");
 	std::optional<Snapshot> snap;
-	std::string error;
+	std::string error = "OBS is closing";
 	run_on_ui_thread([&] {
 		OBSSourceAutoRelease scene = scene_name.empty() ? edited_scene()
 								 : obs_get_source_by_name(scene_name.c_str());
@@ -91,8 +91,8 @@ void save_scene(obs_data_t *request, obs_data_t *response, void *)
 	});
 	if (!snap)
 		return fail(response, error);
-	// The files are copied here, not on OBS's UI thread.
-	Saved saved = write(std::move(*snap));
+	// The files are copied here, not on OBS's UI thread; stopped if OBS closes.
+	Saved saved = write(std::move(*snap), replace, [](uint64_t, uint64_t) { return !exiting(); });
 	if (!saved.ok)
 		return fail(response, saved.error);
 	notify_changed();
@@ -118,7 +118,8 @@ void load_scene(obs_data_t *request, obs_data_t *response, void *)
 	if (!entry)
 		return fail(response, "there's no saved scene called '" + name + "'");
 	Loaded loaded;
-	run_on_ui_thread([&] { loaded = load(*entry); });
+	if (!run_on_ui_thread([&] { loaded = load(*entry); }))
+		return fail(response, "OBS is closing");
 	if (!loaded.ok)
 		return fail(response, loaded.error);
 	obs_data_set_bool(response, "ok", true);

@@ -281,6 +281,9 @@ void Dock::save_scene(const std::string &replacing)
 	}
 	QString scene_name = QString::fromUtf8(obs_source_get_name(scene));
 	std::string name = replacing;
+	// Replacing a saved scene only when that's been asked for: one of the same
+	// name saved meanwhile (through obs-websocket) isn't overwritten.
+	bool replace = !replacing.empty();
 	if (name.empty()) {
 		bool ok = false;
 		QString answer = QInputDialog::getText(this, T("SaveDialog.Title"),
@@ -290,9 +293,12 @@ void Dock::save_scene(const std::string &replacing)
 		if (!ok || answer.isEmpty())
 			return;
 		name = answer.toStdString();
-		if (library::find(name) && QMessageBox::question(this, T("Replace.Title"), T("Replace.Text").arg(answer)) !=
-					  QMessageBox::Yes)
-			return;
+		if (library::find(name)) {
+			if (QMessageBox::question(this, T("Replace.Title"), T("Replace.Text").arg(answer)) !=
+			    QMessageBox::Yes)
+				return;
+			replace = true;
+		}
 	} else if (QMessageBox::question(this, T("Replace.Title"),
 					 T("ReplaceWith.Text").arg(Q(replacing), scene_name)) != QMessageBox::Yes) {
 		return;
@@ -303,10 +309,10 @@ void Dock::save_scene(const std::string &replacing)
 		message(T("NoScene"), true);
 		return;
 	}
-	start_save(snapshot(scene, name));
+	start_save(snapshot(scene, name), replace);
 }
 
-void Dock::start_save(Snapshot snap)
+void Dock::start_save(Snapshot snap, bool replace)
 {
 	if (worker.joinable())
 		worker.join();
@@ -319,10 +325,10 @@ void Dock::start_save(Snapshot snap)
 	cancel->show();
 	message(T("Saving").arg(saving_name).arg(0));
 
-	worker = std::thread([this, snap = std::move(snap)]() mutable {
+	worker = std::thread([this, replace, snap = std::move(snap)]() mutable {
 		QString name = Q(snap.name);
 		int last = -1;
-		Saved saved = write(std::move(snap), [&](uint64_t done, uint64_t total) {
+		Saved saved = write(std::move(snap), replace, [&](uint64_t done, uint64_t total) {
 			int percent = total ? (int)(done * 100 / total) : 100;
 			if (percent != last) {
 				last = percent;

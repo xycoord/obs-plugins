@@ -32,7 +32,7 @@ public:
 
 private:
 	void save_scene(const std::string &replacing = {});
-	void start_save(Snapshot snap);
+	void start_save(Snapshot snap, bool replace);
 	void save_progress(int percent);
 	void save_finished(const Saved &saved, const QString &name);
 	void add_to_scenes(const std::string &name);

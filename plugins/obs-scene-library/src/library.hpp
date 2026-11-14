@@ -61,15 +61,16 @@ struct Snapshot {
 Snapshot snapshot(obs_source_t *scene, const std::string &name);
 
 // Writes a snapshot into the library, copying the files it uses. A saved scene
-// with the same name is replaced. `progress` is told how many bytes of how many
-// have been copied, and stops the saving by returning false.
+// with the same name is replaced if `replace`, else it fails. `progress` is told
+// how many bytes of how many have been copied, and stops the saving by
+// returning false.
 struct Saved {
 	bool ok = false;
 	std::string error;
 	Entry entry;
 };
 using Progress = std::function<bool(uint64_t done, uint64_t total)>;
-Saved write(Snapshot snap, const Progress &progress = nullptr);
+Saved write(Snapshot snap, bool replace, const Progress &progress = nullptr);
 
 // Adds a saved scene to OBS's scenes, beside what's there and without changing
 // any of it. In Studio Mode it's put in the preview.

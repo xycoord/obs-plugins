@@ -72,7 +72,10 @@ Interval/
 ```
 
 A file that's already in the library, from another saved scene, is linked
-rather than copied again, so it takes no more space. Deleting a saved scene
+rather than copied again, so it takes no more space. Replacing a saved scene
+keeps its copies of files that haven't changed where they were, so scenes
+already added from it still find them. Renaming a saved scene changes its name
+but not its folder's, for the same reason. Deleting a saved scene
 deletes its folder. Any scenes already added from it stay in OBS, but if they
 use the library's copies of files, those copies go too.
 

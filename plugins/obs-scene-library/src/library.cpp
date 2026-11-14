@@ -109,6 +109,10 @@ struct Copier {
 	// false: it failed, with `error` set, or was cancelled.
 	bool copy(const fs::path &from, const fs::path &to, std::string &error)
 	{
+		// Never into a file that's there already: it may be linked to another
+		// saved scene's copy.
+		std::error_code ec;
+		fs::remove(to, ec);
 		FILE *in = fopen(from.c_str(), "rb");
 		if (!in) {
 			error = "couldn't read " + from.string();
@@ -147,13 +151,15 @@ struct Copier {
 		return ok;
 	}
 
-	// A file already in the library is linked, not copied: it's never changed
-	// once there, and this way takes no more space.
-	bool link_or_copy(const fs::path &from, const fs::path &to, bool linkable, uint64_t size, std::string &error)
+	// A file the library has already (`link`) is linked to, not copied: it's
+	// never changed once there, and this way takes no more space. If that
+	// can't be done (it's been deleted since), the original is copied.
+	bool link_or_copy(const fs::path &link, const fs::path &from, const fs::path &to, uint64_t size,
+			  std::string &error)
 	{
-		if (linkable) {
+		if (!link.empty()) {
 			std::error_code ec;
-			fs::create_hard_link(from, to, ec);
+			fs::create_hard_link(link, to, ec);
 			if (!ec) {
 				done += size;
 				return tick();
@@ -231,16 +237,39 @@ void collect(obs_source_t *source, std::vector<OBSSource> &out, std::set<obs_sou
 		scene = obs_group_from_source(source);
 	if (!scene)
 		return;
-	std::vector<obs_source_t *> children;
+	// Held, in case an item is removed meanwhile (from obs-websocket's thread).
+	std::vector<OBSSource> children;
 	obs_scene_enum_items(
 		scene,
 		[](obs_scene_t *, obs_sceneitem_t *item, void *param) {
-			static_cast<std::vector<obs_source_t *> *>(param)->push_back(obs_sceneitem_get_source(item));
+			static_cast<std::vector<OBSSource> *>(param)->emplace_back(obs_sceneitem_get_source(item));
 			return true;
 		},
 		&children);
-	for (obs_source_t *child : children)
+	for (auto &child : children)
 		collect(child, out, seen);
+}
+
+// Where a saved scene keeps its copy of a file, from what the file is: saving
+// the same file again (replacing the saved scene) puts it in the same place, so
+// scenes already added that use the library's copy still find it.
+fs::path stored_path(const std::string &path, int64_t size, int64_t mtime, const std::string &base)
+{
+	uint64_t h = 1469598103934665603ull; // FNV-1a
+	auto add = [&](const std::string &s) {
+		for (unsigned char c : s) {
+			h ^= c;
+			h *= 1099511628211ull;
+		}
+		h ^= 0xff;
+		h *= 1099511628211ull;
+	};
+	add(path);
+	add(std::to_string(size));
+	add(std::to_string(mtime));
+	char key[17];
+	snprintf(key, sizeof key, "%016llx", (unsigned long long)h);
+	return fs::path("files") / key / base;
 }
 
 fs::path unique_dir(const fs::path &lib, const std::string &base)
@@ -435,7 +464,7 @@ Snapshot snapshot(obs_source_t *scene, const std::string &name)
 	return snap;
 }
 
-Saved write(Snapshot snap, const Progress &progress)
+Saved write(Snapshot snap, bool replace, const Progress &progress)
 {
 	Saved result;
 	fs::path lib = folder();
@@ -460,12 +489,20 @@ Saved write(Snapshot snap, const Progress &progress)
 
 	// Files other saved scenes have copies of, as they were then: linked to,
 	// not copied again.
+	// And the library's copies, to what they're copies of: a scene using one
+	// (added back after its original went) is saved as using the original,
+	// with the copy as its copy.
 	std::map<std::tuple<std::string, int64_t, int64_t>, fs::path> stored;
+	std::map<std::string, FileRecord> copies;
 	for (auto &e : entries()) {
 		OBSDataAutoRelease data = obs_data_create_from_json_file((e.dir / "scene.json").c_str());
-		for (auto &f : read_files(data))
-			if (f.kind == "file" && !f.stored.empty())
+		for (auto &f : read_files(data)) {
+			if (f.stored.empty())
+				continue;
+			copies[(e.dir / f.stored).lexically_normal().string()] = f;
+			if (f.kind == "file")
 				stored[{f.path, f.size, f.mtime}] = e.dir / f.stored;
+		}
 	}
 
 	// What's to be copied, and how much.
@@ -476,15 +513,22 @@ Saved write(Snapshot snap, const Progress &progress)
 	};
 	std::vector<Plan> plans;
 	Copier copier{progress};
-	int n = 0;
+	std::map<std::string, std::string> originals; // library copy -> what it's a copy of
+	std::set<std::string> planned;
 	for (auto &path : snap.paths) {
 		Plan plan;
 		plan.record.path = path;
 		fs::path p(path);
-		std::string base = p.filename().string();
+		auto copy_of = copies.find(p.lexically_normal().string());
+		if (copy_of != copies.end()) {
+			plan.record.path = copy_of->second.path;
+			originals[path] = copy_of->second.path;
+		}
+		if (!planned.insert(plan.record.path).second)
+			continue; // (two copies of one file)
+		std::string base = fs::path(plan.record.path).filename().string();
 		if (base.empty())
 			base = "folder";
-		fs::path dest = fs::path("files") / std::to_string(++n) / base;
 		bool file = fs::is_regular_file(p, ec);
 		if (!file && !fs::is_directory(p, ec)) {
 			plan.record.kind = "file";
@@ -497,7 +541,11 @@ Saved write(Snapshot snap, const Progress &progress)
 			plan.record.kind = "file";
 			plan.record.size = (int64_t)fs::file_size(p, ec);
 			plan.record.mtime = mtime_of(p);
-			plan.copies.emplace_back(p, dest);
+			if (copy_of != copies.end()) {
+				plan.record.size = copy_of->second.size;
+				plan.record.mtime = copy_of->second.mtime;
+			}
+			plan.copies.emplace_back(p, stored_path(plan.record.path, plan.record.size, plan.record.mtime, base));
 			if (inside(p, lib))
 				plan.link_from = p;
 			else if (auto s = stored.find({path, plan.record.size, plan.record.mtime});
@@ -506,13 +554,19 @@ Saved write(Snapshot snap, const Progress &progress)
 			copier.total += plan.record.size;
 		} else {
 			plan.record.kind = "folder";
+			fs::path dest = stored_path(plan.record.path, 0, 0, base);
 			uint64_t bytes = 0;
 			bool too_big = false;
 			auto it = fs::recursive_directory_iterator(p, fs::directory_options::skip_permission_denied, ec);
 			for (; !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
-				if (!it->is_regular_file(ec))
+				// (A file in it that can't be read is left out.)
+				std::error_code fec;
+				if (!it->is_regular_file(fec) || access(it->path().c_str(), R_OK) != 0)
 					continue;
-				bytes += it->file_size(ec);
+				uintmax_t size = it->file_size(fec);
+				if (fec)
+					continue;
+				bytes += size;
 				plan.copies.emplace_back(it->path(), dest / fs::relative(it->path(), p, ec));
 				if (bytes > MAX_FOLDER_BYTES || plan.copies.size() > MAX_FOLDER_FILES) {
 					too_big = true;
@@ -527,6 +581,9 @@ Saved write(Snapshot snap, const Progress &progress)
 			}
 		}
 		if (plan.record.skipped.empty()) {
+			fs::path dest = plan.record.kind == "folder"
+						? stored_path(plan.record.path, 0, 0, base)
+						: stored_path(plan.record.path, plan.record.size, plan.record.mtime, base);
 			plan.record.stored = dest.string();
 			fs::create_directories(partial / (plan.record.kind == "folder" ? dest : dest.parent_path()), ec);
 		}
@@ -539,10 +596,8 @@ Saved write(Snapshot snap, const Progress &progress)
 		for (auto &[from, to] : plan.copies) {
 			fs::create_directories((partial / to).parent_path(), ec);
 			std::string error;
-			bool linkable = !plan.link_from.empty();
-			fs::path source = linkable ? plan.link_from : from;
 			uint64_t size = plan.record.kind == "file" ? (uint64_t)plan.record.size : 0;
-			if (!copier.link_or_copy(source, partial / to, linkable, size, error)) {
+			if (!copier.link_or_copy(plan.link_from, from, partial / to, size, error)) {
 				if (copier.cancelled)
 					return fail("cancelled");
 				return fail(error);
@@ -562,6 +617,18 @@ Saved write(Snapshot snap, const Progress &progress)
 		obs_data_array_push_back(files, f);
 	}
 	obs_data_set_array(snap.data, "files", files);
+	if (!originals.empty()) {
+		OBSDataArrayAutoRelease sources = obs_data_get_array(snap.data, "sources");
+		for (size_t i = 0, n = obs_data_array_count(sources); i < n; i++) {
+			OBSDataAutoRelease source = obs_data_array_item(sources, i);
+			for_each_settings(source, [&](obs_data_t *settings) {
+				rewrite_strings(settings, [&](const char *, const char *value) -> const std::string * {
+					auto o = originals.find(value);
+					return o == originals.end() ? nullptr : &o->second;
+				});
+			});
+		}
+	}
 
 	if (!snap.thumbnail.isNull() && !snap.thumbnail.save(QString::fromStdString((partial / "thumbnail.png").string()), "PNG"))
 		blog(LOG_WARNING, "[scene-library] couldn't save the thumbnail of '%s'", snap.name.c_str());
@@ -573,6 +640,8 @@ Saved write(Snapshot snap, const Progress &progress)
 		std::lock_guard lock(finish_mutex);
 		fs::path dir;
 		if (auto old = find(snap.name)) {
+			if (!replace)
+				return fail("there's already a saved scene called '" + snap.name + "'");
 			dir = old->dir;
 			fs::path aside = lib / (".replaced-" + random_hex());
 			fs::rename(old->dir, aside, ec);
@@ -747,11 +816,8 @@ bool rename(const Entry &entry, const std::string &name, std::string &error)
 		error = "couldn't write " + json.string();
 		return false;
 	}
-	// Its folder follows, if it can.
-	if (sanitise_name(name) != entry.dir.filename().string()) {
-		std::error_code ec;
-		fs::rename(entry.dir, unique_dir(entry.dir.parent_path(), sanitise_name(name)), ec);
-	}
+	// Its folder keeps its name: scenes already added may use the copies of
+	// files in it.
 	blog(LOG_INFO, "[scene-library] renamed '%s' to '%s'", entry.name.c_str(), name.c_str());
 	return true;
 }

@@ -8,7 +8,12 @@
 
 namespace library {
 
-void run_on_ui_thread(const std::function<void()> &fn);
+// Runs fn there and waits for it. False, without running it, once OBS is
+// closing: its UI thread may never get to it.
+bool run_on_ui_thread(const std::function<void()> &fn);
+
+// Whether OBS is closing (anything long, like copying files, stops).
+bool exiting();
 
 // The scene being edited: in Studio Mode the preview's, else the one showing.
 obs_source_t *edited_scene();

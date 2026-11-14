@@ -289,6 +289,18 @@ def run(obs, lib, logo, out):
     check(r.get("ok") and obs.settings("Logo 4").get("file", "").startswith(lib.dir),
           "and so is one that's gone", r)
 
+    # Replacing the saved scene with that scene (which uses the library's copy)
+    # keeps the copy where it is, and records it as the file it's a copy of.
+    used = obs.settings("Logo 4").get("file", "")
+    r = lib("SaveScene", sceneName=r.get("sceneName"), name="Interval", replace=True)
+    check(r.get("ok") and os.path.isfile(used),
+          "replacing a saved scene keeps its copies where scenes added from it find them", used)
+    replaced = lib.json("Interval")
+    logo4 = next(s for s in replaced["sources"] if s["name"] == "Logo 4")
+    check([f["path"] for f in replaced["files"]] == [logo] and logo4["settings"]["file"] == logo,
+          "and a library copy a scene uses is saved as the file it's a copy of",
+          ([f["path"] for f in replaced["files"]], logo4["settings"]["file"]))
+
     # --- 4. Files already in the library -------------------------------------------------------
     print("-- files already in the library")
     r = lib("SaveScene", sceneName="Interval 2", name="From the copy")
@@ -311,8 +323,8 @@ def run(obs, lib, logo, out):
           sorted(lib.entries()))
     r = lib("RenameScene", name="From the copy", newName="Blue square")
     check(r.get("ok") and "Blue square" in lib.entries() and
-          os.path.basename(lib.entries()["Blue square"]["folder"]) == "Blue square",
-          "renaming changes its name and its folder's", r)
+          os.path.basename(lib.entries()["Blue square"]["folder"]) == "From the copy",
+          "renaming changes its name, not its folder's (scenes added from it may use files there)", r)
     r = lib("RenameScene", name="Blue square", newName="Interval copy")
     check(not r.get("ok"), "it can't take another's name", r)
     r = lib("DeleteScene", name="Interval copy")

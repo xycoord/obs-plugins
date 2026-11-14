@@ -13,6 +13,12 @@
 #include <QPointer>
 #include <QThread>
 
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <memory>
+#include <mutex>
+
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE("obs-scene-library", "en-US")
 
@@ -24,7 +30,8 @@ MODULE_EXPORT const char *obs_module_description(void)
 namespace {
 
 constexpr const char *DOCK_ID = "scene-library";
-QPointer<library::Dock> dock;
+QPointer<library::Dock> dock; // used on the UI thread only
+std::atomic<bool> closing{false};
 
 // The first time OBS runs with the plugin, its dock is shown beside the Scenes
 // dock (OBS adds it hidden, and floating). From then on it's wherever it was
@@ -47,22 +54,71 @@ void introduce_dock()
 
 void frontend_event(enum obs_frontend_event event, void *)
 {
-	if (event == OBS_FRONTEND_EVENT_FINISHED_LOADING)
+	switch (event) {
+	case OBS_FRONTEND_EVENT_FINISHED_LOADING:
 		introduce_dock();
-	else if (event == OBS_FRONTEND_EVENT_EXIT && dock)
-		dock->shutdown();
+		break;
+	case OBS_FRONTEND_EVENT_SCRIPTING_SHUTDOWN:
+	case OBS_FRONTEND_EVENT_EXIT:
+		closing = true;
+		if (dock)
+			dock->shutdown();
+		break;
+	default:
+		break;
+	}
 }
 
 } // namespace
 
 namespace library {
 
-void run_on_ui_thread(const std::function<void()> &fn)
+bool exiting()
 {
-	if (!qApp || QThread::currentThread() == qApp->thread())
+	return closing.load();
+}
+
+bool run_on_ui_thread(const std::function<void()> &fn)
+{
+	if (!qApp || QThread::currentThread() == qApp->thread()) {
 		fn();
-	else
-		QMetaObject::invokeMethod(qApp, fn, Qt::BlockingQueuedConnection);
+		return true;
+	}
+	// Not a blocking connection: once OBS is closing its event loop may have
+	// stopped, and this thread would wait for ever (and obs-websocket, for
+	// this thread, as it unloads). So it waits while it can, and gives up if
+	// OBS closes before fn has started; fn, which refers to the caller's
+	// stack, is then never run.
+	struct State {
+		std::mutex m;
+		std::condition_variable cv;
+		bool started = false, done = false, abandoned = false;
+	};
+	auto state = std::make_shared<State>();
+	QMetaObject::invokeMethod(
+		qApp,
+		[state, &fn] {
+			{
+				std::lock_guard lock(state->m);
+				if (state->abandoned)
+					return;
+				state->started = true;
+			}
+			fn();
+			std::lock_guard lock(state->m);
+			state->done = true;
+			state->cv.notify_all();
+		},
+		Qt::QueuedConnection);
+	std::unique_lock lock(state->m);
+	while (!state->done) {
+		if (closing && !state->started) {
+			state->abandoned = true;
+			return false;
+		}
+		state->cv.wait_for(lock, std::chrono::milliseconds(100));
+	}
+	return true;
 }
 
 obs_source_t *edited_scene()
@@ -73,12 +129,11 @@ obs_source_t *edited_scene()
 
 void notify_changed()
 {
-	QPointer<Dock> d = dock;
-	if (d)
-		QMetaObject::invokeMethod(d, [d] {
-			if (d)
-				d->refresh();
-		});
+	if (qApp)
+		QMetaObject::invokeMethod(qApp, [] {
+			if (dock)
+				dock->refresh();
+		}, Qt::QueuedConnection);
 }
 
 } // namespace library
