@@ -94,8 +94,8 @@ the line you're on, at your weight. A family without that weight says which it h
 - **Feel**: Google's feelings for its fonts (Fancy, Calm, Vintage, Playful, Business, Futuristic and
   14 more), each with how many fonts have it. Choose one and you see only the fonts strongly so,
   the strongest first; choose more for those with each ("Fancy" and "Vintage"), with a category for
-  those of a kind ("Display" and "Loud"). Typing a feeling in the search does the same. Each row
-  names its strongest feelings beside its category.
+  those of a kind ("Display" and "Loud"). Typing a feeling in the search does the same, and Alt+F opens
+  the menu. Each row names its strongest feelings beside its category.
 - **Covers my text** (on to start with): only families with every character of your words, so an
   accent or a symbol in a band's name never falls back to another font. How many are left out, and
   for what, is at the bottom; a click there shows them again.

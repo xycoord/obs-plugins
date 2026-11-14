@@ -411,10 +411,11 @@ public:
 		}
 		// Its strongest feelings, the ones chosen first.
 		QStringList feels;
-		for (const auto &[name, strength] : strong_feels(f))
+		const auto strong = strong_feels(f);
+		for (const auto &[name, strength] : strong)
 			if (browser_->feels().count(name))
 				feels << QString::fromStdString(name);
-		for (const auto &[name, strength] : strong_feels(f))
+		for (const auto &[name, strength] : strong)
 			if (!browser_->feels().count(name) && feels.size() < 2)
 				feels << QString::fromStdString(name);
 		if (!feels.isEmpty())
@@ -940,6 +941,12 @@ bool FontBrowser::eventFilter(QObject *obj, QEvent *event)
 		case Qt::Key_D:
 			if (k->modifiers() & Qt::ControlModifier) {
 				toggle_favourite(list_->currentIndex());
+				return true;
+			}
+			break;
+		case Qt::Key_F: // Alt+F: the Feel menu, from the keyboard
+			if ((k->modifiers() & Qt::AltModifier) && feel_->menu()) {
+				feel_->menu()->popup(feel_->mapToGlobal(QPoint(0, feel_->height())));
 				return true;
 			}
 			break;

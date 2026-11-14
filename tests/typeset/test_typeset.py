@@ -754,8 +754,11 @@ def test_fonts(out):
         opened = fonts_log(obs, since, "open ")
         fx, fy = (int(v) for v in opened[-1].split("feel=")[1].split(","))
 
-        def pick_feel(downs):
-            obs.click(fx, fy)
+        def pick_feel(downs, keyboard=False):
+            if keyboard:
+                obs.key("alt+f")
+            else:
+                obs.click(fx, fy)
             time.sleep(0.8)
             obs.key(*(["Down"] * downs), "Return")
             time.sleep(0.8)
@@ -767,8 +770,8 @@ def test_fonts(out):
         shown = pick_feel(2)
         check("feel=Business + Calm" in shown and "shown=1 " in shown,
               "two chosen: those with both", shown)
-        shown = pick_feel(1)
-        check(shown.endswith("feel=Feel"), "Any feeling clears them", shown)
+        shown = pick_feel(1, keyboard=True)
+        check(shown.endswith("feel=Feel"), "Alt+F opens the menu from the keyboard; Any feeling clears them", shown)
         obs.key("Escape")
         time.sleep(0.5)
         check(not any(s.get("family") for s in spans()), "Escape leaves the text as it was", repr(spans()))

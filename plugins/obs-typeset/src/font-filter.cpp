@@ -208,7 +208,7 @@ int search_score(const FamilyInfo &f, const std::string &text)
 		else if (const int strength = w.size() >= 3 ? feel_match(f, w) : 0)
 			s = 250 + strength; // a feeling ("fancy"): the strongest first
 		else if (starts_word(f.search_extra, w))
-			s = 250; // a category, class, feel or designer ("slab", "calm")
+			s = 250; // a category, class or designer ("slab", "geometric")
 		else if (w.size() >= 3)
 			s = subsequence(without_spaces(name), w);
 		if (s == 0)
