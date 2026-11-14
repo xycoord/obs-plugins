@@ -1,4 +1,5 @@
 #include "font-index.hpp"
+#include "font-filter.hpp" // lower()
 
 #include <obs.h>
 #include <util/platform.h>
@@ -17,13 +18,6 @@ namespace typeset {
 // (What a family has, and weight_label(): font-filter.cpp, with the search.)
 
 namespace {
-
-std::string lower(std::string s)
-{
-	for (char &c : s)
-		c = char(std::tolower(static_cast<unsigned char>(c)));
-	return s;
-}
 
 // The family name in English where a font names itself in several languages.
 std::string family_of(FcPattern *p)
@@ -47,12 +41,19 @@ struct Catalogued {
 	int popularity = 0;
 };
 
-// typeset-catalogue.json (see tools/google-fonts-catalogue.py).
-void read_catalogue(const std::string &path, std::unordered_map<std::string, Catalogued> &into)
+// typeset-catalogue.json (see tools/google-fonts-catalogue.py), in dir: its
+// families by name, and its folders (by their whole path) to those names.
+void read_catalogue(const std::string &dir, std::unordered_map<std::string, Catalogued> &into,
+		    std::unordered_map<std::string, std::string> &folders)
 {
-	obs_data_t *root = obs_data_create_from_json_file(path.c_str());
+	obs_data_t *root = obs_data_create_from_json_file((dir + "/typeset-catalogue.json").c_str());
 	if (!root)
 		return;
+	if (obs_data_t *f = obs_data_get_obj(root, "folders")) {
+		for (obs_data_item_t *t = obs_data_first(f); t; obs_data_item_next(&t))
+			folders[dir + "/" + obs_data_item_get_name(t)] = obs_data_item_get_string(t);
+		obs_data_release(f);
+	}
 	obs_data_t *families = obs_data_get_obj(root, "families");
 	for (obs_data_item_t *item = families ? obs_data_first(families) : nullptr; item; obs_data_item_next(&item)) {
 		obs_data_t *f = obs_data_item_get_obj(item);
@@ -99,6 +100,7 @@ std::string dirname_of(const std::string &path)
 std::vector<FamilyInfo> build_font_index()
 {
 	std::unordered_map<std::string, FamilyInfo> by_name;
+	std::unordered_map<std::string, std::set<std::string>> folders_of; // each family's fonts' folders
 	std::set<std::string> catalogue_dirs, looked;
 
 	FcPattern *all = FcPatternCreate();
@@ -149,6 +151,7 @@ std::vector<FamilyInfo> build_font_index()
 		FcChar8 *file = nullptr;
 		if (FcPatternGetString(p, FC_FILE, 0, &file) == FcResultMatch) {
 			const std::string dir = dirname_of(reinterpret_cast<const char *>(file));
+			folders_of[name].insert(dir);
 			for (const std::string &d : {dir, dirname_of(dir), dirname_of(dirname_of(dir))}) {
 				if (d.empty() || !looked.insert(d).second)
 					continue;
@@ -161,15 +164,26 @@ std::vector<FamilyInfo> build_font_index()
 		FcFontSetDestroy(set);
 
 	std::unordered_map<std::string, Catalogued> catalogue;
+	std::unordered_map<std::string, std::string> folders;
 	for (const std::string &d : catalogue_dirs)
-		read_catalogue(d + "/typeset-catalogue.json", catalogue);
+		read_catalogue(d, catalogue, folders);
 
 	std::vector<FamilyInfo> out;
 	out.reserve(by_name.size());
 	for (auto &[name, f] : by_name) {
 		std::sort(f.weights.begin(), f.weights.end());
 		f.weights.erase(std::unique(f.weights.begin(), f.weights.end()), f.weights.end());
-		if (auto it = catalogue.find(name); it != catalogue.end()) {
+		// By name, else by a folder of its fonts: a font may name its family
+		// otherwise than the catalogue ("Abhaya Libre ExtraBold",
+		// "NanumGothic"), and be installed elsewhere too.
+		auto it = catalogue.find(name);
+		for (const std::string &dir : folders_of[name]) {
+			if (it != catalogue.end())
+				break;
+			if (auto folder = folders.find(dir); folder != folders.end())
+				it = catalogue.find(folder->second);
+		}
+		if (it != catalogue.end()) {
 			const Catalogued &c = it->second;
 			if (!c.category.empty())
 				f.category = c.category;

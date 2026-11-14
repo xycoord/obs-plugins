@@ -53,6 +53,10 @@ if [ -d "$DIR/.git" ]; then
 	git -C "$DIR" fetch --depth 1 --filter=blob:none origin main
 	sparse
 	git -C "$DIR" reset --hard --quiet FETCH_HEAD
+	# Only the latest version kept: what it replaced goes.
+	rm -f "$DIR/.git/ORIG_HEAD"
+	git -C "$DIR" reflog expire --expire=now --all
+	git -C "$DIR" gc --prune=now --quiet
 else
 	[ -e "$DIR" ] && [ -n "$(ls -A "$DIR" 2>/dev/null)" ] && die "$DIR exists and isn't a copy made by this script"
 	say "fetching the Google Fonts library into $DIR (about 1,900 families; this takes a while)..."

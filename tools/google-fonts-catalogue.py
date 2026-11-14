@@ -11,6 +11,9 @@ Per family (by its name as fonts list it):
   popularity  Google's rank (1 = most used), absent if unknown
   designers ("|" between), added (date), width (Google's 1-10 rating, the median style's)
 
+And "folders": each family's folder ("ofl/abhayalibre") to its name, for the
+fonts whose files name their family otherwise ("Abhaya Libre ExtraBold").
+
 Written by tools/google-fonts.sh; read only by the plugin.
 """
 
@@ -30,8 +33,9 @@ FEEL_MIN = 20   # and a feel tag
 
 def from_metadata(repo):
     """Name, category, designers and date from each METADATA.pb (a simple
-    text-format reading: only top-level fields are wanted)."""
-    out = {}
+    text-format reading: only top-level fields are wanted), and each
+    family's folder."""
+    out, folders = {}, {}
     for licence in ("ofl", "apache", "ufl"):
         root = os.path.join(repo, licence)
         if not os.path.isdir(root):
@@ -57,7 +61,8 @@ def from_metadata(repo):
             if added:
                 entry["added"] = added.group(1)
             out[name.group(1)] = entry
-    return out
+            folders[licence + "/" + fam] = name.group(1)
+    return out, folders
 
 
 def from_catalogue(path):
@@ -115,7 +120,7 @@ def main():
     if len(sys.argv) != 4:
         sys.exit(__doc__)
     repo, catalogue, out_path = sys.argv[1:]
-    families = from_metadata(repo)
+    families, folders = from_metadata(repo)
     online = from_catalogue(catalogue)
     classes, feel = from_tags(repo)
     for name, entry in families.items():
@@ -129,7 +134,7 @@ def main():
         for key in ("classes", "designers"):
             if key in entry:
                 entry[key] = "|".join(entry[key])
-    data = {"version": 1, "families": dict(sorted(families.items()))}
+    data = {"version": 1, "families": dict(sorted(families.items())), "folders": dict(sorted(folders.items()))}
     tmp = out_path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
