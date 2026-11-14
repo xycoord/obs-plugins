@@ -53,6 +53,12 @@ QString text(const char *key)
 	return QString::fromUtf8(obs_module_text(key));
 }
 
+// A weight's name, as the format bar's weight list has it.
+QString weight_text(int w)
+{
+	return text(("Weight." + std::string(weight_name(w))).c_str());
+}
+
 // --- Remembered: favourites, recents, the browser's size and filters ---------------------------
 
 struct Prefs {
@@ -405,7 +411,7 @@ public:
 			facts << text("Fonts.Italic");
 		QStringList warnings;
 		if (!f.has_weight(req.weight))
-			warnings << QString("%1 → %2").arg(weight_label(req.weight), weight_label(f.nearest_weight(req.weight)));
+			warnings << QString("%1 → %2").arg(weight_text(req.weight), weight_text(f.nearest_weight(req.weight)));
 		if (!browser_->covers(f))
 			warnings << text("Fonts.Missing");
 		if (req.italic && !f.italic)
@@ -475,7 +481,7 @@ FontBrowser::FontBrowser(QWidget *parent, const FontRequest &request,
 	if (u.size() > 48)
 		line = QString::fromStdU32String(u.substr(0, 48)).toStdString();
 	sample_text_ = line;
-	cover_text_ = to_u32(request.sample);
+	cover_text_ = drawn_chars(request.sample);
 
 	const Prefs &prefs = Prefs::get();
 	auto *col = new QVBoxLayout(this);
@@ -524,7 +530,7 @@ FontBrowser::FontBrowser(QWidget *parent, const FontRequest &request,
 	filters->setSpacing(4);
 	cover_ = chip(text("Fonts.Covers"), prefs.cover);
 	cover_->setToolTip(text("Fonts.Covers.Help"));
-	weight_ = chip(text("Fonts.HasWeight").arg(weight_label(request.weight)), prefs.weight);
+	weight_ = chip(text("Fonts.HasWeight").arg(weight_text(request.weight)), prefs.weight);
 	italic_ = chip(text("Fonts.HasItalic"), prefs.italic);
 	filters->addWidget(cover_);
 	filters->addWidget(weight_);
@@ -572,7 +578,10 @@ FontBrowser::~FontBrowser()
 
 void FontBrowser::start(const QRect &anchor, const QRect &avoid, const std::string &search)
 {
-	search_->setText(QString::fromStdString(search));
+	{
+		const QSignalBlocker quiet(search_); // the list is made once, below
+		search_->setText(QString::fromStdString(search));
+	}
 	search_->setFocus(Qt::PopupFocusReason);
 	search_->end(false);
 	const Prefs &prefs = Prefs::get();
@@ -733,13 +742,24 @@ void FontBrowser::rebuild()
 	} else {
 		hidden_->clear();
 	}
-	// The first family highlighted, so Enter takes it.
-	for (int r = 0; r < model_->rowCount(); r++)
-		if (!model_->rows[size_t(r)].header) {
-			list_->setCurrentIndex(model_->index(r));
-			list_->scrollTo(model_->index(std::max(0, r - 1)));
+	// Highlighted, for Enter: with nothing typed, the text's own typeface
+	// (Enter at once changes nothing); else the best match.
+	int first = -1;
+	for (int r = 0; r < model_->rowCount(); r++) {
+		const Row &row = model_->rows[size_t(r)];
+		if (row.header)
+			continue;
+		if (first < 0)
+			first = r;
+		if (!sections || families[row.family].name == request_.family) {
+			first = r;
 			break;
 		}
+	}
+	if (first >= 0) {
+		list_->setCurrentIndex(model_->index(first));
+		list_->scrollTo(model_->index(std::max(0, first - 1)));
+	}
 	if (debug) {
 		const QModelIndex cur = list_->currentIndex();
 		blog(LOG_INFO, "[obs-typeset] fonts shown=%zu hidden=%d first=%s sections=%d", found.families.size(),
@@ -780,8 +800,7 @@ void FontBrowser::choose(const QModelIndex &index)
 	recent.erase(std::remove(recent.begin(), recent.end(), name), recent.end());
 	recent.insert(recent.begin(), name);
 	if (recent.size() > size_t(max_recent))
-		recent.resize(size_t(max_recent));
-	prefs.save();
+		recent.resize(size_t(max_recent)); // (saved on closing)
 	if (debug)
 		blog(LOG_INFO, "[obs-typeset] fonts chose %s", name.c_str());
 	done_ = true;
@@ -916,7 +935,7 @@ std::vector<std::string> fonts_in_use()
 	return {found.begin(), found.end()};
 }
 
-void browse_fonts_for(obs_source_t *source)
+static void browse_fonts_now(obs_source_t *source)
 {
 	TextSource *text = TextSource::from(source);
 	if (!text)
@@ -926,7 +945,7 @@ void browse_fonts_for(obs_source_t *source)
 	req.family = d.style.family;
 	req.weight = base_weight(d.style);
 	req.italic = d.style.face_style.find("Italic") != std::string::npos ||
-		     d.style.face_style.find("Oblique") != std::string::npos;
+		     d.style.face_style.find("Oblique") != std::string::npos || (d.style.font_flags & OBS_FONT_ITALIC);
 	req.sample = d.text;
 	req.in_use = fonts_in_use();
 	const QPoint at = QCursor::pos();
@@ -946,12 +965,19 @@ void browse_fonts_for(obs_source_t *source)
 			obs_data_set_string(new_font, "face", family.c_str());
 			// The new family's own style nearest to the text's ("Book" is
 			// DejaVu's, not Oswald's): "Regular", "Bold Italic"...
+			// And OBS's bold and italic flags to match it: the old ones
+			// would otherwise ask for a slant or weight it hasn't got.
 			if (const FamilyInfo *f = FontIndex::get().find(family)) {
-				const std::string weight = weight_label(f->nearest_weight(req_weight));
+				const int w = f->nearest_weight(req_weight);
+				const std::string weight = weight_label(w);
+				const bool italic = req_italic && f->italic;
 				std::string style = weight;
-				if (req_italic && f->italic)
+				if (italic)
 					style = weight == "Regular" ? "Italic" : weight + " Italic";
 				obs_data_set_string(new_font, "style", style.c_str());
+				const long long others = obs_data_get_int(new_font, "flags") & ~(OBS_FONT_BOLD | OBS_FONT_ITALIC);
+				obs_data_set_int(new_font, "flags",
+						 others | (w >= 600 ? OBS_FONT_BOLD : 0) | (italic ? OBS_FONT_ITALIC : 0));
 			}
 			obs_data_set_obj(changed, "font", new_font);
 			obs_source_update(s, changed);
@@ -963,6 +989,25 @@ void browse_fonts_for(obs_source_t *source)
 			obs_source_release(s);
 		},
 		[weak] { obs_weak_source_release(weak); });
+}
+
+// A properties button is pressed on whichever thread asks (obs-websocket's,
+// a controller's), and widgets are made only on the UI thread: opened there,
+// once the press has returned.
+void browse_fonts_for(obs_source_t *source)
+{
+	obs_weak_source_t *weak = obs_source_get_weak_source(source);
+	QMetaObject::invokeMethod(
+		qApp,
+		[weak] {
+			obs_source_t *s = obs_weak_source_get_source(weak);
+			obs_weak_source_release(weak);
+			if (s) {
+				browse_fonts_now(s);
+				obs_source_release(s);
+			}
+		},
+		Qt::QueuedConnection);
 }
 
 } // namespace typeset

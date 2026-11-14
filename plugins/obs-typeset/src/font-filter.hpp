@@ -34,4 +34,11 @@ int search_score(const FamilyInfo &f, const std::string &text);
 // UTF-8 to code points (invalid bytes skipped).
 std::u32string to_u32(const std::string &s);
 
+// The characters a font is asked to draw in s, each once, in the order they
+// first appear (no spaces or line breaks): what "covers my text" checks.
+std::u32string drawn_chars(const std::string &s);
+
+// ASCII lowercase, for search.
+std::string lower(const std::string &s);
+
 } // namespace typeset

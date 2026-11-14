@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstring>
 #include <map>
+#include <set>
 #include <sstream>
 
 namespace typeset {
@@ -88,7 +89,15 @@ std::u32string to_u32(const std::string &s)
 	return out;
 }
 
-namespace {
+std::u32string drawn_chars(const std::string &s)
+{
+	std::u32string out;
+	std::set<char32_t> seen;
+	for (char32_t c : to_u32(s))
+		if (drawn(c) && seen.insert(c).second)
+			out.push_back(c);
+	return out;
+}
 
 std::string lower(const std::string &s)
 {
@@ -97,6 +106,8 @@ std::string lower(const std::string &s)
 		c = char(std::tolower(static_cast<unsigned char>(c)));
 	return out;
 }
+
+namespace {
 
 std::vector<std::string> words(const std::string &s)
 {

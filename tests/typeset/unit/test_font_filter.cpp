@@ -137,6 +137,14 @@ int main()
 	r = find_fonts(all, q);
 	check("spaces and line breaks aren't asked of a font", r.hidden == 0, std::to_string(r.hidden));
 
+	check("the characters checked: each once, in order, no spaces or line breaks",
+	      drawn_chars("Ödön\nÖdön  död") == U"Ödön");
+	q.cover_text = drawn_chars("dön dön dön");
+	r = find_fonts(all, q);
+	check("and checking them finds what the whole text would", names(all, r) == "Inter, Playfair Display" &&
+									   r.missing == U"ö",
+	      names(all, r));
+
 	// Weights by name: DejaVu's Book (380) is a Regular.
 	FamilyInfo book = family("Book", "", 0, {380, 700}, false);
 	check("a weight of the same name counts as had", book.has_weight(400) && !book.has_weight(500));

@@ -46,7 +46,7 @@ void open_font_browser(QWidget *parent, const QRect &anchor, const QRect &avoid,
 std::vector<std::string> fonts_in_use();
 
 // From a text's properties ("Browse typefaces…"): the family chosen is the
-// whole text's.
+// whole text's. Callable from any thread: it opens on the UI thread.
 void browse_fonts_for(obs_source_t *source);
 
 } // namespace typeset
