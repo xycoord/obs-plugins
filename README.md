@@ -7,6 +7,7 @@ Linux.
 |---|---|
 | [obs-invert](plugins/obs-invert) | **Invert**: swaps light and dark. It flips each colour's tone, its perceived lightness (CIELAB L\*, the way Google's HCT makes dark themes), and keeps its hue, so a logo made for white goes onto black with the same contrast between its parts: white turns black, black text turns white, a dark navy becomes a light blue, a red stays a red and a pale badge becomes a dark one. Transparency in the source is kept, and it works on HDR sources too (SDR white still turns black, and anything brighter turns black with it). It has no settings. (For a photographic negative, with opposite hues, obs-shaderfilter's Invert shader does that.) |
 | [obs-typeset](plugins/obs-typeset) | **Typeset Text**: a text source using any installed font in any weight or style. It **scales like a vector drawing**: resize it in the scene and it's redrawn at the size it's shown, never blurred or pixelated, and never drawn at more pixels than it covers. And it's **edited right in the preview**: double-click the text and type, as in a slide editor. |
+| [obs-scene-library](plugins/obs-scene-library) | **Scene Library**: a dock that keeps scenes you've perfected, to add back months later. Saving a scene keeps everything in it: nested scenes and groups, every source's filters and settings, transforms, transitions, audio settings, and copies of the images, videos and other files it uses. Adding it back makes a copy of its own beside what's there, without changing anything already in OBS. It can also be driven through obs-websocket. |
 | [obs-shaderfilter](plugins/obs-shaderfilter) | A filter that applies a shader to a source, with a library of 150+ effects (blur, bloom, film grain, glitch, distortion, colour). A submodule: [xycoord/obs-shaderfilter](https://github.com/xycoord/obs-shaderfilter). |
 
 ### Using Invert
@@ -73,6 +74,11 @@ data folder. On a machine without a display, run it as `xvfb-run -a tests/smoke.
 [tests/typeset](tests/typeset) runs OBS on a virtual display and checks Typeset Text's scaling and
 editing in the preview, using OBS's window with the mouse and keyboard (it needs `xvfb`, `xdotool`,
 `imagemagick` and Python's numpy, pillow and websocket-client).
+
+[tests/scene-library](tests/scene-library) runs OBS on a virtual display and checks the Scene
+Library through obs-websocket: a saved scene added back beside its original looks the same and
+leaves the original as it was, changed and missing files come from the library's copies, and so on
+([more](plugins/obs-scene-library/README.md#tests)).
 
 [tests/invert-check](tests/invert-check) checks the Invert filter against a reference of its
 inversion through OBS's renderer, and compares inversions by how well they keep contrast.
