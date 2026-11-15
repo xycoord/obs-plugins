@@ -50,3 +50,17 @@ jobs:
           name: typeset-test-output-${{ matrix.obs }}
           path: typeset-test-output
           if-no-files-found: ignore
+
+      - name: Scene Library's unit tests
+        run: STRICT=1 tests/scene-library/unit/run.sh
+
+      - name: Scene Library in OBS (saving, adding back, files, Studio Mode)
+        run: tests/scene-library/test_scene_library.py --out scene-library-test-output
+
+      - name: Keep the Scene Library's test frames and log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scene-library-test-output-${{ matrix.obs }}
+          path: scene-library-test-output
+          if-no-files-found: ignore
