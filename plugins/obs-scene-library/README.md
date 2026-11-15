@@ -13,21 +13,48 @@ scene keeps everything that makes it look the way it does:
   deleted;
 - a thumbnail of how it looked.
 
-## Using it
+## Installing
 
-The **Scene Library** dock appears beside Scenes the first time OBS runs with
-the plugin. After that it's under **Docks** like any other dock.
+It's built and installed with the other plugins in this repository (see
+[Installing](../../README.md#installing)), or on its own, from the
+repository's folder:
+
+```bash
+./install.sh obs-scene-library
+```
+
+Then restart OBS. The **Scene Library** dock appears beside Scenes the first
+time OBS runs with the plugin. After that it's under **Docks → Scene Library**
+like any other dock, if you've closed it.
+
+## Quick start
+
+1. Get a scene looking the way you want it.
+2. In the Scene Library dock, click **Save Scene…**, give it a name you'll
+   recognise in months' time ("Interval, blue", "Headliner logo loop") and
+   click **OK**. It appears in the dock with a thumbnail.
+3. Months later, in whatever scene collection you're using, double-click it
+   in the dock. It's added to the Scenes list (and in Studio Mode, to the
+   preview); nothing goes live.
+4. Click it in the Scenes list (in Studio Mode, transition to it) when you
+   want it showing.
+
+## Using it
 
 - **Save Scene…** saves the scene you're editing: the one showing or, in
   Studio Mode, the one in the preview. You name it (its scene's name to start
   with). Saving under a name that's already in the library asks before
-  replacing it.
+  replacing it. A scene with big files (a long video) takes a moment to copy:
+  a progress bar shows how far it's got, and **Cancel** stops it, leaving the
+  library as it was.
 - **Add to Scenes** (or double-click it) adds the selected saved scene to OBS's
   scene list. Nothing goes live: in Studio Mode it's put in the preview;
   otherwise it's added to the list and what's showing stays as it was.
 - Right-click a saved scene to replace it with the scene you're editing as it
   is now, rename it, delete it, or show its folder. **Delete** and **F2** work
   too.
+- **Search** finds saved scenes by their name or the name of the scene they
+  were saved from.
 - **⋯** sorts by name or by date saved, shows the library folder, or moves the
   library to another folder.
 
@@ -62,6 +89,17 @@ Change Library Folder…** to keep it somewhere that's backed up or shared.
 Saved scenes already in the old folder aren't moved: move their folders across
 yourself.
 
+### Backing it up, or taking it to another computer
+
+The library is just that folder: copy it to back it up, or to another
+computer and point the dock at it there with **Change Library Folder…**. Its
+scenes find their files in the library's copies wherever the originals aren't.
+What isn't in the library has to be on the other computer already: the plugins
+the scene's sources and filters come from (`./install.sh` puts this
+repository's there), and the fonts its text uses.
+
+### How it's stored
+
 Each saved scene is a folder:
 
 ```
@@ -75,9 +113,9 @@ A file that's already in the library, from another saved scene, is linked
 rather than copied again, so it takes no more space. Replacing a saved scene
 keeps its copies of files that haven't changed where they were, so scenes
 already added from it still find them. Renaming a saved scene changes its name
-but not its folder's, for the same reason. Deleting a saved scene
-deletes its folder. Any scenes already added from it stay in OBS, but if they
-use the library's copies of files, those copies go too.
+but not its folder's, for the same reason. Deleting a saved scene deletes its
+folder. Any scenes already added from it stay in OBS, but if they use the
+library's copies of files, those copies go too.
 
 ## Automating it
 
@@ -93,7 +131,20 @@ Stream Deck, Bitfocus Companion or a script:
 | `RenameScene` | `name`, `newName` | |
 | `DeleteScene` | `name` | |
 
-Each answers `ok: true`, or `ok: false` with an `error`.
+Each answers `ok: true`, or `ok: false` with an `error`. For example, to add
+the saved scene "Interval, blue" from a script or a Companion button, send
+obs-websocket's `CallVendorRequest` with:
+
+```json
+{
+  "vendorName": "scene-library",
+  "requestType": "LoadScene",
+  "requestData": { "name": "Interval, blue" }
+}
+```
+
+The answer's `responseData.sceneName` is the scene's name in OBS (`Interval,
+blue`, or `Interval, blue 2` if that's taken), ready for `SetCurrentProgramScene`.
 
 ## What isn't kept
 
