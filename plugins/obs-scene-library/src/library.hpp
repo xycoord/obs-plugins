@@ -55,7 +55,6 @@ std::optional<Entry> find(const std::string &name);
 struct Snapshot {
 	std::string name;
 	OBSDataAutoRelease data; // scene.json, but for the list of files
-	std::vector<std::string> paths;
 	QImage thumbnail;
 };
 Snapshot snapshot(obs_source_t *scene, const std::string &name);

@@ -362,11 +362,13 @@ std::string sanitise_name(const std::string &name)
 
 // --- Saved scenes ------------------------------------------------------------
 
-std::vector<Entry> entries()
+namespace {
+
+std::vector<Entry> entries_in(const fs::path &lib)
 {
 	std::vector<Entry> list;
 	std::error_code ec;
-	for (auto &d : fs::directory_iterator(folder(), ec)) {
+	for (auto &d : fs::directory_iterator(lib, ec)) {
 		std::string name = d.path().filename().string();
 		if (name.empty() || name[0] == '.' || !d.is_directory(ec))
 			continue;
@@ -376,12 +378,24 @@ std::vector<Entry> entries()
 	return list;
 }
 
-std::optional<Entry> find(const std::string &name)
+std::optional<Entry> find_in(const fs::path &lib, const std::string &name)
 {
-	for (auto &e : entries())
+	for (auto &e : entries_in(lib))
 		if (e.name == name)
 			return e;
 	return std::nullopt;
+}
+
+} // namespace
+
+std::vector<Entry> entries()
+{
+	return entries_in(folder());
+}
+
+std::optional<Entry> find(const std::string &name)
+{
+	return find_in(folder(), name);
 }
 
 QImage render(obs_source_t *source)
@@ -455,7 +469,6 @@ Snapshot snapshot(obs_source_t *scene, const std::string &name)
 	obs_data_set_obj(snap.data, "canvas", canvas);
 	obs_data_set_array(snap.data, "sources", array);
 
-	snap.paths = referenced_paths(array);
 	QImage frame = render(scene);
 	if (!frame.isNull())
 		snap.thumbnail = frame.width() > THUMBNAIL_WIDTH
@@ -494,7 +507,7 @@ Saved write(Snapshot snap, bool replace, const Progress &progress)
 	// with the copy as its copy.
 	std::map<std::tuple<std::string, int64_t, int64_t>, fs::path> stored;
 	std::map<std::string, FileRecord> copies;
-	for (auto &e : entries()) {
+	for (auto &e : entries_in(lib)) {
 		OBSDataAutoRelease data = obs_data_create_from_json_file((e.dir / "scene.json").c_str());
 		for (auto &f : read_files(data)) {
 			if (f.stored.empty())
@@ -515,11 +528,20 @@ Saved write(Snapshot snap, bool replace, const Progress &progress)
 	Copier copier{progress};
 	std::map<std::string, std::string> originals; // library copy -> what it's a copy of
 	std::set<std::string> planned;
-	for (auto &path : snap.paths) {
+	// The files it uses (found here, not on OBS's UI thread: a file on a
+	// network share that's gone can take minutes to answer).
+	OBSDataArrayAutoRelease saved_sources = obs_data_get_array(snap.data, "sources");
+	std::vector<std::string> paths = referenced_paths(saved_sources);
+	std::set<std::string> direct(paths.begin(), paths.end());
+	for (auto &path : paths) {
 		Plan plan;
 		plan.record.path = path;
 		fs::path p(path);
 		auto copy_of = copies.find(p.lexically_normal().string());
+		// A copy whose original the scene also uses as it is now is kept as
+		// a file of its own: it's another version of it.
+		if (copy_of != copies.end() && direct.count(copy_of->second.path))
+			copy_of = copies.end();
 		if (copy_of != copies.end()) {
 			plan.record.path = copy_of->second.path;
 			originals[path] = copy_of->second.path;
@@ -545,7 +567,8 @@ Saved write(Snapshot snap, bool replace, const Progress &progress)
 				plan.record.size = copy_of->second.size;
 				plan.record.mtime = copy_of->second.mtime;
 			}
-			plan.copies.emplace_back(p, stored_path(plan.record.path, plan.record.size, plan.record.mtime, base));
+			plan.record.stored = stored_path(plan.record.path, plan.record.size, plan.record.mtime, base).string();
+			plan.copies.emplace_back(p, plan.record.stored);
 			if (inside(p, lib))
 				plan.link_from = p;
 			else if (auto s = stored.find({path, plan.record.size, plan.record.mtime});
@@ -554,7 +577,8 @@ Saved write(Snapshot snap, bool replace, const Progress &progress)
 			copier.total += plan.record.size;
 		} else {
 			plan.record.kind = "folder";
-			fs::path dest = stored_path(plan.record.path, 0, 0, base);
+			plan.record.stored = stored_path(plan.record.path, 0, 0, base).string();
+			fs::path dest = plan.record.stored;
 			uint64_t bytes = 0;
 			bool too_big = false;
 			auto it = fs::recursive_directory_iterator(p, fs::directory_options::skip_permission_denied, ec);
@@ -575,17 +599,12 @@ Saved write(Snapshot snap, bool replace, const Progress &progress)
 			}
 			if (too_big) {
 				plan.copies.clear();
+				plan.record.stored.clear();
 				plan.record.skipped = "it's a folder of over 4 GB or 5,000 files";
 			} else {
 				copier.total += bytes;
+				fs::create_directories(partial / dest, ec); // (even if it's empty)
 			}
-		}
-		if (plan.record.skipped.empty()) {
-			fs::path dest = plan.record.kind == "folder"
-						? stored_path(plan.record.path, 0, 0, base)
-						: stored_path(plan.record.path, plan.record.size, plan.record.mtime, base);
-			plan.record.stored = dest.string();
-			fs::create_directories(partial / (plan.record.kind == "folder" ? dest : dest.parent_path()), ec);
 		}
 		plans.push_back(std::move(plan));
 	}
@@ -618,9 +637,8 @@ Saved write(Snapshot snap, bool replace, const Progress &progress)
 	}
 	obs_data_set_array(snap.data, "files", files);
 	if (!originals.empty()) {
-		OBSDataArrayAutoRelease sources = obs_data_get_array(snap.data, "sources");
-		for (size_t i = 0, n = obs_data_array_count(sources); i < n; i++) {
-			OBSDataAutoRelease source = obs_data_array_item(sources, i);
+		for (size_t i = 0, n = obs_data_array_count(saved_sources); i < n; i++) {
+			OBSDataAutoRelease source = obs_data_array_item(saved_sources, i);
 			for_each_settings(source, [&](obs_data_t *settings) {
 				rewrite_strings(settings, [&](const char *, const char *value) -> const std::string * {
 					auto o = originals.find(value);
@@ -639,7 +657,8 @@ Saved write(Snapshot snap, bool replace, const Progress &progress)
 	{
 		std::lock_guard lock(finish_mutex);
 		fs::path dir;
-		if (auto old = find(snap.name)) {
+		// (In the folder it was saved into, even if the library has moved since.)
+		if (auto old = find_in(lib, snap.name)) {
 			if (!replace)
 				return fail("there's already a saved scene called '" + snap.name + "'");
 			dir = old->dir;

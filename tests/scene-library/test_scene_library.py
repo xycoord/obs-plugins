@@ -284,22 +284,39 @@ def run(obs, lib, logo, out):
     again = wait_for_frame(obs, "Interval 2")
     mean, worst = difference(again, look)
     check(worst <= 2, "so it looks as it did when it was saved", "mean %.2f, largest %d" % (mean, worst))
+
+    # A scene using both the library's copy (the old logo) and the file as it
+    # is now keeps both versions.
+    obs.request("CreateScene", sceneName="Both")
+    obs.request("CreateSceneItem", sceneName="Both", sourceName="Logo")
+    obs.request("CreateSceneItem", sceneName="Both", sourceName="Logo 3")
+    r = lib("SaveScene", sceneName="Both")
+    both = lib.json("Both")
+    stored = sorted(f["path"] for f in both["files"])
+    check(r.get("ok") and stored == sorted([logo, path]),
+          "a scene using a library copy and the current file keeps both versions", stored)
+    r = lib("LoadScene", name="Both")
+    copies = {s: obs.settings(s).get("file") for s in item_sources(obs, r.get("sceneName", ""))}
+    check(r.get("ok") and sorted(copies.values()) == sorted([logo, path]),
+          "and adding it back uses each where it was", copies)
+    lib("DeleteScene", name="Both")
     os.remove(logo)
     r = lib("LoadScene", name="Interval")
-    check(r.get("ok") and obs.settings("Logo 4").get("file", "").startswith(lib.dir),
+    gone_logo = item_sources(obs, r.get("sceneName", ""))[1]  # the logo's copy, whatever it's called
+    check(r.get("ok") and obs.settings(gone_logo).get("file", "").startswith(lib.dir),
           "and so is one that's gone", r)
 
     # Replacing the saved scene with that scene (which uses the library's copy)
     # keeps the copy where it is, and records it as the file it's a copy of.
-    used = obs.settings("Logo 4").get("file", "")
+    used = obs.settings(gone_logo).get("file", "")
     r = lib("SaveScene", sceneName=r.get("sceneName"), name="Interval", replace=True)
     check(r.get("ok") and os.path.isfile(used),
           "replacing a saved scene keeps its copies where scenes added from it find them", used)
     replaced = lib.json("Interval")
-    logo4 = next(s for s in replaced["sources"] if s["name"] == "Logo 4")
-    check([f["path"] for f in replaced["files"]] == [logo] and logo4["settings"]["file"] == logo,
+    saved_logo = next(s for s in replaced["sources"] if s["name"] == gone_logo)
+    check([f["path"] for f in replaced["files"]] == [logo] and saved_logo["settings"]["file"] == logo,
           "and a library copy a scene uses is saved as the file it's a copy of",
-          ([f["path"] for f in replaced["files"]], logo4["settings"]["file"]))
+          ([f["path"] for f in replaced["files"]], saved_logo["settings"]["file"]))
 
     # --- 4. Files already in the library -------------------------------------------------------
     print("-- files already in the library")
