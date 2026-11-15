@@ -22,7 +22,7 @@ is black, then gamma to set where the middle falls.
 
 On the machine that runs OBS (it needs `git`, `cmake`, a C and C++ compiler, Pango and Qt 6's
 development files and, for OBS 32 and later, SIMDe:
-`sudo apt install git cmake build-essential libpango1.0-dev qt6-base-dev libsimde-dev`):
+`sudo apt install git cmake build-essential libpango1.0-dev libfontconfig-dev qt6-base-dev libsimde-dev`):
 
 ```bash
 git clone --recursive https://github.com/xycoord/obs-plugins
@@ -41,6 +41,18 @@ git pull --recurse-submodules
 ```
 
 `./install.sh --uninstall` removes them again. `./install.sh <name>` builds and installs just one.
+
+### The Google Fonts library
+
+```bash
+tools/google-fonts.sh
+```
+
+installs the whole Google Fonts library for you (about 2,000 families; about 2.5 GB, plus 1 GB of
+git's own) in `~/.local/share/fonts/google-fonts`, where every program finds them, with the
+information Typeset Text's font browser reads (categories, finer classes, feel and popularity) beside
+them. Run it again to update them; `tools/google-fonts.sh --remove` removes them. It needs `git`,
+`python3`, `curl` and fontconfig, and no sudo.
 
 ### How it builds
 

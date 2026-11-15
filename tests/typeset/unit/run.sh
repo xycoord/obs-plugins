@@ -29,3 +29,6 @@ c++ -std=c++20 -Wall -Wextra -I"$src" -I"$obs_inc" -I"$(dirname "$obs_inc")/../c
 c++ -std=c++20 -Wall -Wextra -I"$src" -I"$obs_inc" -I"$(dirname "$obs_inc")/../config" "$here/test_raster.cpp" \
 	"$src/text-engine.cpp" "$src/rich-text.cpp" $(pkg-config --cflags --libs pangocairo) -o "$out/test_raster"
 "$out/test_raster"
+c++ -std=c++20 -Wall -Wextra -I"$src" "$here/test_font_filter.cpp" "$src/font-filter.cpp" \
+	$(pkg-config --cflags --libs fontconfig) -o "$out/test_font_filter"
+"$out/test_font_filter"

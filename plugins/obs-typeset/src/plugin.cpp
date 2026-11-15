@@ -1,3 +1,4 @@
+#include "font-index.hpp"
 #include "preview-editor.hpp"
 #include "raster-worker.hpp"
 #include "typeset-source.hpp"
@@ -52,6 +53,7 @@ bool obs_module_load(void)
 	typeset::set_ui_thread(); // modules load on OBS's UI thread, where text is laid out
 	typeset::worker_start();
 	typeset::load_effects();
+	typeset::FontIndex::get().start(); // read in the background, for the font browser
 	typeset::register_source();
 	obs_frontend_add_event_callback(frontend_event, nullptr);
 	return true;
@@ -62,5 +64,6 @@ void obs_module_unload(void)
 	obs_frontend_remove_event_callback(frontend_event, nullptr);
 	typeset::editor_remove();
 	typeset::worker_stop();
+	typeset::FontIndex::get().stop();
 	typeset::unload_effects();
 }

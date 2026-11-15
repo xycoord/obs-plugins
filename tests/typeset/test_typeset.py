@@ -16,8 +16,10 @@ packages numpy, pillow and websocket-client).
 """
 
 import argparse
+import json
 import os
 import re
+import shutil
 import sys
 import time
 
@@ -390,7 +392,7 @@ def test_editing(out):
         obs.type("q")
         check("q" not in obs.settings("Title")["text"], "a click outside the text finishes editing")
 
-        warnings = [line for line in obs.log().splitlines() if "[obs-typeset]" in line and "editing" not in line and "] drew " not in line and "] bar " not in line]
+        warnings = typeset_warnings(obs)
         check(not warnings, "no warnings from obs-typeset", "; ".join(warnings))
 
 
@@ -532,7 +534,7 @@ def test_features(out):
         save(out, "features-studio.png", obs.screen())
         obs.key("Escape")
 
-        warnings = [line for line in obs.log().splitlines() if "[obs-typeset]" in line and "editing" not in line and "] drew " not in line and "] bar " not in line]
+        warnings = typeset_warnings(obs)
         check(not warnings, "no warnings from obs-typeset", "; ".join(warnings))
 
 
@@ -660,12 +662,178 @@ def test_rich(out):
         # ("Oh " is new, before the bold text: it isn't bold itself.)
         check(spans() and spans()[0][:2] == (3, 14), "the styles follow the text when it's changed elsewhere",
               repr(spans()))
-        warnings = [line for line in obs.log().splitlines() if "[obs-typeset]" in line and "editing" not in line
-                    and "] drew " not in line and "] bar " not in line]
+        warnings = typeset_warnings(obs)
         check(not warnings, "no warnings from obs-typeset", "; ".join(warnings))
 
 
 # --- 5. OBS's undo history, and the text going while it's edited ---------------------------------
+
+def typeset_warnings(obs):
+    """obs-typeset's log lines, but for those that only say what it did
+    (editing, drawing with TYPESET_DEBUG, the bar's and the font browser's
+    state, the fonts read)."""
+    quiet = ("editing", "] drew ", "] bar ", "] fonts ", " font families ")
+    return [line for line in obs.log().splitlines()
+            if "[obs-typeset]" in line and not any(q in line for q in quiet)]
+
+
+def font_library(obs_dir):
+    """A tiny font library laid out as tools/google-fonts.sh lays out Google's
+    (fonts two folders down, typeset-catalogue.json at the top), from copies
+    of DejaVu, which is everywhere the tests run. Found through the OBS
+    session's own home."""
+    root = os.path.join(obs_dir, ".local", "share", "fonts", "test-library")
+    system = "/usr/share/fonts/truetype/dejavu"
+    for folder, files in (("dejavu", ("DejaVuSans.ttf", "DejaVuSerif.ttf")), ("dejavumono", ("DejaVuSansMono.ttf",))):
+        os.makedirs(os.path.join(root, "ofl", folder))
+        for f in files:
+            shutil.copy(os.path.join(system, f), os.path.join(root, "ofl", folder))
+    # The mono under another name than its font gives, found by its folder
+    # (as Google's "Abhaya Libre" is for "Abhaya Libre ExtraBold").
+    catalogue = {"version": 1, "families": {
+        "DejaVu Serif": {"category": "Serif", "popularity": 1, "classes": "Transitional", "feel": {"Calm": 60}},
+        "DejaVu Sans": {"category": "Sans Serif", "popularity": 2, "classes": "Humanist",
+                        "feel": {"Calm": 90, "Business": 70}},
+        "DejaVu Mono": {"category": "Monospace", "popularity": 3, "feel": {"Business": 80, "Calm": 30}}},
+        "folders": {"ofl/dejavu": "DejaVu Sans", "ofl/dejavumono": "DejaVu Mono"}}
+    with open(os.path.join(root, "typeset-catalogue.json"), "w") as f:
+        json.dump(catalogue, f)
+
+
+def fonts_log(obs, since, kind="shown="):
+    """The font browser's log lines of a kind ("shown=": what the list shows;
+    "open ", "chose ") since a point in the log (TYPESET_DEBUG)."""
+    return [line.split("[obs-typeset] fonts ", 1)[1] for line in obs.log().splitlines()[since:]
+            if "[obs-typeset] fonts " + kind in line]
+
+
+def test_fonts(out):
+    print("-- the font browser")
+    sources = [text_source("Title", "Live Grove", 140)]
+    items = [item("Title", 2, 200, 300)]
+    session = ObsSession(collection(sources, items))
+    font_library(session.dir)
+    with session as obs:
+        time.sleep(2)
+        x0, y0, sx, sy = canvas_on_screen(obs.screen())
+        to_screen = lambda cx, cy: (x0 + cx * sx, y0 + cy * sy)  # noqa: E731
+        families = [line for line in obs.log().splitlines() if "font families" in line]
+        check(bool(families) and "with categories" in families[-1],
+              "the installed fonts are read in the background, with a catalogue beside them",
+              families[-1].split("] ", 1)[1] if families else "not logged")
+        t = obs.request("GetSceneItemTransform", sceneName="Scene", sceneItemId=2)["sceneItemTransform"]
+        obs.click(*to_screen(200 + t["width"] * 0.75, 300 + t["height"] / 2), repeat=2)  # "Grove"
+        time.sleep(0.5)
+        spans = lambda: obs.settings("Title").get("spans", [])  # noqa: E731
+
+        def open_browser(typed=""):
+            since = len(obs.log().splitlines())
+            obs.click(*bar_button(obs, "typeface"))
+            time.sleep(1)
+            if typed:
+                obs.type(typed)
+                time.sleep(0.6)
+            return since
+
+        since = open_browser()
+        shown = fonts_log(obs, since)
+        check(fonts_log(obs, since, "open ") and shown and "first=DejaVu Sans sections=1" in shown[-1],
+              "the typeface field opens the browser, the text's own typeface first (in this scene collection)",
+              "; ".join(shown))
+        save(out, "fonts-open.png", obs.screen())
+        obs.type("calm")
+        time.sleep(0.6)
+        shown = fonts_log(obs, since)
+        check(shown and "shown=2 " in shown[-1] and "first=DejaVu Sans" in shown[-1],
+              "a feeling typed finds the typefaces strongly so, the strongest first (not Calm 30)",
+              shown[-1] if shown else "")
+        obs.key("ctrl+a", "BackSpace")
+        time.sleep(0.6)
+
+        # The Feel menu: Any feeling, then Business (2) and Calm (2).
+        opened = fonts_log(obs, since, "open ")
+        fx, fy = (int(v) for v in opened[-1].split("feel=")[1].split(","))
+
+        def pick_feel(downs, keyboard=False):
+            if keyboard:
+                obs.key("alt+f")
+            else:
+                obs.click(fx, fy)
+            time.sleep(0.8)
+            obs.key(*(["Down"] * downs), "Return")
+            time.sleep(0.8)
+            return fonts_log(obs, since)[-1]
+
+        shown = pick_feel(3)
+        check("feel=Calm " in shown + " " and "shown=2 " in shown and "unrated=0" not in shown,
+              "the Feel menu: a feeling chosen shows only those strongly so, and says how many have none", shown)
+        shown = pick_feel(2)
+        check("feel=Business + Calm" in shown and "shown=1 " in shown,
+              "two chosen: those with both", shown)
+        shown = pick_feel(1, keyboard=True)
+        check(shown.endswith("feel=Feel"), "Alt+F opens the menu from the keyboard; Any feeling clears them", shown)
+        obs.key("Escape")
+        time.sleep(0.5)
+        check(not any(s.get("family") for s in spans()), "Escape leaves the text as it was", repr(spans()))
+
+        since = open_browser("dejavu")
+        shown = fonts_log(obs, since)
+        check(shown and "first=DejaVu Serif" in shown[-1], "the most used first", shown[-1] if shown else "")
+        obs.key("Down", "Down", "Return")  # Serif, Sans, Sans Mono
+        time.sleep(0.6)
+        fam = [s.get("family") for s in spans() if s.get("family")]
+        check(fam == ["DejaVu Sans Mono"] and fonts_log(obs, since, "chose ") == ["chose DejaVu Sans Mono"],
+              "the arrow keys move down the list, Enter uses the one highlighted, on the selection", repr(spans()))
+
+        since = open_browser()
+        shown = fonts_log(obs, since)
+        check(shown and "first=DejaVu Sans Mono sections=1" in shown[-1], "and it's first, as Recent, next time",
+              shown[-1] if shown else "")
+        obs.key("ctrl+d")
+        time.sleep(0.3)
+        obs.key("Escape")
+        time.sleep(0.5)
+        prefs = os.path.join(obs.dir, ".config", "obs-studio", "plugin_config", "obs-typeset", "font-browser.json")
+        saved = json.load(open(prefs)) if os.path.exists(prefs) else {}
+        check([f["name"] for f in saved.get("favourites", [])] == ["DejaVu Sans Mono"] and
+              [f["name"] for f in saved.get("recent", [])][:1] == ["DejaVu Sans Mono"],
+              "Ctrl+D makes it a favourite; favourites and recents are kept", repr(saved))
+
+        # In the text's own typeface (Sans) with another one Recent: that's
+        # highlighted, not the Recent, so Enter at once changes nothing.
+        obs.key("Home")
+        time.sleep(0.3)
+        before = spans()
+        since = open_browser()
+        shown = fonts_log(obs, since)
+        obs.key("Return")
+        time.sleep(0.6)
+        check(shown and "first=DejaVu Sans sections=1" in shown[-1] and spans() == before,
+              "the text's own typeface is highlighted on opening, so Enter at once changes nothing",
+              "%s %r" % (shown[-1] if shown else "", spans()))
+        obs.key("Escape")  # (the edit ends)
+        time.sleep(0.5)
+
+        # From the properties: the whole text's typeface, its nearest style,
+        # and OBS's bold and italic flags to match (none: it has neither).
+        obs.request("SetInputSettings", inputName="Title", inputSettings={
+            "font": {"face": "DejaVu Sans", "style": "Bold Oblique", "size": 140, "flags": 3}})
+        time.sleep(0.5)
+        since = len(obs.log().splitlines())
+        obs.request("PressInputPropertiesButton", inputName="Title", propertyName="browse_fonts")
+        time.sleep(1)
+        obs.type("math")
+        time.sleep(0.6)
+        obs.key("Return")
+        time.sleep(0.6)
+        font = obs.settings("Title").get("font", {})
+        check(font.get("face") == "DejaVu Math TeX Gyre" and font.get("style") == "Regular" and
+              font.get("flags") == 0, "Browse typefaces… in the properties sets the typeface, a style it has, and "
+              "no bold or italic it hasn't", "%r %s" % (font, "; ".join(fonts_log(obs, since, ""))))
+
+        warnings = [line for line in obs.log().splitlines() if "[obs-typeset]" in line and "error" in line.lower()]
+        check(not warnings, "no errors from obs-typeset", "; ".join(warnings))
+
 
 def test_history(out):
     print("-- undo history, and removal while editing")
@@ -752,7 +920,7 @@ def test_history(out):
         obs.key("Escape")
         spacing = lambda: obs.settings("Title").get("line_spacing", 1.0)  # noqa: E731
         obs.key("ctrl+z")
-        time.sleep(0.3)
+        time.sleep(0.5)
         obs.key("ctrl+z")
         time.sleep(0.5)
         obs.key("ctrl+shift+z")
@@ -775,14 +943,14 @@ def test_history(out):
         check(obs.settings("Other")["text"] == "Stays", "hiding the text being edited ends the edit at once",
               repr(obs.settings("Other")["text"]))
 
-        warnings = [line for line in obs.log().splitlines() if "[obs-typeset]" in line and "editing" not in line and "] drew " not in line and "] bar " not in line]
+        warnings = typeset_warnings(obs)
         check(not warnings, "no warnings from obs-typeset", "; ".join(warnings))
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", help="keep the frames and screenshots in this folder")
-    parser.add_argument("tests", nargs="*", default=["scaling", "coverage", "editing", "features", "rich", "history"])
+    parser.add_argument("tests", nargs="*", default=["scaling", "coverage", "editing", "features", "rich", "fonts", "history"])
     args = parser.parse_args()
     if args.out:
         os.makedirs(args.out, exist_ok=True)

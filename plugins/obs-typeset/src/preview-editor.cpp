@@ -994,6 +994,17 @@ void PreviewEditor::bar_state()
 	st.balance = model_.layout().balance;
 	st.avoid_orphans = model_.layout().avoid_orphans;
 	st.wraps = doc.style.box && doc.style.box_width > 0 && doc.style.overflow == Overflow::Wrap;
+	// The font browser's sample: the selection, else the caret's line.
+	if (model_.has_selection()) {
+		st.sample = model_.selected_text();
+	} else {
+		const std::string &t = model_.text();
+		const size_t at = std::min(model_.caret(), t.size());
+		const size_t start = t.rfind('\n', at == 0 ? 0 : at - 1);
+		const size_t from = start == std::string::npos || at == 0 ? 0 : start + 1;
+		st.sample = t.substr(from, t.find('\n', from) - from);
+	}
+	st.text_rect = frame_rect().translated(preview_->mapToGlobal(QPoint(0, 0)));
 	bar_->set_state(st);
 }
 

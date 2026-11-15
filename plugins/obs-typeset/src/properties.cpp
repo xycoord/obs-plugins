@@ -1,5 +1,7 @@
 #include "properties.hpp"
 
+#include "font-browser.hpp"
+
 #include "settings.hpp"
 #include "typeset-source.hpp"
 
@@ -290,6 +292,13 @@ bool paste_style(obs_properties_t *props, obs_property_t *, void *data)
 	return true;
 }
 
+bool browse_fonts(obs_properties_t *, obs_property_t *, void *data)
+{
+	if (auto *text = static_cast<TextSource *>(data))
+		browse_fonts_for(text->source());
+	return false;
+}
+
 bool save_default(obs_properties_t *, obs_property_t *, void *data)
 {
 	auto *text = static_cast<TextSource *>(data);
@@ -315,6 +324,10 @@ obs_properties_t *source_properties(void *data)
 	obs_property_text_set_info_word_wrap(p, true);
 	p = obs_properties_add_font(props, "font", obs_module_text("Font"));
 	obs_property_set_modified_callback(p, font_changed);
+	// The font browser (font-browser.hpp): search, categories, the text's
+	// own words in each typeface.
+	p = obs_properties_add_button2(props, "browse_fonts", obs_module_text("Fonts.Browse"), browse_fonts, text);
+	obs_property_set_long_description(p, obs_module_text("Fonts.Browse.Help"));
 	p = obs_properties_add_int_slider(props, "size", obs_module_text("Size"), 4, 4096, 1);
 	obs_property_int_set_suffix(p, " px");
 	obs_property_set_long_description(p, obs_module_text("Size.Help"));
