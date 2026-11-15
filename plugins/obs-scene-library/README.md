@@ -13,6 +13,8 @@ scene keeps everything that makes it look the way it does:
   deleted;
 - a thumbnail of how it looked.
 
+<img src="docs/dock.png" width="800" alt="OBS with the Scene Library dock beside Scenes, showing three saved scenes with thumbnails: Doors open, Headliner intro and Last orders">
+
 ## Installing
 
 It's built and installed with the other plugins in this repository (see
@@ -32,10 +34,21 @@ like any other dock, if you've closed it.
 1. Get a scene looking the way you want it.
 2. In the Scene Library dock, click **Save Scene…**, give it a name you'll
    recognise in months' time ("Interval, blue", "Headliner logo loop") and
-   click **OK**. It appears in the dock with a thumbnail.
+   click **OK**.
+
+   <img src="docs/save-dialog.png" width="285" alt="The Save Scene dialog: Save the scene 'Interval' to the library as: Interval">
+
+   It appears in the dock with a thumbnail of how it looks:
+
+   <img src="docs/saved.png" width="860" alt="The Scene Library dock with 'Interval' just saved and selected, and the message Saved 'Interval'">
+
 3. Months later, in whatever scene collection you're using, double-click it
    in the dock. It's added to the Scenes list (and in Studio Mode, to the
-   preview); nothing goes live.
+   preview); nothing goes live. Here, "Doors open" was added back while the
+   original was still there, so the copy is "Doors open 2":
+
+   <img src="docs/added.png" width="860" alt="The Scenes list now has 'Doors open 2' as well as 'Doors open', and the dock says Added 'Doors open 2' to Scenes">
+
 4. Click it in the Scenes list (in Studio Mode, transition to it) when you
    want it showing.
 
@@ -50,13 +63,21 @@ like any other dock, if you've closed it.
 - **Add to Scenes** (or double-click it) adds the selected saved scene to OBS's
   scene list. Nothing goes live: in Studio Mode it's put in the preview;
   otherwise it's added to the list and what's showing stays as it was.
+
+  <img src="docs/studio-mode.png" width="800" alt="Studio Mode: the added 'Headliner intro 2' is in the preview while the program still shows 'Interval'">
+
 - Right-click a saved scene to replace it with the scene you're editing as it
   is now, rename it, delete it, or show its folder. **Delete** and **F2** work
   too.
+
+  <img src="docs/menu.png" width="620" alt="The right-click menu on a saved scene: Add to Scenes, Replace with 'Interval', Rename, Delete, Show in File Manager">
+
 - **Search** finds saved scenes by their name or the name of the scene they
   were saved from.
 - **⋯** sorts by name or by date saved, shows the library folder, or moves the
   library to another folder.
+
+  <img src="docs/more-menu.png" width="780" alt="The ⋯ menu: Sort by Name, Sort by Date Saved, Show Library Folder, Change Library Folder">
 
 Hover over a saved scene to see when it was saved, from which scene, and
 anything it uses that wasn't copied.
