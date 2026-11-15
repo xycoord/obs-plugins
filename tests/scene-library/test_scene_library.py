@@ -295,6 +295,12 @@ def run(obs, lib, logo, out):
     stored = sorted(f["path"] for f in both["files"])
     check(r.get("ok") and stored == sorted([logo, path]),
           "a scene using a library copy and the current file keeps both versions", stored)
+    # The copy keeps the place it has (so replacing the saved scene it came from
+    # wouldn't move it from under the scene using it).
+    copy_record = next((f for f in both["files"] if f["path"] == path), {})
+    check(copy_record.get("stored") == lib.json("Interval")["files"][0]["stored"],
+          "and the copy is kept in the same place as the copy it is",
+          (copy_record.get("stored"), lib.json("Interval")["files"][0]["stored"]))
     r = lib("LoadScene", name="Both")
     copies = {s: obs.settings(s).get("file") for s in item_sources(obs, r.get("sceneName", ""))}
     check(r.get("ok") and sorted(copies.values()) == sorted([logo, path]),

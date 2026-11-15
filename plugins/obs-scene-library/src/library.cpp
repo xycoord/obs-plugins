@@ -538,13 +538,13 @@ Saved write(Snapshot snap, bool replace, const Progress &progress)
 		plan.record.path = path;
 		fs::path p(path);
 		auto copy_of = copies.find(p.lexically_normal().string());
+		const FileRecord *copied = copy_of != copies.end() ? &copy_of->second : nullptr;
 		// A copy whose original the scene also uses as it is now is kept as
-		// a file of its own: it's another version of it.
-		if (copy_of != copies.end() && direct.count(copy_of->second.path))
-			copy_of = copies.end();
-		if (copy_of != copies.end()) {
-			plan.record.path = copy_of->second.path;
-			originals[path] = copy_of->second.path;
+		// a file of its own (it's another version of it); otherwise it's
+		// saved as the file it's a copy of.
+		if (copied && !direct.count(copied->path)) {
+			plan.record.path = copied->path;
+			originals[path] = copied->path;
 		}
 		if (!planned.insert(plan.record.path).second)
 			continue; // (two copies of one file)
@@ -563,11 +563,14 @@ Saved write(Snapshot snap, bool replace, const Progress &progress)
 			plan.record.kind = "file";
 			plan.record.size = (int64_t)fs::file_size(p, ec);
 			plan.record.mtime = mtime_of(p);
-			if (copy_of != copies.end()) {
-				plan.record.size = copy_of->second.size;
-				plan.record.mtime = copy_of->second.mtime;
+			if (copied && plan.record.path == copied->path) {
+				plan.record.size = copied->size;
+				plan.record.mtime = copied->mtime;
 			}
-			plan.record.stored = stored_path(plan.record.path, plan.record.size, plan.record.mtime, base).string();
+			// A library copy keeps the place it has (from what it's a copy
+			// of), so replacing the saved scene it's in doesn't move it.
+			plan.record.stored = copied ? stored_path(copied->path, copied->size, copied->mtime, base).string()
+						    : stored_path(plan.record.path, plan.record.size, plan.record.mtime, base).string();
 			plan.copies.emplace_back(p, plan.record.stored);
 			if (inside(p, lib))
 				plan.link_from = p;
@@ -577,7 +580,7 @@ Saved write(Snapshot snap, bool replace, const Progress &progress)
 			copier.total += plan.record.size;
 		} else {
 			plan.record.kind = "folder";
-			plan.record.stored = stored_path(plan.record.path, 0, 0, base).string();
+			plan.record.stored = stored_path(copied ? copied->path : plan.record.path, 0, 0, base).string();
 			fs::path dest = plan.record.stored;
 			uint64_t bytes = 0;
 			bool too_big = false;
